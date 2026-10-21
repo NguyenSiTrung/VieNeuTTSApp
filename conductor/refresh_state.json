@@ -1,7 +1,7 @@
 {
   "timestamp": "2026-10-21T13:20:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 11 tracks archived under conductor/archive/); zero plan.md/Beads drift. 463 total issues: 46 open (0 in_progress, 5 blocked, 41 ready), 416 closed — up from 456/409 at the 2026-10-20 refresh. Closed since last refresh: epic VieNeuTTSApp-4kht (Video Dubbing hardening, 3 phases) with children 4kht.1/.2/.3, plus vxil (video subtitle burn-in style/correctness/UX, 10 audit findings fixed in d7b8721), ni2i (.webm/.avi soft-subtitle embed), poph (burn-in option). Blocked set unchanged (5 nqx.* tasks awaiting real-device verification). Gates: ruff check . green; ruff format --check . arrived RED with 5 files of debt and was fixed in this refresh (212 files green); scripts/update_i18n.sh 1012/1012 finished, 0 unfinished, 0 vanished.",
+  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 11 tracks archived under conductor/archive/); zero plan.md/Beads drift. 463 total issues: 46 open (0 in_progress, 5 blocked, 41 ready), 416 closed — up from 456/409 at the 2026-10-20 refresh. Closed since last refresh: epic VieNeuTTSApp-4kht (Video Dubbing hardening, 3 phases) with children 4kht.1/.2/.3, plus vxil (video subtitle burn-in style/correctness/UX, 10 audit findings fixed in d7b8721), ni2i (.webm/.avi soft-subtitle embed), poph (burn-in option). Blocked set unchanged (5 nqx.* tasks awaiting real-device verification). One bead FILED during this refresh: VieNeuTTSApp-qjkk (P3 bug, test_ui_shell shell smoke flakes in isolation with null context properties). Gates: ruff check . green; ruff format --check . arrived RED with 5 files of debt and was fixed in this refresh (212 files green); scripts/update_i18n.sh 1012/1012 finished, 0 unfinished, 0 vanished.",
   "changes": [
     {
       "file": "conductor/product.md",
@@ -56,7 +56,10 @@
   },
   "known_baseline_failures": {
     "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy; passed on this run)",
-    "loaded_host_flakes": "2-4 varying failures per full -n auto run on this 18-core host at load avg ~9-11, all passing in isolation and ALL reproducing at the previous refresh commit e08a58e, so none is a regression from this batch. Chief cause: 'RuntimeError: Only a single TORCH_LIBRARY can be used to register the namespace triton' when several xdist workers import torch concurrently (reproduced ~1-in-3 under -n 8 at e08a58e; related to open bead VieNeuTTSApp-xevl)."
+    "loaded_host_flakes": "2-4 varying failures per full -n auto run on this 18-core host at load avg ~9-11; ALL reproduce at the previous refresh commit e08a58e, so none is a regression from this batch. Most pass in isolation, but isolation is necessary-not-sufficient: test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces also flakes ~1-in-5 IN ISOLATION (-n 0; 4/5 passed at HEAD) with a cascade of 'TypeError: Cannot read property X of null' for every context property, i.e. the driver's QML loads before setContextProperty. Filed as bead VieNeuTTSApp-qjkk during this refresh. Chief loaded-host cause: 'RuntimeError: Only a single TORCH_LIBRARY can be used to register the namespace triton' when several xdist workers import torch concurrently (reproduced ~1-in-3 under -n 8 at e08a58e; related to open bead VieNeuTTSApp-xevl)."
   },
-  "commits_since_last_refresh": "e08a58e..565fe23 (7 commits: d17a261 video dubbing/diarization/muxing/subtitle-studio hardening; 1661604 VoicePicker popup clipping/padding + SubtitleCard layout; 6e7c747 burn-in subtitle option + webm/avi embed fixes; d7b8721 styled ASS burn-in, HDR preservation, export progress; c29df02/ffd0015/565fe23 beads export + close sync chores)"
+  "commits_since_last_refresh": "e08a58e..565fe23 (7 commits: d17a261 video dubbing/diarization/muxing/subtitle-studio hardening; 1661604 VoicePicker popup clipping/padding + SubtitleCard layout; 6e7c747 burn-in subtitle option + webm/avi embed fixes; d7b8721 styled ASS burn-in, HDR preservation, export progress; c29df02/ffd0015/565fe23 beads export + close sync chores)",
+  "beads_filed": [
+    "VieNeuTTSApp-qjkk: test_ui_shell shell smoke flakes in isolation: null context properties (P3 bug)"
+  ]
 }

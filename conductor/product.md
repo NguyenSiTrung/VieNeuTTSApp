@@ -325,10 +325,14 @@ Latest gate (2026-10-21 refresh): `ruff check .` passes and
 5 files of debt from `d17a261`/`6e7c747` (`core/asr.py`, `core/diarization.py`,
 `core/llm_refine.py`, `core/subtitle_project.py`, `tests/unit/test_diarization.py`)
 and was reformatted in this refresh. Full `pytest` on this 18-core host is
-~43–61 s under `-n auto` and reports 1517 passed + 4 skipped plus 2–4 FAILED
-that VARY run to run and all pass in isolation — a pre-existing loaded-host
-flake family, NOT a regression: every one of them reproduces at the previous
-refresh commit `e08a58e` too. The recurring members are
+~43–61 s under `-n auto` and reports ~1516–1517 passed + 4 skipped plus 2–4
+FAILED that VARY run to run — a pre-existing flake family, NOT a regression:
+every one of them reproduces at the previous refresh commit `e08a58e` too.
+Most are load-dependent and pass in isolation, but
+`test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces`
+also flakes ~1-in-5 IN ISOLATION (null context properties; filed as bead
+`VieNeuTTSApp-qjkk` at this refresh), so always reproduce a suspect test at the
+previous commit rather than trusting a single isolated re-run. The recurring members are
 `test_qwen_host.py::TestFrameLoop` (`test_session_lifecycle` / `test_cancel_frames`
 / `test_transition_and_pipes` / `TestTorchPosture`) failing on a `RuntimeError:
 Only a single TORCH_LIBRARY can be used to register the namespace triton` race

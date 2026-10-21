@@ -56,8 +56,14 @@
   the two long-standing smoke flakes
   (`TestAudiobookTabSmoke::test_waveform_render_progress_interactions_and_render_all`,
   `TestStreamLifecycleSmoke::test_stream_cancel_cross_tab_and_error_recovery`).
-  Procedure: re-run any suspect test in isolation (`pytest <nodeid> -q`) before
-  calling it a regression, and prefer `-n 4` for a clean read on a loaded box.
+  One of them is NOT load-dependent and flakes in ISOLATION too:
+  `test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces`
+  (~1-in-5 at `-n 0`; 4/5 passed at HEAD), where the driver's QML instantiates
+  before `setContextProperty` and every context property reads null (bead
+  `VieNeuTTSApp-qjkk`). Procedure: re-run any suspect test in isolation
+  (`pytest <nodeid> -q`); if it STILL fails, re-run it again and reproduce it at
+  the previous commit before calling it a regression. Prefer `-n 4` for a clean
+  read on a loaded box.
 - **The format gate is `ruff format --check`, not `ruff check`.** This refresh
   again found the gate RED (`d17a261`/`6e7c747` left 5 files unformatted:
   `core/asr.py`, `core/diarization.py`, `core/llm_refine.py`,

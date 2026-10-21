@@ -29,3 +29,6 @@ under `conductor/archive/`.
 <!-- Archived: ui_shell_redesign_20261010 (UI/UX shell redesign from the 2026-10-10 audit canvas — design-system refactor (12 px type floor, 44 px targets, compact PageHeader/quiet AppCard, AppSegmented), shared TransportDock + StatusBar with one live-playback toggle, IA merge of Văn bản + Đoạn văn into Tạo giọng đọc plus the Giọng đọc library (presets, cloning, default, recent voices), Sách nói master–detail, Cài đặt sub-nav, Studio timeline + effects panel, responsive pass at 640×420; 4 phases / 24 tasks complete 2026-10-10; beads epic VieNeuTTSApp-iqgl closed; 17 patterns elevated. Follow-ups: jqag, a6iv, vdm1, lgi9, 72uw, 359k), archived 2026-10-12 → ./archive/ui_shell_redesign_20261010/ -->
 
 ---
+
+## [ ] Track: Harden and optimize on-device ASR & Video Dubbing subtitles (model/runtime verification, whisper.cpp runtime installer, cancel/fallback semantics, non-speech filtering, caching & QML controls)
+*Link: [./tracks/asr_hardening_20261021/](./tracks/asr_hardening_20261021/)*

@@ -55,6 +55,34 @@ def test_normalize_asr_segments_splits_long_and_merges_micro() -> None:
     assert all(len(c.text) <= 84 for c in cues)
 
 
+def test_non_speech_filtering_duration_split_and_backward_micro_merge() -> None:
+    segments = [
+        RawSegment(0, 1000, "[BLANK_AUDIO]"),
+        RawSegment(1000, 2000, "[MUSIC]"),
+        RawSegment(2000, 3000, "(applause)"),
+        RawSegment(3000, 4000, "♪ ♪"),
+        RawSegment(4000, 5500, "[MUSIC] Xin chào mọi người.", speaker="MUSIC"),
+        # Trailing micro-fragment (<400 ms, gap 80 ms, same speaker) that must merge backward
+        RawSegment(5580, 5850, "nhé!", speaker=""),
+        # Short text (49 chars <= 84) but overlong duration (12_000 ms > 7_000 ms) with 2 clauses
+        RawSegment(
+            6000,
+            18_000,
+            "Mệnh đề thứ nhất ở đây, mệnh đề thứ hai tiếp nối.",
+            speaker="SPEAKER_01",
+        ),
+    ]
+    cues = normalize_asr_segments_to_cues(segments, max_chars=84, max_duration_ms=7000)
+    assert len(cues) == 3
+    assert cues[0].text == "Xin chào mọi người. nhé!"
+    assert cues[0].speaker == ""
+    assert cues[0].start_ms == 4000 and cues[0].end_ms == 5850
+    assert cues[1].text == "Mệnh đề thứ nhất ở đây,"
+    assert cues[2].text == "mệnh đề thứ hai tiếp nối."
+    assert cues[1].duration_ms <= 7000
+    assert cues[2].duration_ms <= 7000
+
+
 def test_transcribe_with_faster_whisper_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -29,11 +29,17 @@ import numpy as np
 
 from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
 from vienetts_app.core.audio import write_wav_file
-from vienetts_app.core.subtitles import Cue, clean_cue_text, parse_cues
+from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
 _WHISPER_PP_RE = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
+_NON_SPEECH_TOKEN_RE = re.compile(
+    r"(?:\[\s*(?:blank_audio|music|applause|laughter|silence|noise|inaudible|sound|sfx|cheering|cough|sigh)\s*\]"
+    r"|\(\s*(?:blank_audio|music|applause|laughter|silence|noise|inaudible|sound|sfx|cheering|cough|sigh)\s*\)"
+    r"|[♪♫]+)",
+    re.IGNORECASE,
+)
 MODEL_SAMPLE_RATE = 16_000
 SHARED_WAV_FILENAME = "source_16k.wav"
 WAV_INPUT_16K_FILENAME = "input_16k.wav"
@@ -75,6 +81,14 @@ class RawSegment:
     speaker: str = ""
 
 
+def _strip_non_speech(text: str) -> str:
+    stripped = _NON_SPEECH_TOKEN_RE.sub(" ", text or "")
+    cleaned = clean_cue_text(stripped)
+    if not cleaned or not any(ch.isalnum() for ch in cleaned):
+        return ""
+    return cleaned
+
+
 def _split_long_segment(
     seg: RawSegment,
     *,
@@ -88,12 +102,16 @@ def _split_long_segment(
     if len(text) <= max_chars and duration <= max_duration_ms:
         return [RawSegment(seg.start_ms, max(seg.start_ms + 1, seg.end_ms), text, seg.speaker)]
 
-    # Split at clause boundaries first, then word boundaries if still over max_chars.
+    eff_max_chars = max_chars
+    if max_duration_ms > 0 and duration > max_duration_ms:
+        eff_max_chars = min(max_chars, max(12, int(len(text) * max_duration_ms / duration)))
+
+    # Split at clause boundaries first, then word boundaries if still over eff_max_chars.
     clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(text) if c.strip()]
     chunks: list[str] = []
     current = ""
     for clause in clauses:
-        if len(clause) > max_chars:
+        if len(clause) > eff_max_chars:
             if current:
                 chunks.append(current)
                 current = ""
@@ -101,7 +119,7 @@ def _split_long_segment(
             buf = ""
             for w in words:
                 cand = f"{buf} {w}".strip() if buf else w
-                if len(cand) > max_chars and buf:
+                if len(cand) > eff_max_chars and buf:
                     chunks.append(buf)
                     buf = w
                 else:
@@ -110,7 +128,7 @@ def _split_long_segment(
                 chunks.append(buf)
         elif not current:
             current = clause
-        elif len(current) + 1 + len(clause) <= max_chars:
+        elif len(current) + 1 + len(clause) <= eff_max_chars:
             current = f"{current} {clause}"
         else:
             chunks.append(current)
@@ -144,12 +162,15 @@ def normalize_asr_segments_to_cues(
     """Clean, merge micro-fragments, split overlong segments, and return numbered ``Cue``s."""
     cleaned: list[RawSegment] = []
     for seg in segments:
-        txt = clean_cue_text(seg.text)
+        txt = _strip_non_speech(seg.text)
         if not txt:
             continue
+        raw_spk = str(seg.speaker or "").strip()
+        norm_spk = raw_spk.upper().replace(" ", "_").replace("-", "_")
+        spk = "" if norm_spk in NON_SPEECH_LABELS else raw_spk
         s_ms = max(0, int(seg.start_ms))
         e_ms = max(s_ms + 1, int(seg.end_ms))
-        cleaned.append(RawSegment(s_ms, e_ms, txt, str(seg.speaker or "").strip()))
+        cleaned.append(RawSegment(s_ms, e_ms, txt, spk))
 
     if not cleaned:
         return []
@@ -176,9 +197,24 @@ def normalize_asr_segments_to_cues(
             )
             i += 1
             continue
+        if (
+            dur < 400
+            and merged
+            and merged[-1].speaker == curr.speaker
+            and (curr.start_ms - merged[-1].end_ms) <= 150
+            and len(merged[-1].text) + 1 + len(curr.text) <= max_chars
+        ):
+            prev = merged[-1]
+            merged[-1] = RawSegment(
+                prev.start_ms,
+                curr.end_ms,
+                f"{prev.text} {curr.text}",
+                prev.speaker,
+            )
+            i += 1
+            continue
         merged.append(curr)
         i += 1
-
     split_all: list[RawSegment] = []
     for seg in merged:
         split_all.extend(

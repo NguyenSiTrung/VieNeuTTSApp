@@ -205,3 +205,11 @@ def test_speaker_prefix_parsing_and_formatting() -> None:
     with_speakers = format_srt(cues, include_speakers=True)
     assert "[SPEAKER_01] Xin chào." in with_speakers
     assert parse_cues(with_speakers) == cues
+
+    # Non-speech bracket tags from Whisper must not be parsed as speaker labels
+    non_speech_srt = (
+        "1\n00:00:00,000 --> 00:00:01,500\n[BLANK_AUDIO]\n\n"
+        "2\n00:00:02,000 --> 00:00:03,500\n[MUSIC] Xin chào các bạn.\n"
+    )
+    parsed = parse_cues(non_speech_srt)
+    assert parsed == [Cue(1, 2_000, 3_500, "Xin chào các bạn.", speaker="")]

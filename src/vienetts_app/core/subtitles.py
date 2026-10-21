@@ -41,7 +41,23 @@ _WS_RE = re.compile(r"\s+")
 _SPEAKER_PREFIX_RE = re.compile(
     r"^(?:\[(?P<b_spk>[A-Za-z0-9_ -]{1,32})\]:?\s+|(?P<c_spk>SPEAKER_\d+):\s+)"
 )
-
+NON_SPEECH_LABELS: frozenset[str] = frozenset(
+    {
+        "MUSIC",
+        "BLANK_AUDIO",
+        "APPLAUSE",
+        "LAUGHTER",
+        "SILENCE",
+        "NOISE",
+        "INAUDIBLE",
+        "SOUND",
+        "SFX",
+        "CHEERING",
+        "COUGH",
+        "SIGH",
+    }
+)
+_STANDALONE_NON_SPEECH_RE = re.compile(r"^\[(?P<label>[A-Za-z0-9_ -]{1,32})\]$")
 #: One ``HH:MM:SS,mmm`` stamp (1-3 fractional digits, ``,`` or ``.`` decimal).
 _STAMP = r"(?P<h{n}>\d{{1,3}}):(?P<m{n}>\d{{1,2}}):(?P<s{n}>\d{{1,2}})[,.](?P<f{n}>\d{{1,3}})"
 
@@ -177,10 +193,20 @@ def parse_cues(source: str) -> list[Cue]:
             body.pop()
         body_text = clean_cue_text(" ".join(body))
         speaker = ""
+        only_match = _STANDALONE_NON_SPEECH_RE.match(body_text)
+        if (
+            only_match is not None
+            and only_match.group("label").strip().upper().replace(" ", "_").replace("-", "_")
+            in NON_SPEECH_LABELS
+        ):
+            continue
         spk_match = _SPEAKER_PREFIX_RE.match(body_text)
         if spk_match is not None:
-            speaker = (spk_match.group("b_spk") or spk_match.group("c_spk") or "").strip()
+            cand_spk = (spk_match.group("b_spk") or spk_match.group("c_spk") or "").strip()
+            norm_spk = cand_spk.upper().replace(" ", "_").replace("-", "_")
             body_text = body_text[spk_match.end() :].strip()
+            if norm_spk not in NON_SPEECH_LABELS:
+                speaker = cand_spk
         if not body_text:
             continue
         start_ms = _match_ms(match, "1")

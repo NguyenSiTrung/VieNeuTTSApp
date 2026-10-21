@@ -1,44 +1,62 @@
 {
-  "timestamp": "2026-10-20T14:25:00+07:00",
+  "timestamp": "2026-10-21T13:20:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 11 tracks archived under conductor/archive/); bead VieNeuTTSApp-eet9 (Video Dubbing Studio enhancements) closed and exported to .beads/issues.jsonl in 12734a0. 456 total issues: 46 open (0 in_progress, 5 blocked, 41 ready), 409 closed — zero plan.md/Beads drift. Gates: ruff check . and ruff format --check . (212 files) are green; scripts/update_i18n.sh is 100% synchronized (991/991 finished, 0 unfinished).",
+  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 11 tracks archived under conductor/archive/); zero plan.md/Beads drift. 463 total issues: 46 open (0 in_progress, 5 blocked, 41 ready), 416 closed — up from 456/409 at the 2026-10-20 refresh. Closed since last refresh: epic VieNeuTTSApp-4kht (Video Dubbing hardening, 3 phases) with children 4kht.1/.2/.3, plus vxil (video subtitle burn-in style/correctness/UX, 10 audit findings fixed in d7b8721), ni2i (.webm/.avi soft-subtitle embed), poph (burn-in option). Blocked set unchanged (5 nqx.* tasks awaiting real-device verification). Gates: ruff check . green; ruff format --check . arrived RED with 5 files of debt and was fixed in this refresh (212 files green); scripts/update_i18n.sh 1012/1012 finished, 0 unfinished, 0 vanished.",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "feature 9 notes Video Dubbing Studio enhancements (12734a0, bead eet9: SubtitleStudioMeta video/speaker_voices fields, per-speaker StudioClip voice context & regen pre-selection, 1-click studioExportVideo splice+mux, and studioPlayOriginalCue source video audio audition)",
-        "feature 11 & feature 15 note promotion of subtitles ('Lồng tiếng & Phụ đề', SubtitlesTab.qml) to a dedicated 6th top-level sidebar destination and responsive two-column SubtitleCard workstation (aef1d87)",
-        "Implementation Status dated 2026-10-20; suite count updated to 1532 collected / 1514 selected (18 benchmark deselected, +2 items)",
-        "refresh marker 2026-10-20"
+        "Implementation Status re-dated to 2026-10-21 with the real current gate: ruff check + format --check green (212 files), suite 1541 collected / 1523 selected (18 benchmark deselected), full pytest 1517 passed + 4 skipped plus 2-4 varying loaded-host flakes",
+        "replaced the stale 'exactly one red test' claim with the loaded-host flake family and its proof that every member reproduces at e08a58e (not a regression)",
+        "feature 11 gains the soft-vs-burned subtitle embed mode (6e7c747 + d7b8721, beads poph/ni2i/vxil): subtitleEmbedMode persisted per project, generated ASS burn-in with PlayRes-matched ratios and bundled Be Vietnam Pro fontsdir, WebVTT track for .webm, explicit .avi hint, HDR bit-depth preservation, ASS escaping, language tagging, ffmpeg progress relay and dub-overrun warning",
+        "feature 15 corrected: 'five destinations replaced the six-tab sidebar' plus the sixth (Lồng tiếng & Phụ đề) promoted in aef1d87",
+        "suite-size history extended with +9 items from the 2026-10-20/21 burn-in batch",
+        "new refresh marker for 2026-10-21"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "refresh marker 2026-10-20: no root pyproject/uv.lock dep drift; dedicated SubtitlesTab promotion (aef1d87) and Video Dubbing Studio enhancements (12734a0, bead eet9); suite 1532/1514",
-        "Audio & File Import: SubtitlesTab.qml destination promotion (aef1d87) and Studio video dubbing metadata, per-speaker voice context, 1-click studioExportVideo, and studioPlayOriginalCue (12734a0)",
-        "Build & Dev Tooling: post-v0.3.0 on main summary updated with aef1d87 and 12734a0 (bead eet9)"
+        "File Import > core/video_dub.py expanded with the burn-in pipeline: probe_video_info, _burn_style/_fit_cue/_wrap_lines/_ass_escape, the _BURN_* ratio constants, FONTS_DIR, _burn_pix_fmt, WebVTT/.avi container rules, subtitle_language tagging, opt-in clamp_to_video, and the ~228x cost of a frame-touching filter",
+        "Build & Dev Tooling post-v0.3.0 summary extended with d17a261, 1661604 and the 6e7c747 + d7b8721 burn-in batch; suite 1541/1523; ruff green at 212 files",
+        "refresh marker 2026-10-21: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0)"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "refresh marker 2026-10-20: suite 1532 collected / 1514 selected (+2 items across aef1d87 and 12734a0); scripts/update_i18n.sh 991/991 finished (resolving 72db0c1..ab1aad1 i18n note); ruff check + format --check green (212 files)",
-        "Testing: suite-size history updated to 1532 collected / 1514 selected"
+        "Testing: 'exactly one red test' corrected to one documented red test, plus a new loaded-host flake bullet naming every recurring member (test_qwen_host TestFrameLoop/TestTorchPosture triton TORCH_LIBRARY race, test_qwen_engine TestInitialize, test_controller TestBgOpsAsync, test_replay_transport, and the two smoke flakes) with the isolation re-run procedure",
+        "Testing: new bullet that the format gate is ruff format --check (not just ruff check), citing this refresh's 5-file debt",
+        "suite-size history extended to 1541 collected / 1523 selected (+9 from d17a261/6e7c747/d7b8721)",
+        "refresh marker 2026-10-21 recording the format debt, the i18n 1012/1012 state, and the flake baseline"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "tiered-pytest and suite-size entries updated to 1532 collected / 1514 selected (2026-10-20)",
-        "Architecture: updated navigation pattern for 6th top-level SubtitlesTab destination (aef1d87) and windowed SRT-in-Studio pattern for per-speaker voice context & 1-click studioExportVideo (12734a0, bead eet9)"
+        "added 12 patterns: burn-in pipeline + ASS/PlayRes/fontsdir discipline, bit-depth preservation and ffmpeg -progress for re-encoding filters, sparse fingerprint-payload evolution, engine generation counters, per-field settings clamping, argparse choices breaking a one-JSON-result contract, QML singletons needing BOTH qmldirs, Loader.status/wait_for_tabs, onXChanged binding order, Slider pressed on arrow-key steps, and the loaded-host flake baseline",
+        "corrected 14 stale bullets: the CI claims (ci.yml removed 2026-10-10 in 88f6dbb), QT_AUDIO_BACKEND actor, attach_synthesis_listener (removed; it is submit_stream_for_listener per job and never sets busy), setCreateMode('subtitles') (a NO-OP, not a redirect), one shared TransportDock per screen (Create only), MultiEffect card elevation (now RectangularShadow), and the dead ModeTabs/SynthesisBar/ParagraphTab/TextTab/StudioRackModule/StudioParamRow components",
+        "suite counts rolled to 1541 collected / 1523 selected; bullet count 179 -> 191",
+        "Last refreshed footer rewritten with the full audit trail"
       ]
     }
   ],
   "learnings_consolidation": {
-    "new_patterns_added": 0,
-    "patterns_updated": 3,
-    "source": "Consolidated from commits aef1d87 (SubtitlesTab top-level destination) and 12734a0 (bead VieNeuTTSApp-eet9: Video Dubbing Studio enhancements)"
+    "tracks_scanned": 11,
+    "learnings_lines_scanned": 2796,
+    "patterns_examined": 179,
+    "new_patterns_added": 12,
+    "stale_patterns_corrected": 14,
+    "merge_candidates_identified": 8,
+    "merge_candidates_applied": 0,
+    "source": "Audited all 11 archived track learnings against the code; every proposed change was verified in the working tree before it was applied (attach_synthesis_listener = 0 hits in src/, ModeTabs/SynthesisBar/ParagraphTab/TextTab/StudioRackModule/StudioParamRow absent, MultiEffect = 0 QML refs, TransportDock instantiated once in CreateTab.qml, CREATE_MODES has no 'subtitles'). Merge candidates were reported but NOT applied - they are cosmetic deduplication of ~22 bullets and were left for a dedicated pass."
   },
-  "commits_since_last_refresh": "489f3d6..12734a0 (2 commits: aef1d87 dedicated SubtitlesTab promotion + English i18n completion; 12734a0 Video Dubbing Studio support with speaker voices, 1-click video export, and original cue audition)"
+  "gate_debt_fixed": {
+    "ruff_format": "5 files reformatted: src/vienetts_app/core/asr.py, src/vienetts_app/core/diarization.py, src/vienetts_app/core/llm_refine.py, src/vienetts_app/core/subtitle_project.py, tests/unit/test_diarization.py. Debt introduced by d17a261 and 6e7c747 (the latter left the tree with the gate already RED). Verified: ruff format --check . -> 212 files already formatted; ruff check . -> All checks passed; affected suites (test_diarization, test_asr, test_llm_refine, test_subtitle_project) 33 passed."
+  },
+  "known_baseline_failures": {
+    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy; passed on this run)",
+    "loaded_host_flakes": "2-4 varying failures per full -n auto run on this 18-core host at load avg ~9-11, all passing in isolation and ALL reproducing at the previous refresh commit e08a58e, so none is a regression from this batch. Chief cause: 'RuntimeError: Only a single TORCH_LIBRARY can be used to register the namespace triton' when several xdist workers import torch concurrently (reproduced ~1-in-3 under -n 8 at e08a58e; related to open bead VieNeuTTSApp-xevl)."
+  },
+  "commits_since_last_refresh": "e08a58e..565fe23 (7 commits: d17a261 video dubbing/diarization/muxing/subtitle-studio hardening; 1661604 VoicePicker popup clipping/padding + SubtitleCard layout; 6e7c747 burn-in subtitle option + webm/avi embed fixes; d7b8721 styled ASS burn-in, HDR preservation, export progress; c29df02/ffd0015/565fe23 beads export + close sync chores)"
 }

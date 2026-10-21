@@ -1,6 +1,7 @@
 # VieNeuTTS Desktop App — Development Workflow
 
 <!-- refreshed 2026-10-20: suite now 1532 collected / 1514 selected (18 benchmark deselected; verified live via pytest --collect-only -q). +2 test items across dedicated SubtitlesTab promotion (aef1d87: test_bridge.py, test_i18n.py, test_ui_shell.py, test_ui_studio.py, test_ui_tabs.py) and Video Dubbing Studio enhancements (12734a0, bead eet9: test_studio.py, test_studio_controller.py, test_ui_studio.py). scripts/update_i18n.sh is 100% clean (991/991 finished, 0 unfinished — resolving the unextracted string note from 72db0c1..ab1aad1). ruff check . and ruff format --check . (212 files) are green -->
+<!-- refreshed 2026-10-21: suite now 1541 collected / 1523 selected (18 benchmark deselected; verified live via pytest --collect-only -q). +9 items across the subtitle burn-in / embed-mode batch (d17a261: test_diarization.py, test_llm_refine.py, test_studio.py, test_studio_controller.py, test_subtitle_controller.py, test_video_dub.py, test_ui_tabs.py; 6e7c747: test_video_dub.py, test_subtitle_project.py; d7b8721: test_video_dub.py). scripts/update_i18n.sh is 100% clean (1012/1012 finished, 0 unfinished, 0 vanished). ruff check . passes but ruff format --check . arrived RED with 5 files of debt (core/asr.py, core/diarization.py, core/llm_refine.py, core/subtitle_project.py, tests/unit/test_diarization.py) — reformatted in this refresh, now 212 files green. Full runs on a loaded host flake 2–4 varying tests, all reproducing at e08a58e (see the loaded-host flake bullet in Testing) -->
 <!-- refreshed 2026-10-19 (2): suite now 1530 collected / 1512 selected (18 benchmark deselected; verified live via pytest --collect-only -q). +26 test items across windowed SRT Studio integration (e94d045..02b9181, bead n5ts: test_studio.py, test_subtitle_project.py, test_studio_controller.py, test_ui_studio.py), SubtitleCard exportFormat label i18n (cf39f07: test_i18n.py, test_ui_tabs.py), and Video Dubbing / Whisper ASR / Speaker Diarization / LLM Refinement / AI Model Downloads (ba69a5a..ab1aad1, epic b3nq: new suites test_video_dub.py, test_asr.py, test_diarization.py, test_llm_refine.py, test_ai_models.py plus test_align.py, test_settings.py, test_subtitles.py, test_subtitle_controller.py, test_ui_tabs.py). ruff check . and ruff format --check . (212 files) are green (the controller.py formatting debt from 2f44ee1 was fixed in cee60ed); note that new user-facing qsTr/self.tr strings added in 72db0c1..ab1aad1 have not yet been extracted with scripts/update_i18n.sh -->
 <!-- refreshed 2026-10-19 (test diet, bead 7coj + 2f44ee1): suite now 1504 collected / 1486 selected (18 benchmark deselected; verified live via pytest --collect-only -q). Bead 7coj (d6f70bb..3a5ed39, closed 10b8042) folded 381 overlapping unit tests into multi-scenario cases across 25 test files (-20.4%, wall ~91s -> ~72.5s, all assertions retained); 2f44ee1 added 1 test in test_updates.py. On linux-aarch64 the x64-cell baseline is now 6 items (was 7 before 4 TestInstallPacks items merged into 3; beads 4jwz/x898). Release v0.3.0 fixes: 0d190da moved test_ui_shell.py's ~70 KB driver to a temp file (Windows 32 KB argv cap) with per-scenario stderr markers + faulthandler timeout dump; 8db2677 skips modal crash dialogs under QT_QPA_PLATFORM=offscreen/minimal -->
 <!-- refreshed 2026-10-12 (test diet): suite now 1884 collected / 1866 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke); -37 low-value items in the inference-worker/voice-profiles/protocol/text-metrics/gguf-build/macos/pcm-transport batch — parametrize collapses (identical code paths), same-function merges with all assertions retained, and constructor-arg-echo / already-covered duplicate drops; a planned wider fan-out was stopped early, so this is a partial pass -->
@@ -33,11 +34,35 @@
 - On linux-aarch64 hosts, 6 Qwen/GGUF tests fail on a clean tree (no arm64
   host cell in the manifests; was 7 before `7coj` merged 4 `TestInstallPacks` items into 3; beads `VieNeuTTSApp-4jwz` / `VieNeuTTSApp-x898`) — a known baseline,
   like the real-`QAudioSink` smoke below.
-- A local `pytest` run on a device-less host is expected to show exactly one
-  red test: `test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
+- A local `pytest` run on a device-less host is expected to show one
+  documented red test: `test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
   (real `QAudioSink` never drains; CI-skipped, bead `VieNeuTTSApp-3iy`). Judge
   the gate on the rest of the run — do not "fix" it by editing app code, and
   do not treat it as a regression from the current change.
+- **Loaded-host flake family (2026-10-21 refresh).** A full `-n auto` run on a
+  busy machine (this 18-core host at load avg ~9–11 with a desktop browser open)
+  typically also fails 2–4 tests that VARY between runs and all pass in
+  isolation. Confirmed at both `e08a58e` (the previous refresh commit) and
+  `HEAD`, so they are a pre-existing baseline, not regressions. Recurring
+  members: `test_qwen_host.py::TestFrameLoop` (`test_session_lifecycle`,
+  `test_cancel_frames`, `test_transition_and_pipes`) and
+  `TestTorchPosture::test_generation_runs_under_inference_mode_when_torch_has_it`
+  raising `RuntimeError: Only a single TORCH_LIBRARY can be used to register the
+  namespace triton` when several xdist workers import torch concurrently
+  (reproduced ~1 run in 3 under `-n 8`; related to open bead
+  `VieNeuTTSApp-xevl`), plus `test_qwen_engine.py::TestInitialize::test_spawn_failures`,
+  `test_controller.py::TestBgOpsAsync::test_file_io_runs_on_pool_and_lands_via_queued_signal`,
+  `test_replay_transport.py::test_pause_keeps_position_and_resume_continues`, and
+  the two long-standing smoke flakes
+  (`TestAudiobookTabSmoke::test_waveform_render_progress_interactions_and_render_all`,
+  `TestStreamLifecycleSmoke::test_stream_cancel_cross_tab_and_error_recovery`).
+  Procedure: re-run any suspect test in isolation (`pytest <nodeid> -q`) before
+  calling it a regression, and prefer `-n 4` for a clean read on a loaded box.
+- **The format gate is `ruff format --check`, not `ruff check`.** This refresh
+  again found the gate RED (`d17a261`/`6e7c747` left 5 files unformatted:
+  `core/asr.py`, `core/diarization.py`, `core/llm_refine.py`,
+  `core/subtitle_project.py`, `tests/unit/test_diarization.py`) while
+  `ruff check .` passed. Run both before every commit.
 - Merge same-function micro-tests instead of piling parameter rows
   (2026-09-06…10 consolidation: 1029 → 872 items collected / 860 selected,
   12 benchmark cases deselected; 2026-09-14: the SRT subtitle studio took the
@@ -54,7 +79,7 @@
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
   1742 selected**; 2026-10-09: the perf hardening track added coverage →
-  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial, `57634dc`) → **1884 collected / 1866 selected**; 2026-10-12 full semantic-merge pass (bead `7coj`, `d6f70bb..3a5ed39`, -381 items across 25 unit files) + `2f44ee1` → **1504 collected / 1486 selected**; 2026-10-19 SRT Studio + Video Dubbing/ASR/Diarization/LLM (`n5ts` + `cf39f07` + `b3nq` + `ab1aad1`, +26 items) → **1530 collected / 1512 selected**; 2026-10-20 `SubtitlesTab` promotion + Video Dubbing Studio (`aef1d87` + `12734a0`, bead `eet9`, +2 items) → **1532 collected / 1514 selected**).
+  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial, `57634dc`) → **1884 collected / 1866 selected**; 2026-10-12 full semantic-merge pass (bead `7coj`, `d6f70bb..3a5ed39`, -381 items across 25 unit files) + `2f44ee1` → **1504 collected / 1486 selected**; 2026-10-19 SRT Studio + Video Dubbing/ASR/Diarization/LLM (`n5ts` + `cf39f07` + `b3nq` + `ab1aad1`, +26 items) → **1530 collected / 1512 selected**; 2026-10-20 `SubtitlesTab` promotion + Video Dubbing Studio (`aef1d87` + `12734a0`, bead `eet9`, +2 items) → **1532 collected / 1514 selected**; 2026-10-21 subtitle burn-in / embed-mode batch (`d17a261` + `6e7c747` + `d7b8721`, beads `4kht`/`poph`/`ni2i`/`vxil`, +9 items) → **1541 collected / 1523 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

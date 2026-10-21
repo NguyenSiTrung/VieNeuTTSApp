@@ -16,6 +16,7 @@
 <!-- refreshed 2026-10-19: no external dep drift (app v0.3.0 in pyproject.toml/uv.lock since 723948c; tagged v0.3.0 at 8db2677 after 0d190da file-based shell driver and 8db2677 offscreen/minimal crash-dialog guard). Post-v0.3.0 on main: Ko-fi support links in sidebar, Settings > Updates, README, and .github/FUNDING.yml (2f44ee1, coffee icon in AppIcon.qml, KOFI_URL in core/updates.py, controller.supportUrl); suite reduced ~20% via semantic merges (57634dc + bead 7coj d6f70bb..3a5ed39) to 1504 collected / 1486 selected (18 benchmark deselected, verified live 2026-10-19) -->
 <!-- refreshed 2026-10-19 (2): no root pyproject/uv.lock dep drift. Post-v0.3.0 on main: (1) Windowed SRT Studio integration (e94d045..02b9181, bead n5ts): ranged WAV reads (`read_wav_range` in `core/audio.py`), bounded 50-cue Studio window loader (`load_project_from_subtitle`, `refit_subtitle_clips`, `set_subtitle_clip_speed` in `core/studio.py`), and 64k-frame chunked save-back (`splice_studio_window_into_subtitle` in `core/subtitle_project.py`); (2) SubtitleCard export button label bound to `exportFormat` (cf39f07); (3) End-to-end Video Dubbing, Whisper ASR, Speaker Diarization, LLM Refinement & Managed AI Model Downloads (ba69a5a..ab1aad1, epic b3nq): `core/video_dub.py` (ffmpeg audio extraction + `-c:v copy` video muxing with `replace`/`duck` mix and soft subtitles), `core/asr.py` (`faster-whisper` / `whisper.cpp` CLI / `openai-whisper` / OpenAI-compatible `/audio/transcriptions` + clause-aware segment normalization), `core/diarization.py` (`nemotron_gguf` via `audiocpp_cli --mode diarize` on CPU/GPU + NVIDIA NeMo RTTM + zero-dep NumPy acoustic clustering + 1-click reference clip extraction for voice cloning), `core/llm_refine.py` (stdlib-urllib OpenAI-compatible `/chat/completions` for `refine_asr`/`fit_timing`/`translate_dub`), and `core/ai_models.py` + `SettingsModels.qml` (`settingsAiDubbingCard` downloads for Whisper GGUF, `audio-cpp/Nemotron-3-Diarization-GGUF` Q8_0/BF16, and `0xShug0/audio.cpp` v0.9.2 `audiocpp_cli`); suite now 1530 collected / 1512 selected (18 benchmark deselected, verified live 2026-10-19) -->
 <!-- refreshed 2026-10-20: no root pyproject/uv.lock dep drift. Post-v0.3.0 on main: (1) Dedicated top-level `SubtitlesTab.qml` (`Lồng tiếng & Phụ đề`, `aef1d87`): promoted `subtitles` to a sixth destination in `ShellBridge.TABS`, narrowed `CreateTab` `CREATE_MODES` to `compose`/`document`/`files`, rebuilt `SubtitleCard.qml` into a responsive two-column workstation, and finished all 991 English i18n catalog entries (`vienetts_en.ts`/`.qm`); (2) Video Dubbing Studio integration (`12734a0`, bead `eet9` closed): `SubtitleStudioMeta` video/mix/speaker_voices metadata, per-speaker `StudioClip.voice` & `SynthesisContext` resolution with `studioRegenDialog` voice pre-selection, 1-click `controller.studioExportVideo` window splice + `-c:v copy` muxing, and `controller.studioPlayOriginalCue` source video slice audition; suite now 1532 collected / 1514 selected (18 benchmark deselected, verified live 2026-10-20) -->
+<!-- refreshed 2026-10-21: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0 — `pyproject.toml` and `uv.lock` untouched since `e08a58e`). Post-v0.3.0 on main: (1) video-dubbing hardening `d17a261` (`core/video_dub.py`, `core/diarization.py`, `core/asr.py`, `core/llm_refine.py`, `core/subtitle_project.py`, `core/studio.py`, `ui/subtitle_controller.py`, `ui/controller.py`: muxing/diarization correctness, inline cue editing, per-speaker sample audition, AI progress bars, Studio staged-ops auto-commit, 15 new QML objectNames incl. `subtitleCueEditButton`/`subtitleSpeakerSampleButton`/`studioEmbedSrtToggle`); (2) `1661604` VoicePicker popup window-edge clipping/padding + `SubtitleCard` layout; (3) soft-vs-burned subtitle embed mode `6e7c747` + `d7b8721` (beads `poph`/`ni2i`/`vxil` closed): `subtitleEmbedMode` persisted per project (`core/subtitle_project.py`, `soft` default), generated ASS burn-in (`probe_video_info` + `_burn_style`/`_fit_cue`/`_ass_escape`/`_wrap_lines`, PlayRes-matched ratios, `_BURN_MAX_LINES = 3` with adaptive shrink, bundled Be Vietnam Pro `fontsdir`, `_burn_pix_fmt` HDR bit-depth preservation), WebVTT soft track for `.webm`, explicit `.avi` no-soft-track hint, `subtitle_language` tagging, ffmpeg `-progress` relay + dub-overrun warning, opt-in `clamp_to_video`; suite now 1541 collected / 1523 selected (18 benchmark deselected, verified live 2026-10-21); `ruff check .` + `ruff format --check .` green after reformatting 5 files of debt (212 files) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -285,7 +286,24 @@ an explicit stored choice is never overridden):
   - `core/video_dub.py`: companion `.srt`/video discovery, `ffmpeg` audio
     extraction (full or `[start_ms, end_ms]` slices), and `-c:v copy`
     stream-copy video muxing (`replace` or `duck` background audio mix +
-    container-aware soft `.srt` embedding).
+    container-aware soft `.srt` embedding). Since 2026-10-20/21 (`6e7c747` +
+    `d7b8721`, beads `poph`/`ni2i`/`vxil`) also **burns subtitles into the
+    picture**: `probe_video_info` (never raises — burn-in must work when
+    ffprobe is absent) feeds `_burn_style`/`_fit_cue`, which emit a generated
+    **ASS** script (`_ass_timestamp`, `_ass_escape`, `_wrap_lines`) with
+    `PlayRes` pinned to the real frame, `_BURN_FONT_SIZE_RATIO` /
+    `_BURN_MARGIN_X_RATIO` / `_BURN_MARGIN_V_RATIO` / `_BURN_OUTLINE_RATIO` /
+    `_BURN_SHADOW_RATIO` as fractions of the picture, a `_BURN_MAX_LINES = 3`
+    cap with adaptive shrink down to `_BURN_MIN_FONT_SCALE = 0.55`
+    (`_BURN_ABS_MAX_LINES = 5` floor), and `fontsdir` pointing at the bundled
+    Be Vietnam Pro (`FONTS_DIR`). `_burn_pix_fmt` keeps the source bit depth so
+    HDR 10-bit footage stays 10-bit instead of being force-tagged `yuv420p`.
+    `.webm` gets a WebVTT soft track, `.avi` reports that it cannot carry one,
+    soft tracks are tagged with `subtitle_language` instead of `und`, and
+    `clamp_to_video` is opt-in (speech is never truncated). Burn-in is ~228×
+    slower than a soft track, so ffmpeg `-progress` is relayed to a Qt slot and
+    a dub-overrun warning is surfaced. The mode persists per project as
+    `subtitleEmbedMode` (`core/subtitle_project.py`, `soft` default).
   - `core/asr.py`: on-device Whisper (`faster-whisper` with VAD, `whisper.cpp`
     `whisper-cli` with local GGUF/bin weights, `openai-whisper`) or
     OpenAI-compatible `/audio/transcriptions`, plus clause-aware cue
@@ -434,7 +452,15 @@ an explicit stored choice is never overridden):
   workstation (`aef1d87`); and Video Dubbing Studio support with per-speaker
   voice context, 1-click `studioExportVideo` splice+mux, and
   `studioPlayOriginalCue` original video audio audition (`12734a0`, bead
-  `eet9`).
+  `eet9`). Post-v0.3.0 on `main` (2026-10-20/21): video-dubbing hardening
+  (`d17a261` — diarization/muxing correctness, inline cue editing, per-speaker
+  sample audition, AI progress bars, Studio staged-ops auto-commit),
+  `VoicePicker` popup clipping/padding + `SubtitleCard` layout (`1661604`), and
+  the soft-vs-burned subtitle embed mode with styled ASS burn-in, HDR bit-depth
+  preservation, and streamed export progress (`6e7c747` + `d7b8721`, beads
+  `poph`/`ni2i`/`vxil`). Test suite 1541 collected / 1523 selected (18
+  benchmark deselected); `ruff check .` + `ruff format --check .` green (212
+  files); no root dependency drift (`pyproject.toml` / `uv.lock` untouched).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

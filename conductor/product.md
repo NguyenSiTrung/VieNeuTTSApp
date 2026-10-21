@@ -172,6 +172,24 @@ short snippet to a full document, fully offline.
       slices), and zero-reencode video muxing (`-c:v copy`, `replace` or `duck`
       background audio mix with `video_bg_gain_db`, and container-aware soft
       `.srt` embedding).
+    - **Soft-vs-burned subtitle embed mode (2026-10-20/21, `6e7c747` + `d7b8721`,
+      beads `poph` / `ni2i` / `vxil`)**: a per-project "Kiểu phụ đề" choice
+      persisted as `subtitleEmbedMode` (`soft` default, or `burn` into the
+      picture), honoured by both the Subtitles-tab and Studio exports and
+      carried on `SubtitleStudioMeta` so the snapshot cannot drift. Burn-in
+      renders a generated **ASS** script rather than handing libass the raw
+      SRT — `PlayRes` pinned to the real frame, font/margins/outline as
+      fractions of the picture, a line cap with adaptive font shrinking, and
+      `fontsdir` pointing at the bundled Be Vietnam Pro — so a 1080×1920
+      portrait export lands at ~9.6 % height / 3 lines instead of libass's
+      21.6 % / 16 lines. `.webm` now carries a WebVTT soft track, `.avi`
+      explains that it cannot and points at burn-in, source bit depth is
+      preserved for HDR, cue text is escaped for ASS (`{…}`, backslashes, and
+      `-->` — which used to make ffmpeg re-parse the file into a silently
+      subtitle-free video), soft tracks are tagged with the ASR language
+      instead of `und`, and ffmpeg progress streams to the UI with a
+      dub-overrun warning (speech is never truncated; `clamp_to_video` is
+      opt-in).
     - **On-device & OpenAI-compatible Whisper ASR (`core/asr.py`)**: generate
       timestamped `Cue`s directly from video/audio via `faster-whisper` (with
       VAD), `whisper.cpp` CLI (`whisper-cli` + local GGUF/bin weights),
@@ -255,9 +273,11 @@ short snippet to a full document, fully offline.
     other engine knobs stay at SDK defaults until benchmarks justify a flip).
 
 15. **UI/UX shell redesign (track `ui_shell_redesign_20261010`, released in
-    v0.3.0; archived 2026-10-12)** — five destinations replace the six-tab sidebar:
+    v0.3.0; archived 2026-10-12)** — five destinations replaced the six-tab
+    sidebar (a sixth, **Lồng tiếng & Phụ đề**, was promoted on 2026-10-19 in
+    `aef1d87`; see feature 11):
     **Tạo giọng đọc** (one Create screen whose Soạn thảo / Tài liệu / Nhiều
-    tệp / Phụ đề modes share a single TransportDock, with a right-hand
+    tệp modes share a single TransportDock, with a right-hand
     inspector: current voice + audition, the three most recent voices
     persisted per engine profile, per-run speed/pause and the one live-preview
     toggle), **Sách nói** (library ⇄ book master–detail, full-height chapter
@@ -288,7 +308,7 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-10-20)
+## Implementation Status (2026-10-21)
 
 All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
@@ -297,18 +317,34 @@ engine track (`qwen_gguf_engine_20260923`, feature 13), the 2026-10-09
 perf track (`perf_hardening_20261009`, feature 14), the 2026-10-10 UI shell
 redesign track (`ui_shell_redesign_20261010`, feature 15), and bead-driven
 batches with no tracks. Current app version 0.3.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite grew with the SRT
-studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
-`-m 'not benchmark'`). Latest gate (2026-09-16): `ruff check .` and
-`ruff format --check .` pass (128 files); `pytest` 1054 passed + 1 failed in
-29.8 s on this host. The single failure is
+`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite now stands at
+1541 items collected / 1523 selected (18 benchmarks deselected via
+`-m 'not benchmark'`, verified live 2026-10-21 with `pytest --collect-only -q`).
+Latest gate (2026-10-21 refresh): `ruff check .` passes and
+`ruff format --check .` passes (212 files) — the format gate arrived RED with
+5 files of debt from `d17a261`/`6e7c747` (`core/asr.py`, `core/diarization.py`,
+`core/llm_refine.py`, `core/subtitle_project.py`, `tests/unit/test_diarization.py`)
+and was reformatted in this refresh. Full `pytest` on this 18-core host is
+~43–61 s under `-n auto` and reports 1517 passed + 4 skipped plus 2–4 FAILED
+that VARY run to run and all pass in isolation — a pre-existing loaded-host
+flake family, NOT a regression: every one of them reproduces at the previous
+refresh commit `e08a58e` too. The recurring members are
+`test_qwen_host.py::TestFrameLoop` (`test_session_lifecycle` / `test_cancel_frames`
+/ `test_transition_and_pipes` / `TestTorchPosture`) failing on a `RuntimeError:
+Only a single TORCH_LIBRARY can be used to register the namespace triton` race
+when several xdist workers import torch at once (reproduced 1-in-3 under `-n 8`
+at `e08a58e`), plus `test_qwen_engine.py::TestInitialize::test_spawn_failures`,
+`test_controller.py::TestBgOpsAsync`, `test_replay_transport.py`, and the two
+known smoke flakes below. Judge the gate on the rest of the run and re-run a
+suspect test in isolation before calling it a regression. The documented
+device-less-host failure remains
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 — a device-dependent real-`QAudioSink` smoke that passes in isolation but fails
 whenever it shares a run with other unit files (serially too, `-n 0`). It is
-`skipif`-guarded on `CI=true`, so CI is unaffected; the local guard only skips
+`skipif`-guarded on `CI=true`; the local guard only skips
 when sink construction raises or sets `errorText`, and on this device-less host
-the ffmpeg sink constructs "successfully" without draining. Filed at this
-refresh as bead `VieNeuTTSApp-3iy` (extends the b0t/o98 host-flake family).
+the ffmpeg sink constructs "successfully" without draining. Filed at the
+2026-09-16 refresh as bead `VieNeuTTSApp-3iy` (extends the b0t/o98 host-flake family).
 One pre-existing intermittent also remains under `-n auto`
 (`TestStreamLifecycleSmoke::test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery`
 — the `stream_cancel` `no_audio_retained` assert can flake on a loaded 14-worker
@@ -373,9 +409,11 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1532 collected / 1514 selected (18
+linux-aarch64. Suite at this refresh: 1541 collected / 1523 selected (18
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, and +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, and +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`)).
+
+<!-- refreshed 2026-10-21: 7 commits since `e08a58e` (`d17a261` video dubbing/diarization/muxing/subtitle-studio hardening, `1661604` VoicePicker popup clipping + SubtitleCard layout, `6e7c747` burn-in embed mode + webm/avi fixes, `d7b8721` styled ASS burn-in/HDR/progress, plus 3 beads-sync chores). Feature 11 gains the soft-vs-burn subtitle embed mode; feature 15 corrected to "five destinations replaced the six-tab sidebar, sixth (`subtitles`) promoted 2026-10-19 in `aef1d87`". Suite 1541 collected / 1523 selected (18 benchmark deselected, verified live); ruff format gate restored (5 files of debt from `d17a261`/`6e7c747` reformatted, 212 files green); no `pyproject.toml`/`uv.lock` dep drift; i18n 1012/1012 finished (0 unfinished, 0 vanished); beads 463 total / 46 open / 5 blocked / 416 closed (was 456 / 409 closed — `4kht` epic + children, `vxil`, `ni2i`, `poph` closed). Flake baseline rewritten: full runs flake 2–4 varying tests under load, all reproducing at `e08a58e` (triton `TORCH_LIBRARY` import race in `test_qwen_host`). -->
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->

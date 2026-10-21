@@ -137,6 +137,23 @@ def _clamp_engine_fields(data: dict) -> dict:
     ):
         logger.warning("Ignoring unknown asr_backend %r; falling back to auto", asr_backend)
         clamped.pop("asr_backend")
+    asr_device = clamped.get("asr_device")
+    if asr_device is not None and asr_device not in (
+        "auto",
+        "cpu",
+        "cuda",
+        "metal",
+    ):
+        logger.warning("Ignoring unknown asr_device %r; falling back to auto", asr_device)
+        clamped.pop("asr_device")
+    asr_threads = clamped.get("asr_threads")
+    if asr_threads is not None and (
+        isinstance(asr_threads, bool)
+        or not isinstance(asr_threads, int)
+        or not (0 <= asr_threads <= 64)
+    ):
+        logger.warning("Ignoring invalid asr_threads %r; falling back to 0", asr_threads)
+        clamped.pop("asr_threads")
     diar_backend = clamped.get("diarization_backend")
     if diar_backend == "nemo":
         # The removed backend never worked (the frozen runtime cannot import

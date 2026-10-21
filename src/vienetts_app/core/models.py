@@ -52,6 +52,7 @@ _QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
 # Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
 _QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 _ASR_BACKENDS = frozenset(("auto", "faster_whisper", "whisper_cpp", "openai_api"))
+_ASR_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 # Nemo is gone: the frozen Python runtime cannot import it, so the backend
 # silently degraded to the acoustic heuristic. settings.py migrates old files.
 _DIARIZATION_BACKENDS = frozenset(("auto", "nemotron_gguf", "acoustic"))
@@ -231,6 +232,8 @@ class Settings:
     asr_backend: str = "auto"
     asr_model: str = "base"
     asr_language: str = "auto"
+    asr_device: str = "auto"
+    asr_threads: int = 0
     diarization_backend: str = "auto"
     diarization_model: str = "nemotron-3-diarization-q8_0"
     diarization_max_speakers: int = 0
@@ -289,6 +292,13 @@ class Settings:
             raise ValueError("window_maximized must be a bool")
         self.recent_voices = _check_recent_voices(self.recent_voices)
         _check_choice("asr_backend", self.asr_backend, _ASR_BACKENDS)
+        _check_choice("asr_device", self.asr_device, _ASR_DEVICES)
+        if (
+            isinstance(self.asr_threads, bool)
+            or not isinstance(self.asr_threads, int)
+            or not (0 <= self.asr_threads <= 64)
+        ):
+            raise ValueError("asr_threads must be an integer in [0, 64]")
         _check_choice("diarization_backend", self.diarization_backend, _DIARIZATION_BACKENDS)
         if (
             isinstance(self.diarization_max_speakers, bool)

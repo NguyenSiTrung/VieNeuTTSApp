@@ -670,6 +670,7 @@ class AppController(QObject):
     aiSettingsChanged = Signal()
     llmTestChanged = Signal()
     aiModelsInstallChanged = Signal()
+    aiDownloadProgressChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -8270,7 +8271,12 @@ class AppController(QObject):
 
     @Property(str, notify=aiSettingsChanged)
     def asrModel(self) -> str:
-        return self._settings.asr_model
+        from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+        model = self._settings.asr_model
+        if model in WHISPER_GGUF_MODELS or model.lower().endswith((".gguf", ".bin")):
+            return model
+        return "base"
 
     @asrModel.setter
     def asrModel(self, value: str) -> None:
@@ -8288,6 +8294,30 @@ class AppController(QObject):
         if not isinstance(value, str):
             return
         self._set_setting("asr_language", value.strip() or "auto")
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrDevice(self) -> str:
+        return self._settings.asr_device
+
+    @asrDevice.setter
+    def asrDevice(self, value: str) -> None:
+        self._set_setting(
+            "asr_device",
+            str(value or "auto").strip().lower(),
+            allowed={"auto", "cpu", "cuda", "metal"},
+        )
+
+    @Property(int, notify=aiSettingsChanged)
+    def asrThreads(self) -> int:
+        return int(self._settings.asr_threads)
+
+    @asrThreads.setter
+    def asrThreads(self, value: int) -> None:
+        try:
+            clamped = max(0, min(64, int(value)))
+        except (TypeError, ValueError):
+            return
+        self._set_setting("asr_threads", clamped)
 
     @Property(str, notify=aiSettingsChanged)
     def diarizationBackend(self) -> str:
@@ -8447,10 +8477,34 @@ class AppController(QObject):
         return is_asr_model_installed(self.asrModel, self._data_dir)
 
     @Property(bool, notify=aiModelsInstallChanged)
+    def whisperCppInstalled(self) -> bool:
+        from vienetts_app.core.ai_models import is_whisper_cpp_installed
+
+        return is_whisper_cpp_installed(self._data_dir)
+
+    @Property(str, notify=aiModelsInstallChanged)
+    def whisperCppRuntimeVariant(self) -> str:
+        from vienetts_app.core.ai_models import installed_whisper_cpp_variant
+
+        return installed_whisper_cpp_variant(self._data_dir)
+
+    @Property(list, notify=aiModelsInstallChanged)
+    def whisperCppAvailableVariants(self) -> list[str]:
+        from vienetts_app.core.ai_models import available_whisper_cpp_variants
+
+        return sorted(available_whisper_cpp_variants())
+
+    def _whisper_cpp_runtime_variant(self) -> str:
+        from vienetts_app.core.ai_models import available_whisper_cpp_variants
+
+        device = self.asrDevice
+        return device if device in available_whisper_cpp_variants() else ""
+
+    @Property(bool, notify=aiModelsInstallChanged)
     def asrDownloadBusy(self) -> bool:
         return self._asr_download_busy
 
-    @Property(float, notify=aiModelsInstallChanged)
+    @Property(float, notify=aiDownloadProgressChanged)
     def asrDownloadProgress(self) -> float:
         return self._asr_download_progress
 
@@ -8460,35 +8514,134 @@ class AppController(QObject):
 
     @Slot(result=bool)
     def downloadAsrModel(self) -> bool:
-        """Download the currently selected Whisper ASR model into `<data_dir>/models/whisper/`."""
-        from vienetts_app.core.ai_models import download_asr_model
+        """Download the selected Whisper ASR model and, when needed, the whisper.cpp CLI."""
+        from vienetts_app.core.ai_models import (
+            download_asr_model,
+            download_whisper_cpp_runtime,
+            is_whisper_cpp_installed,
+        )
 
         if self._asr_download_busy:
             return False
         model_id = self.asrModel
+        variant = self._whisper_cpp_runtime_variant()
+        need_runtime = self.asrBackend in ("auto", "whisper_cpp") and not is_whisper_cpp_installed(
+            self._data_dir
+        )
         self._asr_download_busy = True
-        self._asr_download_progress = 0.05
+        self._asr_download_progress = 0.02
         self._asr_download_status = self.tr("Đang tải mô hình Whisper ({m})…").format(m=model_id)
+        self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
-        def _on_progress(p: float) -> None:
-            self._asr_download_progress = max(0.05, min(0.99, float(p)))
-            self.aiModelsInstallChanged.emit()
+        def _on_asr_progress(p: float, base: float, span: float) -> None:
+            nxt = max(base, min(0.99, base + float(p) * span))
+            if abs(nxt - self._asr_download_progress) >= 0.01:
+                self._asr_download_progress = nxt
+                self.aiDownloadProgressChanged.emit()
 
-        def work() -> str:
-            path = download_asr_model(model_id, self._data_dir, progress_cb=_on_progress)
-            return str(path)
+        def work() -> tuple[str, str]:
+            warning = ""
+            if need_runtime:
+                try:
+                    download_whisper_cpp_runtime(
+                        self._data_dir,
+                        variant=variant,
+                        progress_cb=lambda p: _on_asr_progress(p, 0.02, 0.23),
+                    )
+                except Exception as exc:  # noqa: BLE001 - reported, not fatal
+                    warning = str(exc)
+            base_p, span_p = (0.25, 0.74) if need_runtime else (0.05, 0.94)
+            path = download_asr_model(
+                model_id,
+                self._data_dir,
+                progress_cb=lambda p: _on_asr_progress(p, base_p, span_p),
+            )
+            return str(path), warning
 
-        def done(path: str) -> None:
+        def done(result: tuple[str, str]) -> None:
+            path, warning = result
             self._asr_download_busy = False
             self._asr_download_progress = 1.0
-            self._asr_download_status = self.tr("Đã tải xong: {name}").format(name=Path(path).name)
+            if warning:
+                self._asr_download_status = self.tr(
+                    "Đã tải mô hình {name}, nhưng chưa cài được runtime whisper.cpp: {err}"
+                ).format(name=Path(path).name, err=warning)
+            else:
+                self._asr_download_status = self.tr("Đã tải xong: {name}").format(
+                    name=Path(path).name
+                )
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         def failed(exc: BaseException) -> None:
             self._asr_download_busy = False
             self._asr_download_progress = 0.0
             self._asr_download_status = str(exc)
+            self.aiDownloadProgressChanged.emit()
+            self.aiModelsInstallChanged.emit()
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(result=bool)
+    def downloadWhisperCppRuntime(self) -> bool:
+        """Download (or reinstall) the `whisper.cpp` CLI for the selected ASR device."""
+        from vienetts_app.core.ai_models import (
+            available_whisper_cpp_variants,
+            download_whisper_cpp_runtime,
+        )
+
+        if self._asr_download_busy:
+            return False
+        variant = self._whisper_cpp_runtime_variant()
+        if (
+            self.asrDevice in {"cuda", "metal"}
+            and self.asrDevice not in available_whisper_cpp_variants()
+        ):
+            self._asr_download_status = self.tr(
+                "Không có bản runtime whisper.cpp cho thiết bị {device} trên hệ điều hành này."
+            ).format(device=self.asrDevice)
+            self.aiModelsInstallChanged.emit()
+            return False
+        self._asr_download_busy = True
+        self._asr_download_progress = 0.02
+        self._asr_download_status = self.tr("Đang tải runtime whisper.cpp…")
+        self.aiDownloadProgressChanged.emit()
+        self.aiModelsInstallChanged.emit()
+
+        def _on_runtime_progress(p: float) -> None:
+            nxt = max(0.02, min(0.99, float(p)))
+            if abs(nxt - self._asr_download_progress) >= 0.01:
+                self._asr_download_progress = nxt
+                self.aiDownloadProgressChanged.emit()
+
+        def work() -> str:
+            cli = download_whisper_cpp_runtime(
+                self._data_dir,
+                variant=variant,
+                progress_cb=_on_runtime_progress,
+            )
+            return str(cli)
+
+        def done(path: str) -> None:
+            self._asr_download_busy = False
+            self._asr_download_progress = 1.0
+            self._asr_download_status = self.tr("Đã cài đặt whisper.cpp: {name}").format(
+                name=Path(path).name
+            )
+            self.aiDownloadProgressChanged.emit()
+            self.aiModelsInstallChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            self._asr_download_busy = False
+            self._asr_download_progress = 0.0
+            self._asr_download_status = str(exc)
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         try:
@@ -8504,10 +8657,25 @@ class AppController(QObject):
 
         if self._asr_download_busy:
             return False
-        remove_asr_model(self.asrModel, self._data_dir)
-        self._asr_download_status = ""
+        removed = remove_asr_model(self.asrModel, self._data_dir)
+        self._asr_download_status = (
+            "" if removed else self.tr("Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.")
+        )
         self.aiModelsInstallChanged.emit()
-        return True
+        return removed
+
+    @Slot(result=bool)
+    def removeWhisperCppRuntime(self) -> bool:
+        from vienetts_app.core.ai_models import remove_whisper_cpp_runtime
+
+        if self._asr_download_busy:
+            return False
+        removed = remove_whisper_cpp_runtime(self._data_dir)
+        self._asr_download_status = (
+            "" if removed else self.tr("Runtime whisper.cpp chưa được cài đặt.")
+        )
+        self.aiModelsInstallChanged.emit()
+        return removed
 
     @Property(bool, notify=aiModelsInstallChanged)
     def diarizationModelInstalled(self) -> bool:
@@ -8525,7 +8693,7 @@ class AppController(QObject):
     def diarizationDownloadBusy(self) -> bool:
         return self._diar_download_busy
 
-    @Property(float, notify=aiModelsInstallChanged)
+    @Property(float, notify=aiDownloadProgressChanged)
     def diarizationDownloadProgress(self) -> float:
         return self._diar_download_progress
 
@@ -8574,11 +8742,14 @@ class AppController(QObject):
         self._diar_download_busy = True
         self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải {m} & runtime audio.cpp…").format(m=model_id)
+        self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
         def _on_diar_progress(p: float, base: float, span: float) -> None:
-            self._diar_download_progress = max(base, min(0.99, base + float(p) * span))
-            self.aiModelsInstallChanged.emit()
+            nxt = max(base, min(0.99, base + float(p) * span))
+            if abs(nxt - self._diar_download_progress) >= 0.01:
+                self._diar_download_progress = nxt
+                self.aiDownloadProgressChanged.emit()
 
         def work() -> tuple[str, str]:
             warning = ""
@@ -8610,12 +8781,14 @@ class AppController(QObject):
                 self._diar_download_status = self.tr("Đã sẵn sàng: {name}").format(
                     name=Path(path).name
                 )
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         def failed(exc: BaseException) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 0.0
             self._diar_download_status = str(exc)
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         try:
@@ -8648,11 +8821,14 @@ class AppController(QObject):
         self._diar_download_busy = True
         self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải runtime audio.cpp…")
+        self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
         def _on_runtime_progress(p: float) -> None:
-            self._diar_download_progress = max(0.02, min(0.99, float(p)))
-            self.aiModelsInstallChanged.emit()
+            nxt = max(0.02, min(0.99, float(p)))
+            if abs(nxt - self._diar_download_progress) >= 0.01:
+                self._diar_download_progress = nxt
+                self.aiDownloadProgressChanged.emit()
 
         def work() -> str:
             cli = download_audiocpp_runtime(
@@ -8668,12 +8844,14 @@ class AppController(QObject):
             self._diar_download_status = self.tr("Đã cài đặt audio.cpp: {name}").format(
                 name=Path(path).name
             )
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         def failed(exc: BaseException) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 0.0
             self._diar_download_status = str(exc)
+            self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
         try:
@@ -8895,9 +9073,14 @@ class AppController(QObject):
             ("asr_backend", self.aiSettingsChanged),
             ("asr_model", self.aiSettingsChanged),
             ("asr_language", self.aiSettingsChanged),
+            ("asr_device", self.aiSettingsChanged),
+            ("asr_threads", self.aiSettingsChanged),
             ("diarization_backend", self.aiSettingsChanged),
             ("diarization_model", self.aiSettingsChanged),
             ("diarization_max_speakers", self.aiSettingsChanged),
+            ("diarization_device", self.aiSettingsChanged),
+            ("diarization_threads", self.aiSettingsChanged),
+            ("subtitle_export_speaker_labels", self.aiSettingsChanged),
             ("llm_base_url", self.aiSettingsChanged),
             ("llm_api_key", self.aiSettingsChanged),
             ("llm_model", self.aiSettingsChanged),

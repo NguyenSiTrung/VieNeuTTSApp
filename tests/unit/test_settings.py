@@ -476,7 +476,10 @@ class TestAiDubbingSettings:
             asr_backend="faster_whisper",
             asr_model="small",
             asr_language="vi",
+            asr_device="cpu",
+            asr_threads=8,
             diarization_backend="nemotron_gguf",
+            diarization_model="nemotron-3-diarization-bf16",
             diarization_max_speakers=4,
             diarization_device="vulkan",
             diarization_threads=8,
@@ -487,9 +490,12 @@ class TestAiDubbingSettings:
         )
         save_settings(custom, data_dir=tmp_path)
         loaded = load_settings(data_dir=tmp_path)
+        assert loaded == custom
         assert loaded.asr_backend == "faster_whisper"
         assert loaded.asr_model == "small"
         assert loaded.asr_language == "vi"
+        assert loaded.asr_device == "cpu"
+        assert loaded.asr_threads == 8
         assert loaded.diarization_backend == "nemotron_gguf"
         assert loaded.diarization_max_speakers == 4
         assert loaded.diarization_device == "vulkan"
@@ -501,6 +507,10 @@ class TestAiDubbingSettings:
 
         for bad in (
             {"asr_backend": "invalid"},
+            {"asr_device": "tpu"},
+            {"asr_threads": -1},
+            {"asr_threads": 65},
+            {"asr_threads": True},
             {"diarization_backend": "invalid"},
             {"diarization_backend": "nemo"},
             {"diarization_max_speakers": -1},
@@ -518,6 +528,8 @@ class TestAiDubbingSettings:
             json.dumps(
                 {
                     "asr_backend": "unknown_asr",
+                    "asr_device": "tpu",
+                    "asr_threads": 999,
                     "diarization_backend": "unknown_diar",
                     "diarization_max_speakers": 999,
                     "diarization_device": "tpu",
@@ -530,6 +542,8 @@ class TestAiDubbingSettings:
         )
         clamped = load_settings(data_dir=tmp_path)
         assert clamped.asr_backend == "auto"
+        assert clamped.asr_device == "auto"
+        assert clamped.asr_threads == 0
         assert clamped.diarization_backend == "auto"
         assert clamped.diarization_max_speakers == 0
         assert clamped.diarization_device == "auto"
@@ -542,3 +556,57 @@ class TestAiDubbingSettings:
             json.dumps({"diarization_backend": "nemo"}), encoding="utf-8"
         )
         assert load_settings(data_dir=tmp_path).diarization_backend == "nemotron_gguf"
+
+    def test_controller_asr_device_threads_runtime_and_throttled_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, qcoreapp
+    ) -> None:
+        import vienetts_app.core.ai_models as ai_models
+        from vienetts_app.ui.bg_ops import run_sync
+        from vienetts_app.ui.controller import AppController
+
+        ctrl = AppController(
+            data_dir=tmp_path,
+            bg_runner=run_sync,
+        )
+        try:
+            assert ctrl.asrDevice == "auto"
+            assert ctrl.asrThreads == 0
+            ctrl.asrDevice = "cpu"
+            ctrl.asrThreads = 12
+            assert ctrl.asrDevice == "cpu"
+            assert ctrl.asrThreads == 12
+
+            # Unknown asrModel ID normalizes to "base"
+            ctrl.asrModel = "unknown-id"
+            assert ctrl.asrModel == "base"
+
+            assert ctrl.whisperCppInstalled is False
+            assert "cpu" in ctrl.whisperCppAvailableVariants
+
+            counts = {"install": 0, "progress": 0}
+
+            def nonlocal_inc(key: str) -> None:
+                counts[key] += 1
+
+            ctrl.aiModelsInstallChanged.connect(lambda: nonlocal_inc("install"))
+            ctrl.aiDownloadProgressChanged.connect(lambda: nonlocal_inc("progress"))
+
+            def _fake_download_asr(model_id: str, data_dir: Path, *, progress_cb=None, **_kw):
+                if progress_cb is not None:
+                    for step in range(1, 501):
+                        progress_cb(step / 500.0)
+                out = data_dir / "models" / "whisper" / "ggml-base.bin"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(b"ok")
+                return out
+
+            monkeypatch.setattr(ai_models, "download_asr_model", _fake_download_asr)
+            monkeypatch.setattr(ai_models, "is_whisper_cpp_installed", lambda _d=None: True)
+            counts["install"] = 0
+            counts["progress"] = 0
+            assert ctrl.downloadAsrModel() is True
+            # Only start + finish emit aiModelsInstallChanged (2 total), never 500!
+            assert counts["install"] == 2
+            assert 10 <= counts["progress"] <= 105
+        finally:
+            ctrl.shutdown()

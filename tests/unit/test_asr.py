@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from vienetts_app.core.asr import (
+    AsrCancelled,
     AsrConfig,
     AsrError,
     RawSegment,
@@ -237,3 +238,174 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     assert [c.text for c in cues3] == ["Xin chào từ whisper-cli."]
     assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
     assert sf.info(str(work_dir / "input_16k.wav")).frames == 32_000
+
+
+def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "cancel.wav", 16_000)
+    calls: list[str] = []
+
+    class _CancelWhisperModel:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            calls.append("faster_whisper")
+
+        def transcribe(self, path: str, **kwargs: object):
+            class _Seg:
+                start = 0.0
+                end = 1.0
+                text = "Xin chào"
+
+            class _Info:
+                duration = 1.0
+
+            return iter([_Seg()]), _Info()
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = _CancelWhisperModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+
+    # 1. Cancelling mid-stream raises AsrCancelled and never invokes whisper_cpp or openai_api
+    with pytest.raises(AsrCancelled):
+        transcribe_media_to_cues(
+            wav,
+            AsrConfig(backend="auto", api_base_url="http://127.0.0.1:9/v1"),
+            cancel_check=lambda: True,
+        )
+
+    # 2. When whisper.cpp is installed locally, auto prefers it first; if it fails at runtime,
+    # auto falls back to faster_whisper and records the reason in notes.
+    import os
+
+    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+    bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
+    cli_path = bin_dir / cli_name
+    cli_path.write_text("#!/bin/sh\necho 'GPU init error' >&2\nexit 2\n", encoding="utf-8")
+    cli_path.chmod(0o755)
+    model_dir = tmp_path / "models" / "whisper"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_file = model_dir / WHISPER_GGUF_MODELS["base"].filename
+    with model_file.open("wb") as fh:
+        fh.truncate(int(WHISPER_GGUF_MODELS["base"].size_bytes))
+
+    notes: list[str] = []
+    cues = transcribe_media_to_cues(
+        wav,
+        AsrConfig(backend="auto", model="base"),
+        data_dir=tmp_path,
+        notes=notes,
+    )
+    assert [c.text for c in cues] == ["Xin chào"]
+    assert any("GPU init error" in n for n in notes)
+
+    # 3. If faster_whisper is also absent and only the Default Ollama URL is passed,
+    # auto surfaces the real whisper.cpp error instead of masking it with a generic error.
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    with pytest.raises(AsrError, match="GPU init error"):
+        transcribe_media_to_cues(
+            wav,
+            AsrConfig(backend="auto", model="base", api_base_url="http://localhost:11434/v1"),
+            data_dir=tmp_path,
+        )
+
+
+def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
+    import os
+
+    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+    wav = write_wav_file(np.zeros(16_000 * 2, dtype=np.float32), tmp_path / "speech.wav", 16_000)
+    bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
+    cli_path = bin_dir / cli_name
+    args_log = tmp_path / "args.txt"
+    cli_path.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" > "{args_log}"\n'
+        'of=""\n'
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "-of" ]; then shift; of="$1"; fi\n'
+        "  shift\n"
+        "done\n"
+        'echo "whisper_print_progress_callback: progress =  50%" >&2\n'
+        'printf "1\\n00:00:00,000 --> 00:00:01,500\\nTiếng Việt có dấu.\\n\\n" > "${of}.srt"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+
+    model_dir = tmp_path / "models" / "whisper"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_file = model_dir / WHISPER_GGUF_MODELS["base"].filename
+    with model_file.open("wb") as fh:
+        fh.truncate(int(WHISPER_GGUF_MODELS["base"].size_bytes))
+
+    progress: list[float] = []
+    cues = transcribe_media_to_cues(
+        wav,
+        AsrConfig(backend="whisper_cpp", model="base", device="cpu", threads=6),
+        data_dir=tmp_path,
+        progress_cb=lambda p, _m: progress.append(p),
+    )
+    assert [c.text for c in cues] == ["Tiếng Việt có dấu."]
+    logged_args = args_log.read_text(encoding="utf-8")
+    assert "-t 6" in logged_args
+    assert "-sns" in logged_args
+    assert "-pp" in logged_args
+    assert "-ng" in logged_args
+    assert any(0.5 < p < 0.96 for p in progress)
+
+    # Timeout kills hung process
+    cli_path.write_text("#!/bin/sh\nsleep 5\nexit 0\n", encoding="utf-8")
+    cli_path.chmod(0o755)
+    with pytest.raises(AsrError, match="quá thời gian chờ"):
+        transcribe_media_to_cues(
+            wav,
+            AsrConfig(backend="whisper_cpp", model="base", timeout_s=0.3),
+            data_dir=tmp_path,
+        )
+
+
+def test_openai_api_json_with_arrow_and_top_level_text_duration(tmp_path: Path) -> None:
+    # 3-second WAV (48_000 frames @ 16 kHz)
+    wav = write_wav_file(np.zeros(48_000, dtype=np.float32), tmp_path / "arrow.wav", 16_000)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            _ = self.rfile.read(length)
+            # JSON response containing "-->" inside text, top-level "text" only (no segments)
+            payload = {"text": "Bước A --> Bước B trong bài giảng."}
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        cues = transcribe_media_to_cues(
+            wav,
+            AsrConfig(
+                backend="openai_api",
+                model="whisper-1",
+                api_base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            ),
+        )
+        assert len(cues) == 1
+        assert cues[0].text == "Bước A --> Bước B trong bài giảng."
+        assert cues[0].start_ms == 0
+        assert cues[0].end_ms == 3000
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -29,14 +33,26 @@ from vienetts_app.core.subtitles import Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
+_WHISPER_PP_RE = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
 MODEL_SAMPLE_RATE = 16_000
 SHARED_WAV_FILENAME = "source_16k.wav"
 WAV_INPUT_16K_FILENAME = "input_16k.wav"
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
+_DEFAULT_OLLAMA_URLS = frozenset(
+    {
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:11434/v1",
+    }
+)
+_FASTER_WHISPER_CACHE: dict[tuple[Any, str, str, str, int], Any] = {}
 
 
 class AsrError(RuntimeError):
     """Speech recognition failed or no ASR backend is available; message is user-actionable."""
+
+
+class AsrCancelled(AsrError):
+    """The user cancelled speech recognition; auto fallback must never swallow this."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,9 @@ class AsrConfig:
     language: str = "auto"
     api_base_url: str = ""
     api_key: str = ""
+    device: str = "auto"  # "auto" | "cpu" | "cuda" | "metal"
+    threads: int = 0  # 0 = automatic (min(16, os.cpu_count() or 4))
+    timeout_s: float = 0.0  # 0 = derive from audio duration
 
 
 @dataclass(frozen=True)
@@ -176,6 +195,23 @@ def normalize_asr_segments_to_cues(
     return cues
 
 
+def _resolve_threads(config: AsrConfig) -> int:
+    if int(config.threads) > 0:
+        return max(1, min(64, int(config.threads)))
+    return max(1, min(16, int(os.cpu_count() or 4)))
+
+
+def _wav_duration_s(wav_path: Path) -> float:
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(wav_path))
+        sr = max(1, int(info.samplerate))
+        return max(0.0, float(info.frames) / float(sr))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def _run_faster_whisper(
     wav_path: Path,
     config: AsrConfig,
@@ -183,6 +219,8 @@ def _run_faster_whisper(
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[RawSegment]:
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     try:
         import faster_whisper  # type: ignore[import-not-found]
     except Exception as exc:
@@ -193,21 +231,36 @@ def _run_faster_whisper(
 
     model_name = (config.model or "base").strip() or "base"
     lang = None if not config.language or config.language == "auto" else config.language.strip()
+    req_dev = (config.device or "auto").strip().lower()
+    fw_device = req_dev if req_dev in ("cpu", "cuda") else "auto"
+    compute_type = "int8_float16" if fw_device == "cuda" else "int8"
+    threads = _resolve_threads(config)
     if progress_cb is not None:
         progress_cb(0.1, f"Đang tải mô hình Whisper ({model_name})…")
 
     try:
-        model = faster_whisper.WhisperModel(model_name, device="auto", compute_type="int8")
+        cache_key = (faster_whisper.WhisperModel, model_name, fw_device, compute_type, threads)
+        model = _FASTER_WHISPER_CACHE.get(cache_key)
+        if model is None:
+            _FASTER_WHISPER_CACHE.clear()
+            model = faster_whisper.WhisperModel(
+                model_name,
+                device=fw_device,
+                compute_type=compute_type,
+                cpu_threads=threads,
+            )
+            _FASTER_WHISPER_CACHE[cache_key] = model
         segments_iter, info = model.transcribe(
             str(wav_path),
             language=lang,
             vad_filter=True,
+            condition_on_previous_text=False,
         )
         total_s = float(getattr(info, "duration", 0.0) or 0.0)
         raw_segments: list[RawSegment] = []
         for seg in segments_iter:
             if cancel_check is not None and cancel_check():
-                raise AsrError("Đã hủy nhận diện giọng nói.")
+                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
             start_s = float(getattr(seg, "start", 0.0) or 0.0)
             end_s = float(getattr(seg, "end", start_s + 0.5) or (start_s + 0.5))
             txt = str(getattr(seg, "text", "") or "").strip()
@@ -242,6 +295,8 @@ def _run_whisper_cpp(
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[RawSegment]:
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     binary = _resolve_whisper_cpp_bin(data_dir)
     if binary is None:
         raise AsrError("Không tìm thấy thực thi whisper-cli (whisper.cpp).")
@@ -254,6 +309,7 @@ def _run_whisper_cpp(
     out_prefix = wav_path.parent / f".whisper_out_{uuid.uuid4().hex}"
     srt_out = Path(f"{out_prefix}.srt")
     lang = "auto" if not config.language else config.language
+    threads = _resolve_threads(config)
     cmd = [
         str(binary),
         "-m",
@@ -262,27 +318,106 @@ def _run_whisper_cpp(
         str(wav_path),
         "-l",
         lang,
+        "-t",
+        str(threads),
+        "-sns",
+        "-pp",
         "-osrt",
         "-of",
         str(out_prefix),
     ]
+    if (config.device or "auto").strip().lower() == "cpu":
+        cmd.append("-ng")
+
+    duration_s = _wav_duration_s(wav_path)
+    timeout_s = (
+        float(config.timeout_s)
+        if float(config.timeout_s) > 0
+        else max(180.0, duration_s * 6.0 + 60.0)
+    )
+    started = time.monotonic()
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _read_pipe(stream: Any, sink: list[str], *, parse_progress: bool = False) -> None:
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                sink.append(line)
+                if parse_progress and progress_cb is not None:
+                    m = _WHISPER_PP_RE.search(line)
+                    if m is not None:
+                        pct = min(100, max(0, int(m.group(1))))
+                        progress_cb(
+                            min(0.95, 0.2 + 0.75 * (pct / 100.0)),
+                            "Đang chạy whisper.cpp…",
+                        )
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                stream.close()
+
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(binary.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_lines), daemon=True)
+        t_err = threading.Thread(
+            target=_read_pipe,
+            args=(proc.stderr, stderr_lines),
+            kwargs={"parse_progress": True},
+            daemon=True,
+        )
+        t_out.start()
+        t_err.start()
         while True:
             if cancel_check is not None and cancel_check():
                 proc.kill()
                 with contextlib.suppress(Exception):
-                    proc.communicate(timeout=1.0)
-                raise AsrError("Đã hủy nhận diện giọng nói.")
+                    proc.wait(timeout=1.0)
+                t_out.join(timeout=0.5)
+                t_err.join(timeout=0.5)
+                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+            if time.monotonic() - started > timeout_s:
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.wait(timeout=1.0)
+                t_out.join(timeout=0.5)
+                t_err.join(timeout=0.5)
+                raise AsrError(
+                    f"whisper.cpp quá thời gian chờ ({timeout_s:.1f}s) — "
+                    "hãy thử mô hình nhẹ hơn hoặc chọn thiết bị CPU."
+                )
             try:
-                _stdout, stderr = proc.communicate(timeout=0.1)
+                proc.wait(timeout=0.05)
                 break
             except subprocess.TimeoutExpired:
                 continue
-        if proc.returncode != 0 or not srt_out.is_file():
-            detail = (stderr or "").strip().splitlines()[-1:] or ["whisper-cli failed"]
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+        stderr_text = "".join(stderr_lines)
+        stdout_text = "".join(stdout_lines)
+        if proc.returncode != 0:
+            detail = (stderr_text or stdout_text).strip().splitlines()[-1:] or [
+                "whisper-cli failed"
+            ]
             raise AsrError(f"whisper.cpp thất bại: {detail[0]}")
-        cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
+        if not srt_out.is_file() or srt_out.stat().st_size == 0:
+            if progress_cb is not None:
+                progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
+            return []
+        try:
+            cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            raise AsrError(f"Tệp phụ đề từ whisper.cpp không hợp lệ: {exc}") from exc
         if progress_cb is not None:
             progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
         return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues]
@@ -296,7 +431,10 @@ def _run_openai_whisper_api(
     config: AsrConfig,
     *,
     progress_cb: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[RawSegment]:
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     base_url = (config.api_base_url or "http://localhost:11434/v1").strip().rstrip("/")
     if not base_url:
         raise AsrError("Chưa cấu hình địa chỉ máy chủ Whisper API.")
@@ -346,8 +484,16 @@ def _run_openai_whisper_api(
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
         raise AsrError(f"Không thể kết nối máy chủ ASR ({url}): {exc}") from exc
 
-    if "-->" in raw_resp:
-        cues = parse_cues(raw_resp)
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+
+    stripped = raw_resp.lstrip()
+    is_json = stripped.startswith("{") or stripped.startswith("[")
+    if not is_json and "-->" in raw_resp:
+        try:
+            cues = parse_cues(raw_resp)
+        except Exception as exc:
+            raise AsrError(f"Phản hồi SRT từ máy chủ ASR không hợp lệ: {exc}") from exc
         if progress_cb is not None:
             progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
         return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues]
@@ -357,7 +503,7 @@ def _run_openai_whisper_api(
     except json.JSONDecodeError as exc:
         raise AsrError(f"Phản hồi từ máy chủ ASR không hợp lệ: {exc}") from exc
 
-    segments = payload.get("segments")
+    segments = payload.get("segments") if isinstance(payload, dict) else None
     out: list[RawSegment] = []
     if isinstance(segments, list):
         for item in segments:
@@ -370,8 +516,20 @@ def _run_openai_whisper_api(
             end_ms = int(round(float(item.get("end", start_ms / 1000.0 + 1.0)) * 1000))
             spk = str(item.get("speaker") or "").strip()
             out.append(RawSegment(start_ms, max(start_ms + 1, end_ms), txt, spk))
-    elif isinstance(payload.get("text"), str) and payload["text"].strip():
-        out.append(RawSegment(0, 5000, payload["text"].strip()))
+    elif (
+        isinstance(payload, dict)
+        and isinstance(payload.get("text"), str)
+        and payload["text"].strip()
+    ):
+        dur_s = 0.0
+        with contextlib.suppress(TypeError, ValueError):
+            dur_s = float(payload.get("duration") or 0.0)
+        if dur_s <= 0.0:
+            dur_s = _wav_duration_s(wav_path)
+        if dur_s <= 0.0:
+            dur_s = 5.0
+        dur_ms = max(1000, int(round(dur_s * 1000)))
+        out.append(RawSegment(0, dur_ms, payload["text"].strip()))
 
     if progress_cb is not None:
         progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
@@ -532,8 +690,11 @@ def transcribe_media_to_cues(
     data_dir: Path | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
 ) -> list[Cue]:
     """Extract 16 kHz audio from ``media_path``, run Whisper ASR, and return normalized ``Cue``s."""
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     cfg = config or AsrConfig()
     src = Path(media_path)
     if not src.is_file():
@@ -545,7 +706,7 @@ def transcribe_media_to_cues(
             src, work_dir, data_dir, None, progress_cb=progress_cb
         )
         if cancel_check is not None and cancel_check():
-            raise AsrError("Đã hủy nhận diện giọng nói.")
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
 
         cache_key = _asr_cache_key(wav_path, cfg)
         cached = _load_cached_segments(work_dir, cache_key)
@@ -568,15 +729,22 @@ def transcribe_media_to_cues(
                     cancel_check=cancel_check,
                 )
             elif backend == "openai_api":
-                raw = _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
+                raw = _run_openai_whisper_api(
+                    wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
+                )
             else:
-                # auto: try faster_whisper -> whisper_cpp -> openai_api
-                last_err: Exception | None = None
-                raw = []
-                for runner in (
+                whisper_cpp_ready = (
+                    _resolve_whisper_cpp_bin(data_dir) is not None
+                    and resolve_asr_model_path(cfg.model, data_dir) is not None
+                )
+                fw_entry = (
+                    "faster-whisper",
                     lambda: _run_faster_whisper(
                         wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
                     ),
+                )
+                wcpp_entry = (
+                    "whisper.cpp",
                     lambda: _run_whisper_cpp(
                         wav_path,
                         cfg,
@@ -584,19 +752,50 @@ def transcribe_media_to_cues(
                         progress_cb=progress_cb,
                         cancel_check=cancel_check,
                     ),
-                    lambda: (
-                        _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
-                        if cfg.api_base_url.strip()
-                        else (_ for _ in ()).throw(AsrError("Chưa cấu hình ASR API"))
-                    ),
-                ):
+                )
+                runners: list[tuple[str, Callable[[], list[RawSegment]]]] = (
+                    [wcpp_entry, fw_entry] if whisper_cpp_ready else [fw_entry, wcpp_entry]
+                )
+                api_url = cfg.api_base_url.strip().rstrip("/")
+                if api_url and api_url not in _DEFAULT_OLLAMA_URLS:
+                    runners.append(
+                        (
+                            "openai_api",
+                            lambda: _run_openai_whisper_api(
+                                wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
+                            ),
+                        )
+                    )
+
+                raw = []
+                succeeded = False
+                prior_failures: list[str] = []
+                real_errors: list[AsrError] = []
+                last_err: AsrError | None = None
+                for name, runner in runners:
                     try:
                         raw = runner()
-                        last_err = None
+                        succeeded = True
                         break
+                    except AsrCancelled:
+                        raise
                     except AsrError as exc:
                         last_err = exc
-                if last_err is not None and not raw:
+                        msg = str(exc)
+                        is_missing = (
+                            "Chưa cài đặt faster-whisper" in msg
+                            or "Không tìm thấy thực thi whisper-cli" in msg
+                            or "Không tìm thấy tệp mô hình whisper.cpp" in msg
+                        )
+                        if not is_missing:
+                            real_errors.append(exc)
+                        prior_failures.append(f"Không dùng được {name}: {msg}")
+                if succeeded:
+                    if notes is not None and prior_failures:
+                        notes.extend(prior_failures)
+                else:
+                    if real_errors:
+                        raise real_errors[0]
                     raise AsrError(
                         "Không tìm thấy bộ nhận diện giọng nói (ASR) khả dụng. "
                         "Hãy cài đặt faster-whisper / whisper.cpp hoặc cấu hình ASR trong Cài đặt."

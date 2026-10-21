@@ -30,5 +30,5 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Harden and optimize on-device ASR & Video Dubbing subtitles (model/runtime verification, whisper.cpp runtime installer, cancel/fallback semantics, non-speech filtering, caching & QML controls)
+## [x] Track: Harden and optimize on-device ASR & Video Dubbing subtitles (model/runtime verification, whisper.cpp runtime installer, cancel/fallback semantics, non-speech filtering, caching & QML controls)
 *Link: [./tracks/asr_hardening_20261021/](./tracks/asr_hardening_20261021/)*

@@ -8,7 +8,7 @@
 
 ## Phase 1: Hardened Whisper Model Catalog, Guarded Removal & `whisper.cpp` Runtime Installer
 
-- [ ] **Task 1.1: Pin `WHISPER_GGUF_MODELS` size/SHA-256, verify downloads, and guard `resolve_asr_model_path` / `remove_asr_model`**
+- [x] **Task 1.1: Pin `WHISPER_GGUF_MODELS` size/SHA-256, verify downloads, and guard `resolve_asr_model_path` / `remove_asr_model`** (`b09dd45`)
   - Files: `src/vienetts_app/core/ai_models.py`, `tests/unit/test_ai_models.py`
   - Red tests:
     - Truncated managed `ggml-base.bin` in `models/whisper` reports `is_asr_model_installed("base", tmp_path) is False` and `resolve_asr_model_path("base", tmp_path) is None`.
@@ -21,7 +21,7 @@
     - Pass `expected_size`, `expected_sha256`, and `min_free_bytes` in `download_asr_model` when `url_override` is empty.
     - Guard `remove_asr_model` with `resolved.is_relative_to(base)` and `.bin`/`.gguf` suffix check, returning `bool`.
 
-- [ ] **Task 1.2: Managed `whisper.cpp` (`whisper-cli`) runtime discovery, staged download, `--help` probe, and removal**
+- [x] **Task 1.2: Managed `whisper.cpp` (`whisper-cli`) runtime discovery, staged download, `--help` probe, and removal** (`7f5ead2`)
   - Files: `src/vienetts_app/core/ai_models.py`, `tests/unit/test_ai_models.py`
   - Red tests:
     - `available_whisper_cpp_variants()` offers platform-appropriate variants (`cpu` on Linux/Windows, `cuda` on Windows x64).
@@ -35,7 +35,7 @@
 
 ## Phase 2: Reliable & High-Performance On-Device ASR Core
 
-- [ ] **Task 2.1: Shared 16 kHz mono WAV normalization, source fingerprint sidecar, and ASR segment caching**
+- [x] **Task 2.1: Shared 16 kHz mono WAV normalization, source fingerprint sidecar, and ASR segment caching** (`9bf3c80`)
   - Files: `src/vienetts_app/core/asr.py`, `tests/unit/test_asr.py`
   - Red tests:
     - Passing a 48 kHz or stereo `.wav` file to `transcribe_media_to_cues` downmixes/resamples it to 16 kHz mono before invoking `whisper-cli` (verified by a fake CLI inspecting WAV header).
@@ -45,7 +45,7 @@
     - Add `_ensure_16k_wav` with `.json` sidecar (`source`, `size`, `mtime_ns`) in `core/asr.py`.
     - Add `_asr_cache_key`, `_load_cached_segments`, and `_store_cached_segments` (`asr_segments_cache.json`).
 
-- [ ] **Task 2.2: `AsrCancelled` semantics, truthful `auto` fallback reporting, and backend execution hardening**
+- [x] **Task 2.2: `AsrCancelled` semantics, truthful `auto` fallback reporting, and backend execution hardening** (`4709c85`)
   - Files: `src/vienetts_app/core/asr.py`, `tests/unit/test_asr.py`
   - Red tests:
     - Cancelling during `transcribe_media_to_cues(..., AsrConfig(backend="auto"), cancel_check=lambda: True)` raises `AsrCancelled` immediately without calling subsequent fallback backends.
@@ -56,7 +56,7 @@
     - Add `AsrCancelled(AsrError)` and extend `AsrConfig` with `device: str = "auto"`, `threads: int = 0`, `timeout_s: float = 0.0`.
     - Harden `_run_whisper_cpp`, `_run_faster_whisper` (with 1-entry model cache and `condition_on_previous_text=False`), `_run_openai_whisper_api`, and the `auto` dispatch order in `transcribe_media_to_cues`.
 
-- [ ] **Task 2.3: Non-speech token filtering, duration-aware segment splitting, and bidirectional micro-fragment merging**
+- [x] **Task 2.3: Non-speech token filtering, duration-aware segment splitting, and bidirectional micro-fragment merging** (`987a3af`)
   - Files: `src/vienetts_app/core/asr.py`, `src/vienetts_app/core/subtitles.py`, `tests/unit/test_asr.py`, `tests/unit/test_subtitles.py`
   - Red tests:
     - Segments containing only `[BLANK_AUDIO]`, `[MUSIC]`, `(music)`, `[Applause]`, or `♪` are dropped by `normalize_asr_segments_to_cues`; inline `[MUSIC] Xin chào` strips `[MUSIC]` and keeps `speaker=""` rather than setting `speaker="MUSIC"`.
@@ -70,7 +70,7 @@
 
 ## Phase 3: Settings, Controller Plumbing, Workspace Collision Guard & QML UI
 
-- [ ] **Task 3.1: ASR device/threads settings, throttled download progress signal, and runtime/model controller slots**
+- [x] **Task 3.1: ASR device/threads settings, throttled download progress signal, and runtime/model controller slots** (`804616c`)
   - Files: `src/vienetts_app/core/models.py`, `src/vienetts_app/core/settings.py`, `src/vienetts_app/ui/controller.py`, `tests/unit/test_settings.py`
   - Red tests:
     - `Settings` validates `asr_device` (`{"auto", "cpu", "cuda", "metal"}`) and `asr_threads` (`0..64`), and `_clamp_engine_fields` clamps invalid values in `settings.json` back to defaults without losing other settings.
@@ -79,7 +79,7 @@
     - Extend `core/models.py` and `core/settings.py` with `asr_device` and `asr_threads`.
     - Add `aiDownloadProgressChanged = Signal()` on `AppController`, bind `asrDownloadProgress` and `diarizationDownloadProgress` to it with $\ge 0.01$ delta throttling, and wire `downloadAsrModel`, `removeAsrModel`, `downloadWhisperCppRuntime`, and `removeWhisperCppRuntime`.
 
-- [ ] **Task 3.2: Persistent media cache dir, collision-safe managed `.srt` naming, and ASR warning propagation in `SubtitleController`**
+- [x] **Task 3.2: Persistent media cache dir, collision-safe managed `.srt` naming, and ASR warning propagation in `SubtitleController`** (`7a3090e`)
   - Files: `src/vienetts_app/ui/subtitle_controller.py`, `tests/unit/test_subtitle_controller.py`
   - Red tests:
     - Two videos with the same filename in different folders (`dir_a/clip.mp4` and `dir_b/clip.mp4`) write distinct managed `.srt` files in `subtitles/` and `importVideo(dir_b/clip.mp4)` does not auto-load `dir_a/clip.mp4`'s transcript.
@@ -89,7 +89,7 @@
     - Add `_media_cache_dir(vpath)` and `_managed_srt_path(vpath)` on `SubtitleController`.
     - Plumb `asrDevice` and `asrThreads` into `_asr_config()`, pass `notes` to `transcribe_media_to_cues`, and handle `AsrCancelled`.
 
-- [ ] **Task 3.3: QML controls (`SettingsModels.qml`) + i18n catalog & smoke verification**
+- [x] **Task 3.3: QML controls (`SettingsModels.qml`) + i18n catalog & smoke verification** (`d50f43b`)
   - Files: `src/vienetts_app/ui/qml/settings/SettingsModels.qml`, `src/vienetts_app/ui/i18n/vienetts_en.ts`, `src/vienetts_app/ui/i18n/vienetts_en.qm`, `tests/smoke/test_ui_tabs.py`, `tests/unit/test_i18n.py`
   - Red tests:
     - Offscreen smoke test verifies `asrLanguageCombo`, `asrDeviceCombo`, `asrThreadsField`, `downloadWhisperCppRuntimeButton`, `removeWhisperCppRuntimeButton`, `asrDownloadProgressBar`, and `asrDownloadPercentLabel` in `SettingsModels.qml`.

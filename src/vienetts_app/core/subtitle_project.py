@@ -378,8 +378,14 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         raise
 
 
-def export_srt_file(target: str | Path, cues: Sequence[Cue]) -> Path:
+def export_srt_file(
+    target: str | Path, cues: Sequence[Cue], *, include_speakers: bool = False
+) -> Path:
     """Write ``cues`` as UTF-8 SubRip to ``target`` atomically; returns ``target``.
+
+    ``include_speakers`` prefixes each line with ``[SPEAKER_01]`` so the label
+    survives export; the in-app preview already shows it, but the exported file
+    used to drop it silently.
 
     The write lands under a unique temp name in the target's directory and is
     promoted with the same bounded-retry ``os.replace`` used elsewhere, so a
@@ -389,7 +395,7 @@ def export_srt_file(target: str | Path, cues: Sequence[Cue]) -> Path:
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temp.write_text(format_srt(cues), encoding="utf-8")
+        temp.write_text(format_srt(cues, include_speakers=include_speakers), encoding="utf-8")
         for attempt in range(REPLACE_LOCK_ATTEMPTS):
             try:
                 os.replace(temp, target)

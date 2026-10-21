@@ -476,8 +476,11 @@ class TestAiDubbingSettings:
             asr_backend="faster_whisper",
             asr_model="small",
             asr_language="vi",
-            diarization_backend="nemo",
+            diarization_backend="nemotron_gguf",
             diarization_max_speakers=4,
+            diarization_device="vulkan",
+            diarization_threads=8,
+            subtitle_export_speaker_labels=True,
             llm_base_url="http://localhost:11434/v1",
             llm_api_key="local-dev-key",
             llm_model="qwen2.5:14b",
@@ -487,8 +490,11 @@ class TestAiDubbingSettings:
         assert loaded.asr_backend == "faster_whisper"
         assert loaded.asr_model == "small"
         assert loaded.asr_language == "vi"
-        assert loaded.diarization_backend == "nemo"
+        assert loaded.diarization_backend == "nemotron_gguf"
         assert loaded.diarization_max_speakers == 4
+        assert loaded.diarization_device == "vulkan"
+        assert loaded.diarization_threads == 8
+        assert loaded.subtitle_export_speaker_labels is True
         assert loaded.llm_base_url == "http://localhost:11434/v1"
         assert loaded.llm_api_key == "local-dev-key"
         assert loaded.llm_model == "qwen2.5:14b"
@@ -496,8 +502,14 @@ class TestAiDubbingSettings:
         for bad in (
             {"asr_backend": "invalid"},
             {"diarization_backend": "invalid"},
+            {"diarization_backend": "nemo"},
             {"diarization_max_speakers": -1},
             {"diarization_max_speakers": 99},
+            {"diarization_device": "tpu"},
+            {"diarization_threads": -1},
+            {"diarization_threads": 65},
+            {"diarization_threads": True},
+            {"subtitle_export_speaker_labels": "yes"},
         ):
             with pytest.raises(ValueError):
                 Settings(**bad)
@@ -508,6 +520,9 @@ class TestAiDubbingSettings:
                     "asr_backend": "unknown_asr",
                     "diarization_backend": "unknown_diar",
                     "diarization_max_speakers": 999,
+                    "diarization_device": "tpu",
+                    "diarization_threads": 999,
+                    "subtitle_export_speaker_labels": "yes",
                     "output_dir": "/tmp/survives",
                 }
             ),
@@ -517,4 +532,13 @@ class TestAiDubbingSettings:
         assert clamped.asr_backend == "auto"
         assert clamped.diarization_backend == "auto"
         assert clamped.diarization_max_speakers == 0
+        assert clamped.diarization_device == "auto"
+        assert clamped.diarization_threads == 0
+        assert clamped.subtitle_export_speaker_labels is False
         assert clamped.output_dir == "/tmp/survives"
+
+    def test_legacy_nemo_backend_is_migrated(self, tmp_path: Path) -> None:
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"diarization_backend": "nemo"}), encoding="utf-8"
+        )
+        assert load_settings(data_dir=tmp_path).diarization_backend == "nemotron_gguf"

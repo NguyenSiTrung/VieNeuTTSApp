@@ -77,10 +77,11 @@ from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.asr import AsrConfig, transcribe_media_to_cues
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, export_audio_file, read_wav
 from vienetts_app.core.diarization import (
+    DiarizationCancelled,
     DiarizationConfig,
-    DiarizationError,
     diarize_cues,
     extract_speaker_reference_wav,
+    remap_speakers_to_previous,
 )
 from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
@@ -1599,6 +1600,7 @@ class SubtitleController(QObject):
             self._set_error(self.tr("Chưa có phụ đề đã chỉnh để xuất. Hãy tạo trước."))
             return ""
         cues = project.adjusted
+        include_speakers = bool(getattr(self._app, "subtitleExportSpeakerLabels", False))
         target = self._export_target(dest_dir, project.title, ".srt")
         self._export_generation += 1
         generation = self._export_generation
@@ -1606,7 +1608,7 @@ class SubtitleController(QObject):
         self.exportingChanged.emit()
 
         def work() -> str:
-            export_srt_file(target, cues)
+            export_srt_file(target, cues, include_speakers=include_speakers)
             return str(target)
 
         def done(path: str) -> None:
@@ -1650,6 +1652,7 @@ class SubtitleController(QObject):
         embed_subs = self.embedSubtitles
         embed_mode = self.subtitleEmbedMode
         subtitle_language = self._subtitle_language()
+        include_speakers = bool(getattr(self._app, "subtitleExportSpeakerLabels", False))
         proj_dir = self._store.project_dir(project.id)
 
         self._export_generation += 1
@@ -1673,7 +1676,7 @@ class SubtitleController(QObject):
             try:
                 if embed_subs and adjusted_cues:
                     srt_temp = proj_dir / ".retimed_mux.srt"
-                    export_srt_file(srt_temp, adjusted_cues)
+                    export_srt_file(srt_temp, adjusted_cues, include_speakers=include_speakers)
                 mux_dubbed_video(
                     vpath,
                     source_wav,
@@ -1757,7 +1760,18 @@ class SubtitleController(QObject):
             max_spk = int(getattr(self._app, "diarizationMaxSpeakers", 0) or 0)
         except (TypeError, ValueError):
             max_spk = 0
-        return DiarizationConfig(backend=backend, max_speakers=max_spk, model=model)
+        try:
+            threads = int(getattr(self._app, "diarizationThreads", 0) or 0)
+        except (TypeError, ValueError):
+            threads = 0
+        device = str(getattr(self._app, "diarizationDevice", "auto") or "auto")
+        return DiarizationConfig(
+            backend=backend,
+            max_speakers=max_spk,
+            model=model,
+            device=device,
+            threads=threads,
+        )
 
     def _llm_config(self) -> LlmConfig:
         base_url = str(
@@ -1807,6 +1821,22 @@ class SubtitleController(QObject):
         self._set_error("")
         self._set_ai_state(True, self.tr("Đang nhận diện giọng nói (ASR)…"), 0.05)
 
+        def report_asr(progress: float, msg: str) -> None:
+            # A cancelled generation must not repaint the progress bar: the
+            # queued call can land after cancelAiTask() reset the UI.
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(
+                True,
+                msg or self.tr("Đang nhận diện giọng nói (ASR)…"),
+                progress * (0.7 if with_diarization else 1.0),
+            )
+
+        def report_diar(progress: float) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.7 + 0.3 * progress)
+
         def work() -> tuple[list[Cue], str]:
             import tempfile
 
@@ -1817,14 +1847,11 @@ class SubtitleController(QObject):
                     asr_cfg,
                     work_dir=work_dir,
                     data_dir=self._data_dir,
-                    progress_cb=lambda p, msg: self._set_ai_state(
-                        True,
-                        msg or self.tr("Đang nhận diện giọng nói (ASR)…"),
-                        p * (0.7 if with_diarization else 1.0),
-                    ),
+                    progress_cb=report_asr,
                     cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
                 )
                 diar_warn = ""
+                notes: list[str] = []
                 if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
                     try:
                         cues = diarize_cues(
@@ -1833,15 +1860,24 @@ class SubtitleController(QObject):
                             diar_cfg,
                             work_dir=work_dir,
                             data_dir=self._data_dir,
-                            progress_cb=lambda p: self._set_ai_state(
-                                True,
-                                self.tr("Đang phân tách người nói…"),
-                                0.7 + 0.3 * p,
-                            ),
+                            progress_cb=report_diar,
                             cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                            notes=notes,
                         )
-                    except DiarizationError as exc:
-                        diar_warn = str(exc)
+                    except DiarizationCancelled:
+                        diar_warn = self.tr(
+                            "Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên."
+                        )
+                    except Exception as exc:  # noqa: BLE001 - ASR output must survive
+                        # Anything other than a clean success used to propagate
+                        # out of work() and discard a finished transcription.
+                        logger.warning("Diarization failed during transcribe: %s", exc)
+                        diar_warn = self.tr("Không phân tách được người nói: {error}").format(
+                            error=exc
+                        )
+                    else:
+                        if notes:
+                            diar_warn = "\n".join(notes)
                 return cues, diar_warn
 
         def done(res: tuple[list[Cue], str]) -> None:
@@ -1849,6 +1885,9 @@ class SubtitleController(QObject):
                 return
             cues, diar_warn = res
             self._set_ai_state(False, "", 1.0)
+            if not cues:
+                self._set_error(self.tr("Không nhận diện được phụ đề nào trong video này."))
+                return
             srt_target = self._store.root / f"{sanitize_filename(vpath.stem, fallback='video')}.srt"
             with contextlib.suppress(OSError):
                 srt_target.parent.mkdir(parents=True, exist_ok=True)
@@ -1889,24 +1928,35 @@ class SubtitleController(QObject):
         self._set_error("")
         self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1)
 
-        def work() -> list[Cue]:
-            return diarize_cues(
+        def report_diar(progress: float) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1 + 0.9 * progress)
+
+        def work() -> tuple[list[Cue], str]:
+            notes: list[str] = []
+            tagged = diarize_cues(
                 media,
                 cues_in,
                 diar_cfg,
                 work_dir=self._store.project_dir(project.id),
                 data_dir=self._data_dir,
-                progress_cb=lambda p: self._set_ai_state(
-                    True, self.tr("Đang phân tách người nói…"), 0.1 + 0.9 * p
-                ),
+                progress_cb=report_diar,
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                notes=notes,
             )
+            # Re-diarizing used to renumber speakers from scratch and silently
+            # move cloned voices; keep the project's existing label identity.
+            tagged = remap_speakers_to_previous(cues_in, tagged)
+            return tagged, "\n".join(notes)
 
-        def done(tagged: list[Cue]) -> None:
+        def done(res: tuple[list[Cue], str]) -> None:
             if gen != self._ai_generation or self._project is None:
                 return
+            tagged, warn = res
             self._set_ai_state(False, "", 1.0)
             self._update_project_cues(tagged)
+            self._set_error(warn)
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
@@ -1974,17 +2024,39 @@ class SubtitleController(QObject):
             self._set_error(self.tr("Cần video nguồn để nghe mẫu giọng của người nói."))
             return False
         ref_out = self._store.project_dir(project.id) / f"ref_{sanitize_filename(spk)}.wav"
-        if not ref_out.is_file() or ref_out.stat().st_size == 0:
-            try:
-                extract_speaker_reference_wav(
-                    vpath, project.cues, spk, ref_out, data_dir=self._data_dir
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._set_error(str(exc))
-                return False
-        self._stop_playback()
         self._set_error("")
-        self._player.play(str(ref_out))
+        if ref_out.is_file() and ref_out.stat().st_size > 0:
+            self._stop_playback()
+            self._player.play(str(ref_out))
+            return True
+        project_id = project.id
+        cues = project.cues
+        self._ai_generation += 1
+        gen = self._ai_generation
+
+        def work() -> Path:
+            # ffmpeg extraction used to block the GUI thread on first audition.
+            extract_speaker_reference_wav(vpath, cues, spk, ref_out, data_dir=self._data_dir)
+            return ref_out
+
+        def done(path: Path) -> None:
+            if gen != self._ai_generation:
+                return
+            if self._project is None or self._project.id != project_id:
+                return
+            self._stop_playback()
+            self._player.play(str(path))
+
+        def failed(exc: BaseException) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_error(str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001 - a rejected pool must not wedge playback
+            failed(exc)
+            return False
         return True
 
     @Slot(str, str, result=bool)

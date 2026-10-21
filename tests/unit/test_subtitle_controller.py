@@ -1384,3 +1384,122 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
     fake.supportsCloning = False
     assert controller.cloneSpeakerFromVideo("SPEAKER_01", "Clone1") is False
     assert "nhân bản" in controller.errorText.lower()
+
+
+# ── diarization hardening (device plumbing, fallback warnings, label remap) ──
+
+
+def test_diarization_config_reads_device_and_threads_settings(env):
+    controller, fake, _ = env
+    fake.diarizationBackend = "nemotron_gguf"
+    fake.diarizationModel = "nemotron-3-diarization-bf16"
+    fake.diarizationMaxSpeakers = 4
+    fake.diarizationDevice = "metal"
+    fake.diarizationThreads = 6
+    cfg = controller._diarization_config()  # noqa: SLF001
+    assert cfg.backend == "nemotron_gguf"
+    assert cfg.model == "nemotron-3-diarization-bf16"
+    assert cfg.max_speakers == 4
+    assert cfg.device == "metal"
+    assert cfg.threads == 6
+
+
+def test_transcribe_keeps_asr_result_when_diarization_crashes(env, tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = env
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Xin chào."), Cue(2, 1700, 3200, "Tạm biệt.")],
+    )
+
+    def _explode(path, cues, cfg=None, **kw):
+        raise RuntimeError("model exploded")
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", _explode)
+    assert controller.transcribeVideo(True) is True
+    assert controller.loaded is True
+    assert controller.cueCount == 2
+    assert "model exploded" in controller.errorText
+
+
+def test_transcribe_surfaces_acoustic_fallback_warning(env, tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = env
+    video = tmp_path / "talk2.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Xin chào.")],
+    )
+
+    def _fallback(path, cues, cfg=None, notes=None, **kw):
+        assert notes is not None
+        notes.append("Nhãn người nói được tạo bằng phương pháp dự phòng (âm học).")
+        return [Cue(1, 0, 1500, "Xin chào.", speaker="SPEAKER_01")]
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", _fallback)
+    assert controller.transcribeVideo(True) is True
+    assert "dự phòng" in controller.errorText
+
+
+def test_rediarization_remaps_labels_to_existing_speaker_voices(env, tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = env
+    video = tmp_path / "interview.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Một."), Cue(2, 1700, 3200, "Hai.")],
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [
+            Cue(1, 0, 1500, "Một.", speaker="SPEAKER_01"),
+            Cue(2, 1700, 3200, "Hai.", speaker="SPEAKER_02"),
+        ],
+    )
+    assert controller.transcribeVideo(True) is True
+    assert controller.setSpeakerVoice("SPEAKER_01", "Binh") is True
+    assert controller.setSpeakerVoice("SPEAKER_02", "Tuyen") is True
+
+    # A re-run that swaps labels must not move the cloned voices.
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [
+            Cue(1, 0, 1500, "Một.", speaker="SPEAKER_02"),
+            Cue(2, 1700, 3200, "Hai.", speaker="SPEAKER_01"),
+        ],
+    )
+    assert controller.runDiarization() is True
+    assert [c["speaker"] for c in controller.cues] == ["SPEAKER_01", "SPEAKER_02"]
+    by_id = {s["id"]: s["voice"] for s in controller.speakers}
+    assert by_id == {"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"}
+
+
+def test_export_srt_can_include_speaker_labels(env, tmp_path):
+    controller, fake, _ = env
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    controller._update_project_cues(  # noqa: SLF001
+        [
+            replace(controller._project.cues[0], speaker="SPEAKER_01"),  # noqa: SLF001
+            replace(controller._project.cues[1], speaker="SPEAKER_02"),  # noqa: SLF001
+        ]
+    )
+    render_all(controller, fake, tmp_path)
+    out_dir = tmp_path / "srt_out"
+    assert controller.exportSrt(str(out_dir)) != ""
+    target = next(out_dir.glob("*.srt"))
+    assert "[SPEAKER_01]" not in target.read_text(encoding="utf-8")
+
+    controller._app.subtitleExportSpeakerLabels = True
+    assert controller.exportSrt(str(out_dir)) != ""
+    exported = sorted(out_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
+    assert "[SPEAKER_01]" in exported[-1].read_text(encoding="utf-8")

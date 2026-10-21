@@ -5747,6 +5747,7 @@ class AppController(QObject):
         sub_dir = self._data_dir / "subtitles"
         proj_id = str(meta.project_id)
         win_start = int(meta.window_start)
+        include_speakers = bool(getattr(self, "subtitleExportSpeakerLabels", False))
 
         def work() -> tuple[Any, str]:
             store = SubtitleProjectStore(sub_dir)
@@ -5760,7 +5761,7 @@ class AppController(QObject):
             try:
                 if embed_subs and adjusted_cues:
                     srt_temp = proj_dir / ".retimed_mux.srt"
-                    export_srt_file(srt_temp, adjusted_cues)
+                    export_srt_file(srt_temp, adjusted_cues, include_speakers=include_speakers)
                 mux_dubbed_video(
                     vpath,
                     source_wav,
@@ -8297,12 +8298,20 @@ class AppController(QObject):
         self._set_setting(
             "diarization_backend",
             str(value or "auto").strip(),
-            allowed={"auto", "nemotron_gguf", "acoustic", "nemo"},
+            allowed={"auto", "nemotron_gguf", "acoustic"},
         )
 
     @Property(str, notify=aiSettingsChanged)
     def diarizationModel(self) -> str:
-        return self._settings.diarization_model
+        from vienetts_app.core.ai_models import DIARIZATION_GGUF_MODELS
+
+        model = self._settings.diarization_model
+        if model in DIARIZATION_GGUF_MODELS or model.lower().endswith((".gguf", ".bin")):
+            return model
+        # A stale/unknown id used to be kept forever: the resolver looked for
+        # ``<id>.gguf``, never found it, and each visit offered the 102 MB
+        # download again. Normalise to the default catalog entry instead.
+        return "nemotron-3-diarization-q8_0"
 
     @diarizationModel.setter
     def diarizationModel(self, value: str) -> None:
@@ -8322,6 +8331,38 @@ class AppController(QObject):
         except (TypeError, ValueError):
             return
         self._set_setting("diarization_max_speakers", clamped)
+
+    @Property(str, notify=aiSettingsChanged)
+    def diarizationDevice(self) -> str:
+        return self._settings.diarization_device
+
+    @diarizationDevice.setter
+    def diarizationDevice(self, value: str) -> None:
+        self._set_setting(
+            "diarization_device",
+            str(value or "auto").strip().lower(),
+            allowed={"auto", "cpu", "vulkan", "metal"},
+        )
+
+    @Property(int, notify=aiSettingsChanged)
+    def diarizationThreads(self) -> int:
+        return int(self._settings.diarization_threads)
+
+    @diarizationThreads.setter
+    def diarizationThreads(self, value: int) -> None:
+        try:
+            clamped = max(0, min(64, int(value)))
+        except (TypeError, ValueError):
+            return
+        self._set_setting("diarization_threads", clamped)
+
+    @Property(bool, notify=aiSettingsChanged)
+    def subtitleExportSpeakerLabels(self) -> bool:
+        return bool(self._settings.subtitle_export_speaker_labels)
+
+    @subtitleExportSpeakerLabels.setter
+    def subtitleExportSpeakerLabels(self, value: bool) -> None:
+        self._set_setting("subtitle_export_speaker_labels", bool(value))
 
     @Property(str, notify=aiSettingsChanged)
     def llmBaseUrl(self) -> str:
@@ -8492,9 +8533,34 @@ class AppController(QObject):
     def diarizationDownloadStatus(self) -> str:
         return self._diar_download_status
 
+    @Property(str, notify=aiModelsInstallChanged)
+    def audiocppRuntimeVariant(self) -> str:
+        from vienetts_app.core.ai_models import installed_audiocpp_variant
+
+        return installed_audiocpp_variant(self._data_dir)
+
+    @Property(list, notify=aiModelsInstallChanged)
+    def audiocppAvailableVariants(self) -> list[str]:
+        """GPU variants the current OS can actually install (cpu is always offered)."""
+        from vienetts_app.core.ai_models import available_audiocpp_variants
+
+        return sorted(available_audiocpp_variants())
+
+    def _diar_runtime_variant(self) -> str:
+        from vienetts_app.core.ai_models import available_audiocpp_variants
+
+        device = self.diarizationDevice
+        return device if device in available_audiocpp_variants() else ""
+
     @Slot(result=bool)
     def downloadDiarizationModel(self) -> bool:
-        """Download `audio-cpp/Nemotron-3-Diarization-GGUF` (and `audiocpp_cli` if needed)."""
+        """Download the Nemotron-3 GGUF and, when needed, the audio.cpp CLI.
+
+        The runtime download no longer aborts the model download: GitHub is
+        commonly blocked on the networks this app targets, while the GGUF
+        comes from Hugging Face. A runtime failure is reported in the status
+        line and a later "Chỉ tải runtime" click can finish the install.
+        """
         from vienetts_app.core.ai_models import (
             download_audiocpp_runtime,
             download_diarization_model,
@@ -8504,31 +8570,46 @@ class AppController(QObject):
         if self._diar_download_busy:
             return False
         model_id = self.diarizationModel
+        variant = self._diar_runtime_variant()
         self._diar_download_busy = True
-        self._diar_download_progress = 0.05
+        self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải {m} & runtime audio.cpp…").format(m=model_id)
         self.aiModelsInstallChanged.emit()
 
-        def _on_diar_progress(p: float) -> None:
-            self._diar_download_progress = max(0.05, min(0.99, float(p)))
+        def _on_diar_progress(p: float, base: float, span: float) -> None:
+            self._diar_download_progress = max(base, min(0.99, base + float(p) * span))
             self.aiModelsInstallChanged.emit()
 
-        def work() -> str:
+        def work() -> tuple[str, str]:
+            warning = ""
             if not is_audiocpp_installed(self._data_dir):
-                download_audiocpp_runtime(
-                    self._data_dir, progress_cb=lambda p: _on_diar_progress(p * 0.4)
-                )
+                try:
+                    download_audiocpp_runtime(
+                        self._data_dir,
+                        variant=variant,
+                        progress_cb=lambda p: _on_diar_progress(p, 0.02, 0.28),
+                    )
+                except Exception as exc:  # noqa: BLE001 - reported, not fatal
+                    warning = str(exc)
             path = download_diarization_model(
                 model_id,
                 self._data_dir,
-                progress_cb=lambda p: _on_diar_progress(0.4 + p * 0.6),
+                progress_cb=lambda p: _on_diar_progress(p, 0.30, 0.69),
             )
-            return str(path)
+            return str(path), warning
 
-        def done(path: str) -> None:
+        def done(result: tuple[str, str]) -> None:
+            path, warning = result
             self._diar_download_busy = False
             self._diar_download_progress = 1.0
-            self._diar_download_status = self.tr("Đã sẵn sàng: {name}").format(name=Path(path).name)
+            if warning:
+                self._diar_download_status = self.tr(
+                    "Đã tải mô hình {name}, nhưng chưa cài được runtime audio.cpp: {err}"
+                ).format(name=Path(path).name, err=warning)
+            else:
+                self._diar_download_status = self.tr("Đã sẵn sàng: {name}").format(
+                    name=Path(path).name
+                )
             self.aiModelsInstallChanged.emit()
 
         def failed(exc: BaseException) -> None:
@@ -8546,18 +8627,39 @@ class AppController(QObject):
 
     @Slot(result=bool)
     def downloadAudiocppRuntime(self) -> bool:
-        """Download only the `audio.cpp` native CLI runtime archive."""
-        from vienetts_app.core.ai_models import download_audiocpp_runtime
+        """Download (or reinstall) the `audio.cpp` CLI for the selected device."""
+        from vienetts_app.core.ai_models import (
+            available_audiocpp_variants,
+            download_audiocpp_runtime,
+        )
 
         if self._diar_download_busy:
             return False
+        variant = self._diar_runtime_variant()
+        if (
+            self.diarizationDevice in {"vulkan", "metal"}
+            and self.diarizationDevice not in available_audiocpp_variants()
+        ):
+            self._diar_download_status = self.tr(
+                "Không có bản runtime audio.cpp cho thiết bị {device} trên hệ điều hành này."
+            ).format(device=self.diarizationDevice)
+            self.aiModelsInstallChanged.emit()
+            return False
         self._diar_download_busy = True
-        self._diar_download_progress = 0.05
+        self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải runtime audio.cpp…")
         self.aiModelsInstallChanged.emit()
 
+        def _on_runtime_progress(p: float) -> None:
+            self._diar_download_progress = max(0.02, min(0.99, float(p)))
+            self.aiModelsInstallChanged.emit()
+
         def work() -> str:
-            cli = download_audiocpp_runtime(self._data_dir)
+            cli = download_audiocpp_runtime(
+                self._data_dir,
+                variant=variant,
+                progress_cb=_on_runtime_progress,
+            )
             return str(cli)
 
         def done(path: str) -> None:
@@ -8587,10 +8689,25 @@ class AppController(QObject):
 
         if self._diar_download_busy:
             return False
-        remove_diarization_model(self.diarizationModel, self._data_dir)
-        self._diar_download_status = ""
+        removed = remove_diarization_model(self.diarizationModel, self._data_dir)
+        self._diar_download_status = (
+            "" if removed else self.tr("Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.")
+        )
         self.aiModelsInstallChanged.emit()
-        return True
+        return removed
+
+    @Slot(result=bool)
+    def removeAudiocppRuntime(self) -> bool:
+        from vienetts_app.core.ai_models import remove_audiocpp_runtime
+
+        if self._diar_download_busy:
+            return False
+        removed = remove_audiocpp_runtime(self._data_dir)
+        self._diar_download_status = (
+            "" if removed else self.tr("Runtime audio.cpp chưa được cài đặt.")
+        )
+        self.aiModelsInstallChanged.emit()
+        return removed
 
     @Property(str, notify=outputDirChanged)
     def outputDirUrl(self) -> str:

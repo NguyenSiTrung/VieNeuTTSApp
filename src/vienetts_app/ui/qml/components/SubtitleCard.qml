@@ -170,7 +170,10 @@ AppCard {
 
                         objectName: "subtitleDiarizeToggle"
                         text: qsTr("Phân tách người nói")
-                        checked: true
+                        // Opt-in: diarization adds tens of seconds on CPU and,
+                        // without the Nemotron GGUF installed, falls back to the
+                        // acoustic heuristic. The warning now explains that.
+                        checked: false
                         enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
                     }
 
@@ -1199,6 +1202,18 @@ AppCard {
                 onClicked: {
                     if (root.available)
                         subtitleController.exportSrt(root.exportDir());
+                }
+            }
+
+            AppToggle {
+                objectName: "subtitleExportSpeakersToggle"
+                text: qsTr("Kèm nhãn người nói khi xuất SRT")
+                visible: root.hasSpeakers
+                checked: Boolean(controller && controller.subtitleExportSpeakerLabels)
+                enabled: root.available && !root.busy && !root.exporting
+                onToggled: {
+                    if (controller && typeof controller.subtitleExportSpeakerLabels !== "undefined")
+                        controller.subtitleExportSpeakerLabels = checked;
                 }
             }
 

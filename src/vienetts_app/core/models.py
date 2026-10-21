@@ -52,7 +52,10 @@ _QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
 # Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
 _QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 _ASR_BACKENDS = frozenset(("auto", "faster_whisper", "whisper_cpp", "openai_api"))
-_DIARIZATION_BACKENDS = frozenset(("auto", "nemotron_gguf", "acoustic", "nemo"))
+# Nemo is gone: the frozen Python runtime cannot import it, so the backend
+# silently degraded to the acoustic heuristic. settings.py migrates old files.
+_DIARIZATION_BACKENDS = frozenset(("auto", "nemotron_gguf", "acoustic"))
+_DIARIZATION_DEVICES = frozenset(("auto", "cpu", "vulkan", "metal"))
 
 
 # Recent voices (ui_shell_redesign FR-3.4): most recent first, per engine
@@ -231,6 +234,13 @@ class Settings:
     diarization_backend: str = "auto"
     diarization_model: str = "nemotron-3-diarization-q8_0"
     diarization_max_speakers: int = 0
+    # "auto" keeps whatever runtime is installed; cpu/vulkan/metal name the
+    # runtime archive to install and the --backend value to pass.
+    diarization_device: str = "auto"
+    # 0 = automatic (logical cores, capped at 16); a positive value is passed
+    # to audiocpp_cli --threads.
+    diarization_threads: int = 0
+    subtitle_export_speaker_labels: bool = False
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = ""
     llm_model: str = "qwen2.5:7b"
@@ -286,6 +296,15 @@ class Settings:
             or not (0 <= self.diarization_max_speakers <= 16)
         ):
             raise ValueError("diarization_max_speakers must be an integer in [0, 16]")
+        _check_choice("diarization_device", self.diarization_device, _DIARIZATION_DEVICES)
+        if (
+            isinstance(self.diarization_threads, bool)
+            or not isinstance(self.diarization_threads, int)
+            or not (0 <= self.diarization_threads <= 64)
+        ):
+            raise ValueError("diarization_threads must be an integer in [0, 64]")
+        if not isinstance(self.subtitle_export_speaker_labels, bool):
+            raise ValueError("subtitle_export_speaker_labels must be a bool")
         for str_field in (
             "asr_model",
             "asr_language",

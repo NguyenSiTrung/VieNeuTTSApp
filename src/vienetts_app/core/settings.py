@@ -138,16 +138,45 @@ def _clamp_engine_fields(data: dict) -> dict:
         logger.warning("Ignoring unknown asr_backend %r; falling back to auto", asr_backend)
         clamped.pop("asr_backend")
     diar_backend = clamped.get("diarization_backend")
+    if diar_backend == "nemo":
+        # The removed backend never worked (the frozen runtime cannot import
+        # NeMo); keep the file usable by upgrading it to the native backend.
+        logger.warning("Migrating removed diarization_backend 'nemo' to nemotron_gguf")
+        clamped["diarization_backend"] = "nemotron_gguf"
+        diar_backend = "nemotron_gguf"
     if diar_backend is not None and diar_backend not in (
         "auto",
         "nemotron_gguf",
         "acoustic",
-        "nemo",
     ):
         logger.warning(
             "Ignoring unknown diarization_backend %r; falling back to auto", diar_backend
         )
         clamped.pop("diarization_backend")
+    diar_device = clamped.get("diarization_device")
+    if diar_device is not None and diar_device not in (
+        "auto",
+        "cpu",
+        "vulkan",
+        "metal",
+    ):
+        logger.warning("Ignoring unknown diarization_device %r; falling back to auto", diar_device)
+        clamped.pop("diarization_device")
+    diar_threads = clamped.get("diarization_threads")
+    if diar_threads is not None and (
+        isinstance(diar_threads, bool)
+        or not isinstance(diar_threads, int)
+        or not (0 <= diar_threads <= 64)
+    ):
+        logger.warning("Ignoring invalid diarization_threads %r; falling back to 0", diar_threads)
+        clamped.pop("diarization_threads")
+    export_speakers = clamped.get("subtitle_export_speaker_labels")
+    if export_speakers is not None and not isinstance(export_speakers, bool):
+        logger.warning(
+            "Ignoring invalid subtitle_export_speaker_labels %r; falling back to false",
+            export_speakers,
+        )
+        clamped.pop("subtitle_export_speaker_labels")
     max_spk = clamped.get("diarization_max_speakers")
     if max_spk is not None and (
         isinstance(max_spk, bool) or not isinstance(max_spk, int) or not (0 <= max_spk <= 16)

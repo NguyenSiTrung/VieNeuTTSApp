@@ -1503,3 +1503,74 @@ def test_export_srt_can_include_speaker_labels(env, tmp_path):
     assert controller.exportSrt(str(out_dir)) != ""
     exported = sorted(out_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
     assert "[SPEAKER_01]" in exported[-1].read_text(encoding="utf-8")
+
+
+def test_asr_config_reads_device_and_threads_settings(env):
+    controller, fake, _ = env
+    fake.asrBackend = "whisper_cpp"
+    fake.asrModel = "small"
+    fake.asrLanguage = "vi"
+    fake.asrDevice = "cuda"
+    fake.asrThreads = 10
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert cfg.backend == "whisper_cpp"
+    assert cfg.model == "small"
+    assert cfg.language == "vi"
+    assert cfg.device == "cuda"
+    assert cfg.threads == 10
+
+
+def test_managed_srt_disambiguates_same_stem_videos_and_persists_media_cache_and_asr_notes(
+    env, tmp_path, monkeypatch
+):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = env
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    video_a = dir_a / "clip.mp4"
+    video_b = dir_b / "clip.mp4"
+    video_a.write_bytes(b"video_a")
+    video_b.write_bytes(b"video_b")
+
+    seen_work_dirs: list[Path] = []
+
+    def _fake_transcribe(path, cfg, *, work_dir=None, notes=None, **kw):
+        assert work_dir is not None
+        seen_work_dirs.append(Path(work_dir))
+        (Path(work_dir) / "source_16k.wav").write_bytes(b"cached_wav")
+        if notes is not None:
+            notes.append("ASR dự phòng đã kích hoạt.")
+        return [Cue(1, 0, 1500, f"Phụ đề từ {Path(path).parent.name}")]
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        _fake_transcribe,
+    )
+
+    assert controller.importVideo(str(video_a)) is True
+    assert controller.transcribeVideo(False) is True
+    assert controller.loaded is True
+    assert controller.title == "clip"
+    assert controller.cues[0]["text"] == "Phụ đề từ dir_a"
+    assert "ASR dự phòng" in controller.errorText
+    srt_a = Path(controller.sourcePath)
+    assert srt_a.is_file()
+    # Persistent media cache dir survives after transcribeVideo finishes
+    assert len(seen_work_dirs) == 1
+    assert (seen_work_dirs[0] / "source_16k.wav").is_file()
+
+    # Importing dir_b/clip.mp4 (same stem, different directory) must NOT auto-load dir_a's SRT
+    controller.clear()
+    assert controller.importVideo(str(video_b)) is True
+    assert controller.loaded is False
+
+    assert controller.transcribeVideo(False) is True
+    assert controller.loaded is True
+    assert controller.title == "clip"
+    assert controller.cues[0]["text"] == "Phụ đề từ dir_b"
+    srt_b = Path(controller.sourcePath)
+    assert srt_b.is_file()
+    assert srt_a != srt_b

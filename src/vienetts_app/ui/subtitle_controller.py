@@ -55,6 +55,7 @@ messages surface verbatim.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import replace
@@ -74,7 +75,7 @@ from vienetts_app.core.align import (
     split_unit_audio,
 )
 from vienetts_app.core.artifacts import SynthesisArtifact
-from vienetts_app.core.asr import AsrConfig, transcribe_media_to_cues
+from vienetts_app.core.asr import AsrCancelled, AsrConfig, transcribe_media_to_cues
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, export_audio_file, read_wav
 from vienetts_app.core.diarization import (
     DiarizationCancelled,
@@ -845,6 +846,24 @@ class SubtitleController(QObject):
 
     # ── import ───────────────────────────────────────────────────────────────
 
+    def _video_path_digest(self, video: Path) -> str:
+        try:
+            resolved = str(video.resolve())
+        except OSError:
+            resolved = str(video)
+        return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+
+    def _managed_srt_path(self, video: Path) -> Path:
+        stem = sanitize_filename(video.stem, fallback="video")
+        return self._store.root / f"{stem}_{self._video_path_digest(video)}.srt"
+
+    def _media_cache_dir(self, video: Path) -> Path:
+        stem = sanitize_filename(video.stem, fallback="video")
+        cache_dir = self._store.root / "_media_cache" / f"{stem}_{self._video_path_digest(video)}"
+        with contextlib.suppress(OSError):
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
     def _activate_cues_project(
         self,
         source: Path,
@@ -852,6 +871,7 @@ class SubtitleController(QObject):
         *,
         video_path: str = "",
         speaker_voices: dict[str, str] | None = None,
+        title: str | None = None,
     ) -> bool:
         try:
             context, refused = self._probe_context()
@@ -860,6 +880,10 @@ class SubtitleController(QObject):
                 comp_vid = find_companion_video(source)
                 if comp_vid is not None:
                     eff_video = str(comp_vid)
+            if title is None and eff_video:
+                with contextlib.suppress(OSError):
+                    if source.parent.resolve() == self._store.root.resolve():
+                        title = Path(eff_video).stem
             # Re-importing the SAME file must not reset the user's saved embed
             # choices: the freshly built project starts from in-memory defaults,
             # so adopt the stored project's video settings when one exists.
@@ -870,6 +894,7 @@ class SubtitleController(QObject):
                     self._fit_policy(),
                     sample_rate=DEFAULT_SAMPLE_RATE,
                     voice_key=self._effective_voice(),
+                    title=title,
                     context=context,
                 ).id
             )
@@ -895,6 +920,7 @@ class SubtitleController(QObject):
                 self._fit_policy(),
                 sample_rate=DEFAULT_SAMPLE_RATE,
                 voice_key=self._effective_voice(),
+                title=title,
                 context=context,
                 video_path=eff_video,
                 speaker_voices=speaker_voices,
@@ -983,9 +1009,7 @@ class SubtitleController(QObject):
         self._pending_video_path = str(source)
         companion = find_companion_srt(source)
         if companion is None:
-            managed_srt = (
-                self._store.root / f"{sanitize_filename(source.stem, fallback='video')}.srt"
-            )
+            managed_srt = self._managed_srt_path(source)
             if managed_srt.is_file():
                 companion = managed_srt
         if companion is not None:
@@ -1740,6 +1764,11 @@ class SubtitleController(QObject):
         backend = str(getattr(self._app, "asrBackend", "auto") or "auto")
         model = str(getattr(self._app, "asrModel", "base") or "base")
         lang = str(getattr(self._app, "asrLanguage", "auto") or "auto")
+        device = str(getattr(self._app, "asrDevice", "auto") or "auto")
+        try:
+            threads = int(getattr(self._app, "asrThreads", 0) or 0)
+        except (TypeError, ValueError):
+            threads = 0
         base_url = str(getattr(self._app, "llmBaseUrl", "") or "")
         api_key = str(getattr(self._app, "llmApiKey", "") or "")
         return AsrConfig(
@@ -1748,6 +1777,8 @@ class SubtitleController(QObject):
             language=lang,
             api_base_url=base_url,
             api_key=api_key,
+            device=device,
+            threads=threads,
         )
 
     def _diarization_config(self) -> DiarizationConfig:
@@ -1838,69 +1869,66 @@ class SubtitleController(QObject):
             self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.7 + 0.3 * progress)
 
         def work() -> tuple[list[Cue], str]:
-            import tempfile
-
-            with tempfile.TemporaryDirectory(prefix="vienetts_transcribe_") as tmp_work:
-                work_dir = Path(tmp_work)
-                cues = transcribe_media_to_cues(
-                    vpath,
-                    asr_cfg,
-                    work_dir=work_dir,
-                    data_dir=self._data_dir,
-                    progress_cb=report_asr,
-                    cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
-                )
-                diar_warn = ""
-                notes: list[str] = []
-                if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
-                    try:
-                        cues = diarize_cues(
-                            vpath,
-                            cues,
-                            diar_cfg,
-                            work_dir=work_dir,
-                            data_dir=self._data_dir,
-                            progress_cb=report_diar,
-                            cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
-                            notes=notes,
-                        )
-                    except DiarizationCancelled:
-                        diar_warn = self.tr(
-                            "Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên."
-                        )
-                    except Exception as exc:  # noqa: BLE001 - ASR output must survive
-                        # Anything other than a clean success used to propagate
-                        # out of work() and discard a finished transcription.
-                        logger.warning("Diarization failed during transcribe: %s", exc)
-                        diar_warn = self.tr("Không phân tách được người nói: {error}").format(
-                            error=exc
-                        )
-                    else:
-                        if notes:
-                            diar_warn = "\n".join(notes)
-                return cues, diar_warn
+            work_dir = self._media_cache_dir(vpath)
+            asr_notes: list[str] = []
+            cues = transcribe_media_to_cues(
+                vpath,
+                asr_cfg,
+                work_dir=work_dir,
+                data_dir=self._data_dir,
+                progress_cb=report_asr,
+                cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                notes=asr_notes,
+            )
+            diar_warn = ""
+            notes: list[str] = []
+            if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
+                try:
+                    cues = diarize_cues(
+                        vpath,
+                        cues,
+                        diar_cfg,
+                        work_dir=work_dir,
+                        data_dir=self._data_dir,
+                        progress_cb=report_diar,
+                        cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                        notes=notes,
+                    )
+                except DiarizationCancelled:
+                    diar_warn = self.tr("Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên.")
+                except Exception as exc:  # noqa: BLE001 - ASR output must survive
+                    # Anything other than a clean success used to propagate
+                    # out of work() and discard a finished transcription.
+                    logger.warning("Diarization failed during transcribe: %s", exc)
+                    diar_warn = self.tr("Không phân tách được người nói: {error}").format(error=exc)
+                else:
+                    if notes:
+                        diar_warn = "\n".join(notes)
+            warnings = [w for w in (*asr_notes, diar_warn) if w]
+            return cues, "\n".join(warnings)
 
         def done(res: tuple[list[Cue], str]) -> None:
             if gen != self._ai_generation:
                 return
-            cues, diar_warn = res
+            cues, warn = res
             self._set_ai_state(False, "", 1.0)
             if not cues:
                 self._set_error(self.tr("Không nhận diện được phụ đề nào trong video này."))
                 return
-            srt_target = self._store.root / f"{sanitize_filename(vpath.stem, fallback='video')}.srt"
+            srt_target = self._managed_srt_path(vpath)
             with contextlib.suppress(OSError):
                 srt_target.parent.mkdir(parents=True, exist_ok=True)
                 srt_target.write_text(format_srt(cues, include_speakers=True), encoding="utf-8")
-            self._activate_cues_project(srt_target, cues, video_path=str(vpath))
-            if diar_warn:
-                self._set_error(diar_warn)
+            self._activate_cues_project(srt_target, cues, video_path=str(vpath), title=vpath.stem)
+            if warn:
+                self._set_error(warn)
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
                 return
             self._set_ai_state(False, "", 0.0)
-            self._set_error(str(exc))
+            if not isinstance(exc, AsrCancelled):
+                self._set_error(str(exc))
 
         try:
             self._run_bg(work, done, self, on_error=failed)
@@ -1939,7 +1967,7 @@ class SubtitleController(QObject):
                 media,
                 cues_in,
                 diar_cfg,
-                work_dir=self._store.project_dir(project.id),
+                work_dir=self._media_cache_dir(Path(media)),
                 data_dir=self._data_dir,
                 progress_cb=report_diar,
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,

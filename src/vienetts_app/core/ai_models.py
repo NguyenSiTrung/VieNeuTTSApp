@@ -136,6 +136,7 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
 }
 
 AUDIOCPP_RELEASE_TAG = "v0.9.2"
+WHISPER_CPP_RELEASE_TAG = "b5454"
 
 
 def _promote_file(part: Path, target: Path) -> Path:
@@ -565,30 +566,31 @@ def _locate_cli(root: Path) -> Path | None:
     return next((p for p in root.rglob(exe) if p.is_file()), None)
 
 
-def _probe_runtime(cli: Path) -> None:
-    """Run ``audiocpp_cli --help`` once so a broken archive is rejected.
+def _probe_runtime(cli: Path, runtime_label: str = "audio.cpp") -> None:
+    """Run ``<cli> --help`` with ``cwd=cli.parent`` so a broken archive is rejected.
 
-    A partial extraction, a missing shared library, or a Vulkan build on a
-    machine without a Vulkan loader all produce a binary that exists but
-    cannot run. Without this probe such an install reported success and every
-    diarization run failed later.
+    A partial extraction, a missing shared library, or a GPU build on a machine
+    without the GPU loader all produce a binary that exists but cannot run.
+    Running in ``cli.parent`` lets ``RUNPATH=$ORIGIN`` and ``ggml`` backend
+    discovery locate sibling shared libraries.
     """
     try:
         proc = subprocess.run(
             [str(cli), "--help"],
+            cwd=str(cli.parent),
             capture_output=True,
             timeout=30,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise AiModelInstallError(
-            f"Runtime audio.cpp không chạy được trên máy này ({exc}). "
+            f"Runtime {runtime_label} không chạy được trên máy này ({exc}). "
             "Hãy thử bản CPU nếu đang dùng bản GPU."
         ) from exc
     if proc.returncode not in (0, 1):
         detail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip()
         raise AiModelInstallError(
-            "Runtime audio.cpp tải về nhưng không khởi động được"
+            f"Runtime {runtime_label} tải về nhưng không khởi động được"
             + (f": {detail[:300]}" if detail else ".")
         )
 
@@ -656,6 +658,194 @@ def download_audiocpp_runtime(
 
 def remove_audiocpp_runtime(data_dir: Path) -> bool:
     rt_dir = audiocpp_runtime_dir(data_dir)
+    if not rt_dir.is_dir():
+        return False
+    safe_remove(rt_dir)
+    return not rt_dir.exists()
+
+
+# ── whisper.cpp Native Runtime (whisper-cli) ─────────────────────────────────
+
+
+def whisper_runtime_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "runtimes" / "whisper"
+
+
+def _locate_whisper_cli(root: Path) -> Path | None:
+    names = ("whisper-cli.exe", "main.exe") if os.name == "nt" else ("whisper-cli", "whisper-cpp")
+    for name in names:
+        for cand in (root / "bin" / name, root / "Release" / name, root / name):
+            if cand.is_file():
+                return cand
+    for name in names:
+        found = next((p for p in root.rglob(name) if p.is_file()), None)
+        if found is not None:
+            return found
+    return None
+
+
+def resolve_whisper_cpp_cli(data_dir: Path | None = None) -> Path | None:
+    if data_dir is not None:
+        rt_dir = whisper_runtime_dir(data_dir)
+        if rt_dir.is_dir():
+            found = _locate_whisper_cli(rt_dir)
+            if found is not None:
+                return found
+    names = ("whisper-cli.exe", "main.exe") if os.name == "nt" else ("whisper-cli", "whisper-cpp")
+    for name in names:
+        on_path = shutil.which(name)
+        if on_path:
+            return Path(on_path)
+    return None
+
+
+def is_whisper_cpp_installed(data_dir: Path | None = None) -> bool:
+    return resolve_whisper_cpp_cli(data_dir) is not None
+
+
+@dataclass(frozen=True)
+class WhisperCppRuntimeVariant:
+    """One downloadable ``whisper.cpp`` CLI build."""
+
+    id: str
+    label: str
+    filename: str
+
+
+def available_whisper_cpp_variants() -> dict[str, WhisperCppRuntimeVariant]:
+    machine = platform.machine().lower()
+    is_arm = "arm" in machine or "aarch64" in machine
+    if sys.platform == "win32":
+        if is_arm:
+            return {
+                "cpu": WhisperCppRuntimeVariant(
+                    "cpu",
+                    "CPU ARM64 (tương thích rộng)",
+                    "whisper-bin-win-cpu-arm64.zip",
+                ),
+                "cuda": WhisperCppRuntimeVariant(
+                    "cuda",
+                    "NVIDIA CUDA (GPU NVIDIA)",
+                    "whisper-bin-win-cuda-13.4-arm64.zip",
+                ),
+            }
+        return {
+            "cpu": WhisperCppRuntimeVariant(
+                "cpu",
+                "CPU (tương thích rộng)",
+                "whisper-bin-x64.zip",
+            ),
+            "cuda": WhisperCppRuntimeVariant(
+                "cuda",
+                "NVIDIA CUDA 12.4 (GPU NVIDIA)",
+                "whisper-bin-win-cuda-12.4.0-x64.zip",
+            ),
+        }
+    arch = "arm64" if is_arm else "x64"
+    return {
+        "cpu": WhisperCppRuntimeVariant(
+            "cpu",
+            "CPU (tương thích rộng)",
+            f"whisper-bin-ubuntu-{arch}.tar.gz",
+        ),
+    }
+
+
+def default_whisper_cpp_variant() -> str:
+    return "cpu"
+
+
+def resolve_whisper_cpp_variant(requested: str = "") -> WhisperCppRuntimeVariant:
+    variants = available_whisper_cpp_variants()
+    key = (requested or "").strip().lower()
+    if not key or key in ("auto", "metal"):
+        key = default_whisper_cpp_variant()
+    variant = variants.get(key)
+    if variant is None:
+        offered = ", ".join(sorted(variants))
+        raise AiModelInstallError(
+            f"Không có bản runtime whisper.cpp cho lựa chọn {requested!r} trên hệ điều hành này. "
+            f"Các bản khả dụng: {offered}."
+        )
+    return variant
+
+
+def whisper_cpp_archive_url(variant: WhisperCppRuntimeVariant) -> str:
+    base = f"https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_CPP_RELEASE_TAG}"
+    return f"{base}/{variant.filename}"
+
+
+def installed_whisper_cpp_variant(data_dir: Path) -> str:
+    """Variant id recorded by the last successful install, or ''."""
+    try:
+        meta_path = whisper_runtime_dir(data_dir) / RUNTIME_META_FILENAME
+        meta = json.loads(meta_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return ""
+    variant = meta.get("variant") if isinstance(meta, dict) else None
+    return variant if isinstance(variant, str) else ""
+
+
+def download_whisper_cpp_runtime(
+    data_dir: Path,
+    *,
+    progress_cb: Callable[[float], None] | None = None,
+    url_override: str = "",
+    variant: str = "",
+) -> Path:
+    """Download, extract, validate and atomically install ``whisper-cli``."""
+    runtime_variant = resolve_whisper_cpp_variant(variant)
+    url = url_override.strip() or whisper_cpp_archive_url(runtime_variant)
+    rt_dir = whisper_runtime_dir(data_dir)
+    root = rt_dir.parent
+    root.mkdir(parents=True, exist_ok=True)
+    staging = root / f".whisper_staging_{uuid.uuid4().hex}"
+    backup = rt_dir.with_name(f".whisper_old_{uuid.uuid4().hex}")
+    staging.mkdir(parents=True, exist_ok=False)
+    suffix = ".zip" if url.lower().endswith(".zip") else ".tar.gz"
+    archive_path = staging / f"runtime{suffix}"
+    try:
+        _stream_download(url, archive_path, progress_cb=progress_cb)
+        _extract_archive(archive_path, staging)
+        with contextlib.suppress(OSError):
+            archive_path.unlink(missing_ok=True)
+        cli = _locate_whisper_cli(staging)
+        if cli is None:
+            raise AiModelInstallError("Không tìm thấy thực thi whisper-cli trong gói tải về.")
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                cli.chmod(cli.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        _probe_runtime(cli, "whisper.cpp")
+        (staging / RUNTIME_META_FILENAME).write_text(
+            json.dumps({"variant": runtime_variant.id, "tag": WHISPER_CPP_RELEASE_TAG}),
+            encoding="utf-8",
+        )
+        if rt_dir.exists():
+            os.replace(rt_dir, backup)
+        try:
+            os.replace(staging, rt_dir)
+        except OSError as exc:
+            if backup.exists():
+                with contextlib.suppress(OSError):
+                    os.replace(backup, rt_dir)
+            raise AiModelInstallError(
+                f"Không thể kích hoạt runtime whisper.cpp mới: {exc}"
+            ) from exc
+        if backup.exists():
+            safe_remove(backup)
+    finally:
+        with contextlib.suppress(OSError):
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    installed = resolve_whisper_cpp_cli(data_dir)
+    if installed is None:
+        raise AiModelInstallError("Không tìm thấy thực thi whisper-cli sau khi cài đặt.")
+    return installed
+
+
+def remove_whisper_cpp_runtime(data_dir: Path) -> bool:
+    rt_dir = whisper_runtime_dir(data_dir)
     if not rt_dir.is_dir():
         return False
     safe_remove(rt_dir)

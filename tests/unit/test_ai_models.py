@@ -18,18 +18,25 @@ from vienetts_app.core.ai_models import (
     AiModelInstallError,
     _stream_download,
     available_audiocpp_variants,
+    available_whisper_cpp_variants,
     download_asr_model,
     download_audiocpp_runtime,
     download_diarization_model,
+    download_whisper_cpp_runtime,
+    installed_whisper_cpp_variant,
     is_asr_model_installed,
     is_audiocpp_installed,
     is_diarization_model_installed,
+    is_whisper_cpp_installed,
     remove_asr_model,
     remove_diarization_model,
+    remove_whisper_cpp_runtime,
     resolve_asr_model_path,
     resolve_audiocpp_cli,
     resolve_audiocpp_variant,
     resolve_diarization_model_path,
+    resolve_whisper_cpp_cli,
+    resolve_whisper_cpp_variant,
 )
 
 
@@ -300,3 +307,64 @@ def test_runtime_variants_for_platform() -> None:
         assert "vulkan" in variants["vulkan"].filename
         with pytest.raises(AiModelInstallError):
             resolve_audiocpp_variant("cuda")
+
+
+def _whisper_runtime_tar(script: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = script.encode()
+        info = tarfile.TarInfo(name="bin/whisper-cli")
+        info.size = len(data)
+        info.mode = 0o755
+        tf.addfile(info, io.BytesIO(data))
+        marker = b"ok"
+        m_info = tarfile.TarInfo(name="bin/sibling.Marker")
+        m_info.size = len(marker)
+        m_info.mode = 0o644
+        tf.addfile(m_info, io.BytesIO(marker))
+    return buf.getvalue()
+
+
+def test_whisper_cpp_runtime_download_probe_rollback_and_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    variants = available_whisper_cpp_variants()
+    assert "cpu" in variants
+    assert resolve_whisper_cpp_variant("auto").id == "cpu"
+    with pytest.raises(AiModelInstallError):
+        resolve_whisper_cpp_variant("nonexistent_device")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    win_variants = available_whisper_cpp_variants()
+    assert "cpu" in win_variants and "cuda" in win_variants
+    monkeypatch.undo()
+
+    # Script requires sibling.Marker in cwd (proving --help runs with cwd=cli.parent)
+    good = _whisper_runtime_tar("#!/bin/sh\ntest -f ./sibling.Marker && echo whisper-cli help\n")
+    broken = _whisper_runtime_tar("#!/bin/sh\nexit 2\n")
+    port, shutdown = _serve({"/whisper-good.tar.gz": good, "/whisper-broken.tar.gz": broken})
+    try:
+        assert is_whisper_cpp_installed(tmp_path) is False
+        cli = download_whisper_cpp_runtime(
+            tmp_path, url_override=f"http://127.0.0.1:{port}/whisper-good.tar.gz"
+        )
+        assert cli.is_file()
+        assert is_whisper_cpp_installed(tmp_path) is True
+        assert resolve_whisper_cpp_cli(tmp_path) == cli
+        assert installed_whisper_cpp_variant(tmp_path) == "cpu"
+
+        with pytest.raises(AiModelInstallError):
+            download_whisper_cpp_runtime(
+                tmp_path, url_override=f"http://127.0.0.1:{port}/whisper-broken.tar.gz"
+            )
+        assert resolve_whisper_cpp_cli(tmp_path) == cli
+        assert cli.is_file()
+        runtimes = tmp_path / "runtimes"
+        assert not list(runtimes.glob(".whisper_staging_*"))
+        assert not list(runtimes.glob(".whisper_old_*"))
+
+        assert remove_whisper_cpp_runtime(tmp_path) is True
+        assert is_whisper_cpp_installed(tmp_path) is False
+        assert remove_whisper_cpp_runtime(tmp_path) is False
+    finally:
+        shutdown()

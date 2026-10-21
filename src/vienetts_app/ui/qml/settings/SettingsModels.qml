@@ -371,6 +371,10 @@ SettingsSection {
         title: qsTr("AI Phụ đề & Lồng tiếng Video (ASR / Diarization / LLM)")
         subtitle: qsTr("Cấu hình nhận diện giọng nói (Whisper), phân tách người nói (Nemotron-3 GGUF / Âm học) và LLM tinh chỉnh phụ đề")
 
+        readonly property string asrRuntimeLabel: (controller && controller.whisperCppInstalled)
+            ? qsTr("whisper.cpp: %1").arg(controller.whisperCppRuntimeVariant || "cpu")
+            : qsTr("whisper.cpp: chưa cài")
+
         readonly property string diarRuntimeLabel: (controller && controller.audiocppInstalled)
             ? qsTr("audio.cpp: %1").arg(controller.audiocppRuntimeVariant || "cpu")
             : qsTr("audio.cpp: chưa cài")
@@ -390,6 +394,34 @@ SettingsSection {
             { value: "large-v3-turbo", label: qsTr("Whisper Large-v3-Turbo Q5_0 (547 MB)") }
         ]
 
+        readonly property var asrLanguageOptions: [
+            { value: "auto", label: qsTr("Tự động nhận diện ngôn ngữ") },
+            { value: "vi", label: qsTr("Tiếng Việt (vi)") },
+            { value: "en", label: qsTr("Tiếng Anh (en)") },
+            { value: "zh", label: qsTr("Tiếng Trung (zh)") },
+            { value: "ja", label: qsTr("Tiếng Nhật (ja)") },
+            { value: "ko", label: qsTr("Tiếng Hàn (ko)") },
+            { value: "fr", label: qsTr("Tiếng Pháp (fr)") },
+            { value: "de", label: qsTr("Tiếng Đức (de)") },
+            { value: "es", label: qsTr("Tiếng Tây Ban Nha (es)") },
+            { value: "ru", label: qsTr("Tiếng Nga (ru)") }
+        ]
+
+        readonly property var asrDeviceOptions: {
+            const all = [
+                { value: "auto", label: qsTr("Tự động (ưu tiên GPU nếu khả dụng)") },
+                { value: "cpu", label: qsTr("CPU (mọi máy, ổn định nhất)") },
+                { value: "cuda", label: qsTr("CUDA GPU (NVIDIA)") },
+                { value: "metal", label: qsTr("Metal GPU (macOS Apple Silicon)") }
+            ];
+            if (!controller || typeof controller.whisperCppAvailableVariants === "undefined")
+                return all;
+            const available = controller.whisperCppAvailableVariants || [];
+            return all.filter(function (option) {
+                return option.value === "auto" || option.value === "cpu"
+                    || available.indexOf(option.value) >= 0;
+            });
+        }
         readonly property var diarBackendOptions: [
             { value: "auto", label: qsTr("Tự động (Nemotron-3 GGUF / Âm học)") },
             { value: "nemotron_gguf", label: qsTr("Nemotron-3 GGUF (audio.cpp — CPU/GPU)") },
@@ -452,6 +484,71 @@ SettingsSection {
             SettingRow {
                 Layout.fillWidth: true
                 compact: section.compact
+                label: qsTr("Ngôn ngữ nhận diện (ASR)")
+                description: qsTr("Cố định ngôn ngữ nguồn giúp nhận diện nhanh và chính xác hơn tự động dò")
+                control: AppCombo {
+                    objectName: "asrLanguageCombo"
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.asrLanguageOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.asrLanguageOptions,
+                            (controller && typeof controller.asrLanguage === "string") ? controller.asrLanguage : "auto")
+                        : 0
+                    onActivated: function (index) {
+                        if (controller && typeof controller.asrLanguage !== "undefined")
+                            controller.asrLanguage = settingsAiDubbingCard.asrLanguageOptions[index].value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Thiết bị chạy ASR")
+                description: qsTr("Tự động ưu tiên GPU nếu runtime hỗ trợ, ngược lại chạy CPU.")
+                control: AppCombo {
+                    objectName: "asrDeviceCombo"
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.asrDeviceOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.asrDeviceOptions,
+                            (controller && typeof controller.asrDevice === "string") ? controller.asrDevice : "auto")
+                        : 0
+                    onActivated: function (index) {
+                        if (controller && typeof controller.asrDevice !== "undefined")
+                            controller.asrDevice = settingsAiDubbingCard.asrDeviceOptions[index].value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Số luồng CPU cho ASR")
+                description: qsTr("0 = tự động (tối đa 16 luồng). Tăng giúp CPU nhận diện nhanh hơn.")
+                control: AppNumberField {
+                    objectName: "asrThreadsField"
+                    decimals: 0
+                    scaleFactor: 1
+                    from: 0
+                    to: 16
+                    stepSize: 1
+                    value: (controller && typeof controller.asrThreads === "number")
+                        ? controller.asrThreads : 0
+                    onValueModified: {
+                        if (controller && typeof controller.asrThreads !== "undefined")
+                            controller.asrThreads = value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
                 label: qsTr("Mô hình Whisper (GGUF)")
                 description: qsTr("Chọn và tải mô hình Whisper để nhận diện phụ đề ngoại tuyến trên CPU/GPU")
                 control: AppCombo {
@@ -471,38 +568,84 @@ SettingsSection {
                 }
             }
 
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                spacing: Theme.spacingXs
 
-                AppButton {
-                    objectName: "downloadAsrModelButton"
-                    variant: "secondary"
-                    size: "sm"
-                    iconKind: "download"
-                    text: (controller && controller.asrDownloadBusy)
-                        ? qsTr("Đang tải ASR…")
-                        : ((controller && controller.asrModelInstalled)
-                            ? qsTr("Tải lại mô hình ASR")
-                            : qsTr("Tải mô hình ASR"))
-                    enabled: Boolean(controller && !controller.asrDownloadBusy)
-                    onClicked: {
-                        if (controller && typeof controller.downloadAsrModel === "function")
-                            controller.downloadAsrModel();
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    AppButton {
+                        objectName: "downloadAsrModelButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "download"
+                        text: (controller && controller.asrDownloadBusy)
+                            ? qsTr("Đang tải ASR…")
+                            : ((controller && controller.asrModelInstalled)
+                                ? qsTr("Tải lại mô hình ASR")
+                                : qsTr("Tải mô hình ASR"))
+                        enabled: Boolean(controller && !controller.asrDownloadBusy)
+                        onClicked: {
+                            if (controller && typeof controller.downloadAsrModel === "function")
+                                controller.downloadAsrModel();
+                        }
+                    }
+
+                    AppButton {
+                        objectName: "downloadWhisperCppRuntimeButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "download"
+                        text: (controller && controller.asrDownloadBusy)
+                            ? qsTr("Đang cài…")
+                            : ((controller && controller.whisperCppInstalled)
+                                ? qsTr("Tải lại runtime")
+                                : qsTr("Cài runtime whisper.cpp"))
+                        enabled: Boolean(controller && !controller.asrDownloadBusy)
+                        onClicked: {
+                            if (controller && typeof controller.downloadWhisperCppRuntime === "function")
+                                controller.downloadWhisperCppRuntime();
+                        }
+                    }
+
+                    AppButton {
+                        objectName: "removeAsrModelButton"
+                        variant: "secondary"
+                        size: "sm"
+                        visible: Boolean(controller && controller.asrModelInstalled)
+                        enabled: Boolean(controller && !controller.asrDownloadBusy)
+                        text: qsTr("Xóa")
+                        onClicked: {
+                            if (controller && typeof controller.removeAsrModel === "function")
+                                controller.removeAsrModel();
+                        }
+                    }
+
+                    AppButton {
+                        objectName: "removeWhisperCppRuntimeButton"
+                        variant: "secondary"
+                        size: "sm"
+                        visible: Boolean(controller && controller.whisperCppInstalled)
+                        enabled: Boolean(controller && !controller.asrDownloadBusy)
+                        text: qsTr("Xóa runtime")
+                        onClicked: {
+                            if (controller && typeof controller.removeWhisperCppRuntime === "function")
+                                controller.removeWhisperCppRuntime();
+                        }
                     }
                 }
 
-                AppButton {
-                    objectName: "removeAsrModelButton"
-                    variant: "secondary"
-                    size: "sm"
-                    visible: Boolean(controller && controller.asrModelInstalled)
-                    enabled: Boolean(controller && !controller.asrDownloadBusy)
-                    text: qsTr("Xóa")
-                    onClicked: {
-                        if (controller && typeof controller.removeAsrModel === "function")
-                            controller.removeAsrModel();
-                    }
+                ProgressBar {
+                    objectName: "asrDownloadProgressBar"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: (controller && typeof controller.asrDownloadProgress === "number")
+                        ? controller.asrDownloadProgress : 0
+                    visible: Boolean(controller && controller.asrDownloadBusy)
+                    Accessible.name: qsTr("Tiến trình tải mô hình và runtime ASR")
                 }
 
                 Label {
@@ -513,14 +656,29 @@ SettingsSection {
                             return "";
                         if (controller.asrDownloadStatus && controller.asrDownloadStatus !== "")
                             return controller.asrDownloadStatus;
-                        return controller.asrModelInstalled
-                            ? qsTr("Đã cài đặt — sẵn sàng chạy ngoại tuyến.")
-                            : qsTr("Chưa tải về máy.");
+                        if (controller.asrModelInstalled && controller.whisperCppInstalled)
+                            return qsTr("Đã cài đặt mô hình Whisper + %1 (sẵn sàng chạy ngoại tuyến).")
+                                .arg(settingsAiDubbingCard.asrRuntimeLabel);
+                        if (controller.asrModelInstalled)
+                            return qsTr("Đã tải mô hình Whisper nhưng chưa có runtime whisper.cpp — hãy bấm 'Cài runtime whisper.cpp'.");
+                        return qsTr("Chưa tải về máy.");
                     }
-                    color: (controller && controller.asrModelInstalled) ? Theme.accent : Theme.textMuted
+                    color: (controller && controller.asrModelInstalled && controller.whisperCppInstalled)
+                        ? Theme.accent : Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeXs
-                    elide: Text.ElideRight
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    objectName: "asrDownloadPercentLabel"
+                    Layout.fillWidth: true
+                    visible: Boolean(controller && controller.asrDownloadBusy)
+                    text: qsTr("Đã tải %1%").arg(Math.round(
+                        (controller ? controller.asrDownloadProgress : 0) * 100))
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
                 }
             }
 

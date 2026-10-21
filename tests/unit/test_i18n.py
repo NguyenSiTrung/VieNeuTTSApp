@@ -138,6 +138,15 @@ def test_translator_loading() -> None:
     ):
         assert translator.translate("AudiobookTab", source) == english
 
+    assert (
+        translator.translate("SettingsModels", "Ngôn ngữ nhận diện (ASR)")
+        == "Recognition language (ASR)"
+    )
+    assert (
+        translator.translate("SettingsModels", "Cài runtime whisper.cpp")
+        == "Install whisper.cpp runtime"
+    )
+
 
 def test_i18n_update_script_covers_all_controllers() -> None:
     # scripts/update_i18n.sh is the regeneration entry point: every UI

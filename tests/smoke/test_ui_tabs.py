@@ -5919,6 +5919,23 @@ DRIVER = textwrap.dedent(
             click_item(open_model_dir)
             app.processEvents()
             out["open_dir_calls"] = list(controller.qwen_open_dir_calls)
+            out["asr_controls"] = {
+                "language_combo": len(settings_tab.findChildren(QObject, "asrLanguageCombo")),
+                "device_combo": len(settings_tab.findChildren(QObject, "asrDeviceCombo")),
+                "threads_field": len(settings_tab.findChildren(QObject, "asrThreadsField")),
+                "runtime_download_btn": len(
+                    settings_tab.findChildren(QObject, "downloadWhisperCppRuntimeButton")
+                ),
+                "runtime_remove_btn": len(
+                    settings_tab.findChildren(QObject, "removeWhisperCppRuntimeButton")
+                ),
+                "progress_bar": len(
+                    settings_tab.findChildren(QObject, "asrDownloadProgressBar")
+                ),
+                "percent_label": len(
+                    settings_tab.findChildren(QObject, "asrDownloadPercentLabel")
+                ),
+            }
         elif scenario == "settings_qwen_variants":
             # Task 5.2: the shared variant picker + the variant-aware install
             # cards. One pass covers the GGUF default a Qwen profile starts on,
@@ -8386,6 +8403,15 @@ class TestSettingsTabSmoke:
         # Both folder shortcuts reach their own controller slot — the runtime
         # card's click (recorded above) came first.
         assert qwen["open_dir_calls"] == ["runtime", "models"]
+        assert qwen["asr_controls"] == {
+            "language_combo": 1,
+            "device_combo": 1,
+            "threads_field": 1,
+            "runtime_download_btn": 1,
+            "runtime_remove_btn": 1,
+            "progress_bar": 1,
+            "percent_label": 1,
+        }
 
         # ── Variant picker + variant-aware install cards (Task 5.2) ────────
         variant = results["settings_qwen_variants"]

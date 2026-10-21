@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
-import shutil
 import subprocess
 import tempfile
 import uuid
@@ -23,11 +21,18 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from vienetts_app.core.ai_models import resolve_asr_model_path
+import numpy as np
+
+from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
+from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.subtitles import Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
+MODEL_SAMPLE_RATE = 16_000
+SHARED_WAV_FILENAME = "source_16k.wav"
+WAV_INPUT_16K_FILENAME = "input_16k.wav"
+ASR_CACHE_FILENAME = "asr_segments_cache.json"
 
 
 class AsrError(RuntimeError):
@@ -226,17 +231,7 @@ def _run_faster_whisper(
 
 
 def _resolve_whisper_cpp_bin(data_dir: Path | None = None) -> Path | None:
-    names = ("whisper-cli.exe", "main.exe") if os.name == "nt" else ("whisper-cli", "whisper-cpp")
-    if data_dir is not None:
-        for name in names:
-            cand = Path(data_dir) / "runtimes" / "whisper" / "bin" / name
-            if cand.is_file():
-                return cand
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return Path(found)
-    return None
+    return resolve_whisper_cpp_cli(data_dir)
 
 
 def _run_whisper_cpp(
@@ -383,6 +378,152 @@ def _run_openai_whisper_api(
     return out
 
 
+def _is_16k_mono_wav(path: Path) -> bool:
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+    except Exception:  # noqa: BLE001
+        return False
+    return int(info.samplerate) == MODEL_SAMPLE_RATE and int(info.channels) == 1
+
+
+def _convert_wav_to_16k_mono(src: Path, target: Path) -> bool:
+    try:
+        import soundfile as sf
+
+        data, sr = sf.read(str(src), dtype="float32", always_2d=True)
+        mono = np.mean(data, axis=1, dtype=np.float32) if data.shape[1] > 1 else data[:, 0]
+        if int(sr) != MODEL_SAMPLE_RATE and mono.size > 0:
+            out_len = max(1, int(round(mono.size * MODEL_SAMPLE_RATE / float(sr))))
+            x_old = np.linspace(0.0, 1.0, mono.size, endpoint=False)
+            x_new = np.linspace(0.0, 1.0, out_len, endpoint=False)
+            mono = np.interp(x_new, x_old, mono).astype(np.float32)
+        write_wav_file(mono, target, sample_rate=MODEL_SAMPLE_RATE)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ensure_16k_wav(
+    src: Path,
+    work_dir: Path | None,
+    data_dir: Path | None,
+    temp_dir: tempfile.TemporaryDirectory[str] | None,
+    *,
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+    """Return a 16 kHz mono WAV for ``src``, converting and caching it with a sidecar."""
+    if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
+        return src, temp_dir
+
+    filename = SHARED_WAV_FILENAME if src.suffix.lower() != ".wav" else WAV_INPUT_16K_FILENAME
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target = work_dir / filename
+    else:
+        temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
+        target = Path(temp_dir.name) / "extracted_16k.wav"
+
+    sidecar = target.with_name(target.name + ".json")
+    try:
+        src_stat = src.stat()
+    except OSError:
+        src_stat = None
+    expected = None
+    if src_stat is not None:
+        expected = {
+            "source": str(src.resolve()),
+            "size": src_stat.st_size,
+            "mtime_ns": src_stat.st_mtime_ns,
+        }
+    reusable = False
+    if target.is_file() and target.stat().st_size > 0 and _is_16k_mono_wav(target):
+        try:
+            stored = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = None
+        if isinstance(stored, dict) and expected is not None:
+            reusable = all(stored.get(k) == v for k, v in expected.items())
+        elif src_stat is not None:
+            reusable = target.stat().st_mtime >= src_stat.st_mtime
+    if reusable:
+        return target, temp_dir
+
+    if progress_cb is not None:
+        progress_cb(0.05, "Đang trích xuất âm thanh từ video…")
+    if src.suffix.lower() != ".wav" or not _convert_wav_to_16k_mono(src, target):
+        try:
+            extract_video_audio(
+                src, target, sample_rate=MODEL_SAMPLE_RATE, mono=True, data_dir=data_dir
+            )
+        except VideoDubError as exc:
+            raise AsrError(str(exc)) from exc
+    if expected is not None:
+        with contextlib.suppress(OSError):
+            sidecar.write_text(json.dumps(expected), encoding="utf-8")
+    return target, temp_dir
+
+
+def _asr_cache_key(wav_path: Path, config: AsrConfig) -> str:
+    try:
+        st = wav_path.stat()
+    except OSError:
+        return ""
+    lang = (config.language or "auto").strip() or "auto"
+    model = (config.model or "base").strip() or "base"
+    backend = (config.backend or "auto").strip() or "auto"
+    return f"{wav_path.resolve()}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
+
+
+def _load_cached_segments(work_dir: Path | None, key: str) -> list[RawSegment] | None:
+    if work_dir is None or not key:
+        return None
+    path = work_dir / ASR_CACHE_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("key") != key:
+        return None
+    segs = data.get("segments")
+    if not isinstance(segs, list) or not segs:
+        return None
+    out: list[RawSegment] = []
+    for item in segs:
+        if not isinstance(item, dict):
+            continue
+        txt = str(item.get("text") or "").strip()
+        if not txt:
+            continue
+        try:
+            s_ms = max(0, int(item.get("start_ms", 0)))
+            e_ms = max(s_ms + 1, int(item.get("end_ms", s_ms + 1)))
+        except (TypeError, ValueError):
+            continue
+        out.append(RawSegment(s_ms, e_ms, txt, str(item.get("speaker") or "").strip()))
+    return out or None
+
+
+def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[RawSegment]) -> None:
+    if work_dir is None or not key or not segments:
+        return
+    raw = [
+        {
+            "start_ms": s.start_ms,
+            "end_ms": s.end_ms,
+            "text": s.text,
+            "speaker": s.speaker,
+        }
+        for s in segments
+    ]
+    with contextlib.suppress(OSError):
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / ASR_CACHE_FILENAME).write_text(
+            json.dumps({"key": key, "segments": raw}, ensure_ascii=False), encoding="utf-8"
+        )
+
+
 def transcribe_media_to_cues(
     media_path: str | Path,
     config: AsrConfig | None = None,
@@ -400,74 +541,68 @@ def transcribe_media_to_cues(
 
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
     try:
-        if src.suffix.lower() == ".wav":
-            wav_path = src
-        else:
-            if work_dir is not None:
-                work_dir.mkdir(parents=True, exist_ok=True)
-                wav_path = work_dir / "source_16k.wav"
-            else:
-                temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
-                wav_path = Path(temp_dir_obj.name) / "extracted_16k.wav"
-            if not wav_path.is_file() or wav_path.stat().st_size == 0:
-                if progress_cb is not None:
-                    progress_cb(0.05, "Đang trích xuất âm thanh từ video…")
-                try:
-                    extract_video_audio(
-                        src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir
-                    )
-                except VideoDubError as exc:
-                    raise AsrError(str(exc)) from exc
+        wav_path, temp_dir_obj = _ensure_16k_wav(
+            src, work_dir, data_dir, None, progress_cb=progress_cb
+        )
         if cancel_check is not None and cancel_check():
             raise AsrError("Đã hủy nhận diện giọng nói.")
 
-        backend = (cfg.backend or "auto").strip()
-        if backend == "faster_whisper":
-            raw = _run_faster_whisper(
-                wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-            )
-        elif backend == "whisper_cpp":
-            raw = _run_whisper_cpp(
-                wav_path,
-                cfg,
-                data_dir=data_dir,
-                progress_cb=progress_cb,
-                cancel_check=cancel_check,
-            )
-        elif backend == "openai_api":
-            raw = _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
+        cache_key = _asr_cache_key(wav_path, cfg)
+        cached = _load_cached_segments(work_dir, cache_key)
+        if cached is not None:
+            if progress_cb is not None:
+                progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
+            raw = cached
         else:
-            # auto: try faster_whisper -> whisper_cpp -> openai_api
-            last_err: Exception | None = None
-            raw = []
-            for runner in (
-                lambda: _run_faster_whisper(
+            backend = (cfg.backend or "auto").strip()
+            if backend == "faster_whisper":
+                raw = _run_faster_whisper(
                     wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-                ),
-                lambda: _run_whisper_cpp(
+                )
+            elif backend == "whisper_cpp":
+                raw = _run_whisper_cpp(
                     wav_path,
                     cfg,
                     data_dir=data_dir,
                     progress_cb=progress_cb,
                     cancel_check=cancel_check,
-                ),
-                lambda: (
-                    _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
-                    if cfg.api_base_url.strip()
-                    else (_ for _ in ()).throw(AsrError("Chưa cấu hình ASR API"))
-                ),
-            ):
-                try:
-                    raw = runner()
-                    last_err = None
-                    break
-                except AsrError as exc:
-                    last_err = exc
-            if last_err is not None and not raw:
-                raise AsrError(
-                    "Không tìm thấy bộ nhận diện giọng nói (ASR) khả dụng. "
-                    "Hãy cài đặt faster-whisper / whisper.cpp hoặc cấu hình ASR trong Cài đặt."
-                ) from last_err
+                )
+            elif backend == "openai_api":
+                raw = _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
+            else:
+                # auto: try faster_whisper -> whisper_cpp -> openai_api
+                last_err: Exception | None = None
+                raw = []
+                for runner in (
+                    lambda: _run_faster_whisper(
+                        wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
+                    ),
+                    lambda: _run_whisper_cpp(
+                        wav_path,
+                        cfg,
+                        data_dir=data_dir,
+                        progress_cb=progress_cb,
+                        cancel_check=cancel_check,
+                    ),
+                    lambda: (
+                        _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
+                        if cfg.api_base_url.strip()
+                        else (_ for _ in ()).throw(AsrError("Chưa cấu hình ASR API"))
+                    ),
+                ):
+                    try:
+                        raw = runner()
+                        last_err = None
+                        break
+                    except AsrError as exc:
+                        last_err = exc
+                if last_err is not None and not raw:
+                    raise AsrError(
+                        "Không tìm thấy bộ nhận diện giọng nói (ASR) khả dụng. "
+                        "Hãy cài đặt faster-whisper / whisper.cpp hoặc cấu hình ASR trong Cài đặt."
+                    ) from last_err
+            if raw:
+                _store_cached_segments(work_dir, cache_key, raw)
 
         cues = normalize_asr_segments_to_cues(raw)
         if not cues:

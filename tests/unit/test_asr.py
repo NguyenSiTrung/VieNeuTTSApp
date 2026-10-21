@@ -158,3 +158,82 @@ def test_transcribe_BuiltIn_acoustic_vad_fallback_when_no_external_asr(
             wav,
             AsrConfig(backend="faster_whisper", model="base"),
         )
+
+
+def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    import soundfile as sf
+
+    # 1. Create a 48 kHz stereo WAV and verify whisper-cli receives a 16 kHz mono WAV
+    stereo_48k = np.column_stack(
+        [
+            np.linspace(-0.2, 0.2, 48_000, dtype=np.float32),
+            np.linspace(0.2, -0.2, 48_000, dtype=np.float32),
+        ]
+    )
+    src_wav = tmp_path / "stereo_48k.wav"
+    sf.write(str(src_wav), stereo_48k, 48_000, subtype="PCM_16")
+
+    bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
+    cli_path = bin_dir / cli_name
+    seen_wav_log = tmp_path / "seen_wav.txt"
+    cli_path.write_text(
+        "#!/bin/sh\n"
+        'wav=""\n'
+        'of=""\n'
+        "while [ $# -gt 0 ]; do\n"
+        '  case "$1" in\n'
+        '    -f) shift; wav="$1" ;;\n'
+        '    -of) shift; of="$1" ;;\n'
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        f'echo "$wav" >> "{seen_wav_log}"\n'
+        'printf "1\\n00:00:00,000 --> 00:00:01,000\\n"'
+        '"Xin chào từ whisper-cli.\\n\\n" > "${of}.srt"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+
+    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+    model_dir = tmp_path / "models" / "whisper"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_file = model_dir / WHISPER_GGUF_MODELS["base"].filename
+    with model_file.open("wb") as fh:
+        fh.truncate(int(WHISPER_GGUF_MODELS["base"].size_bytes))
+
+    work_dir = tmp_path / "work"
+    cfg = AsrConfig(backend="whisper_cpp", model="base", language="vi")
+    cues1 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert [c.text for c in cues1] == ["Xin chào từ whisper-cli."]
+
+    invocations = seen_wav_log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(invocations) == 1
+    passed_wav = Path(invocations[0])
+    assert passed_wav != src_wav
+    info = sf.info(str(passed_wav))
+    assert info.samplerate == 16_000
+    assert info.channels == 1
+    sidecar = work_dir / "input_16k.wav.json"
+    assert sidecar.is_file()
+    assert (work_dir / "asr_segments_cache.json").is_file()
+
+    # 2. Second call with unchanged input serves from asr_segments_cache.json without invoking CLI
+    cues2 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert cues2 == cues1
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+    # 3. Modifying the source WAV invalidates both input_16k.wav sidecar and segment cache
+    stereo_48k_2 = np.zeros((96_000, 2), dtype=np.float32)
+    sf.write(str(src_wav), stereo_48k_2, 48_000, subtype="PCM_16")
+    cues3 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert [c.text for c in cues3] == ["Xin chào từ whisper-cli."]
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
+    assert sf.info(str(work_dir / "input_16k.wav")).frames == 32_000

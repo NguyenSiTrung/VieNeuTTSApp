@@ -377,9 +377,7 @@ def _run_nemotron_gguf_diarization(
         cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
 
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         while True:
             if cancel_check is not None and cancel_check():
                 proc.kill()
@@ -392,9 +390,7 @@ def _run_nemotron_gguf_diarization(
             except subprocess.TimeoutExpired:
                 continue
         if proc.returncode != 0 or not turns_out.is_file():
-            detail = (stderr or stdout or "").strip().splitlines()[-1:] or [
-                "audiocpp_cli failed"
-            ]
+            detail = (stderr or stdout or "").strip().splitlines()[-1:] or ["audiocpp_cli failed"]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
         turns = parse_audiocpp_turns(
             turns_out.read_text(encoding="utf-8", errors="replace"),

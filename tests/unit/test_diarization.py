@@ -76,6 +76,7 @@ def test_acoustic_diarization_separates_two_distinct_speakers(tmp_path: Path) ->
     import pytest
 
     from vienetts_app.core.diarization import DiarizationError
+
     fake_video = tmp_path / "shared_video.mp4"
     fake_video.write_bytes(b"not-a-real-video")
     shared_dir = tmp_path / "shared_work"
@@ -96,6 +97,7 @@ def test_acoustic_diarization_separates_two_distinct_speakers(tmp_path: Path) ->
             DiarizationConfig(backend="acoustic", max_speakers=2),
             cancel_check=lambda: True,
         )
+
 
 def test_select_and_extract_speaker_reference_clip(tmp_path: Path) -> None:
     sr = 48_000

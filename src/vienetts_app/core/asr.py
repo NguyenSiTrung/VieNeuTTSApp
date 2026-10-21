@@ -272,9 +272,7 @@ def _run_whisper_cpp(
         str(out_prefix),
     ]
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         while True:
             if cancel_check is not None and cancel_check():
                 proc.kill()

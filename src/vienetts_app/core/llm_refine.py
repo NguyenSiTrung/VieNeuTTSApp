@@ -117,9 +117,7 @@ def _system_prompt_for_task(task: str, target_language: str) -> str:
     if task == "translate_dub":
         clean_lang = (target_language or "").strip()
         lang = (
-            "Vietnamese"
-            if not clean_lang or clean_lang.lower() in ("auto", "vi")
-            else clean_lang
+            "Vietnamese" if not clean_lang or clean_lang.lower() in ("auto", "vi") else clean_lang
         )
         return (
             f"You are a professional video dubbing translator. "

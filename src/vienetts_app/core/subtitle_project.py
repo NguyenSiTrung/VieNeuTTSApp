@@ -936,11 +936,7 @@ def splice_studio_window_into_subtitle(
         raw_bounds.append((s_raw, e_raw))
         cursor_ms = e_raw
 
-    unscaled_span_ms = (
-        max(1, raw_bounds[-1][1] - window_base_ms)
-        if raw_bounds
-        else 1
-    )
+    unscaled_span_ms = max(1, raw_bounds[-1][1] - window_base_ms) if raw_bounds else 1
     scale = (
         new_window_duration_ms / unscaled_span_ms
         if abs(new_window_duration_ms - unscaled_span_ms) > 2

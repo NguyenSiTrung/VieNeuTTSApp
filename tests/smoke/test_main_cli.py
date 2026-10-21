@@ -6,6 +6,7 @@ and no runtime, so it is exercised here end-to-end through a real process.
 """
 
 import json
+import os
 import subprocess
 import sys
 from io import BytesIO
@@ -96,6 +97,7 @@ class TestSmokeFailures:
         # pinned by tests/unit/test_app_entry.py::TestArgvDispatch.
 
 
+@pytest.mark.slow
 class TestQwenHostEntry:
     """``--qwen-host``: the packaged app re-dispatching itself as the model host.
 
@@ -105,11 +107,8 @@ class TestQwenHostEntry:
     host announces itself with its hello frame and exits when stdin closes.
     """
 
-    def _run_host(self, tmp_path: Path, *, importtime: bool = False) -> subprocess.CompletedProcess:
-        argv = [sys.executable]
-        if importtime:
-            argv += ["-X", "importtime"]
-        argv += ["-m", "vienetts_app", "--qwen-host"]
+    def _run_host(self, tmp_path: Path) -> subprocess.CompletedProcess:
+        argv = [sys.executable, "-m", "vienetts_app", "--qwen-host"]
         cwd = tmp_path / "thư mục có dấu cách"
         cwd.mkdir(parents=True, exist_ok=True)
         return subprocess.run(
@@ -119,7 +118,7 @@ class TestQwenHostEntry:
     def test_the_host_half_serves_the_frame_channel_and_never_imports_qt(
         self, tmp_path: Path
     ) -> None:
-        proc = self._run_host(tmp_path, importtime=True)
+        proc = self._run_host(tmp_path)
         stderr = proc.stderr.decode("utf-8", "replace")
         assert proc.returncode == 0, stderr
         # stdout is the frame channel: the hello frame, then nothing at all —
@@ -147,7 +146,26 @@ class TestQwenHostEntry:
         a promoted install can import before committing it. The environment may
         already have the pinned SDK installed, so either verdict is valid;
         stdout must remain exactly one machine-readable result.
+
+        The child runs with a stub ``torch`` on ``PYTHONPATH`` that raises
+        ``ModuleNotFoundError``, so the check takes its fast "runtime
+        incomplete" path instead of paying for the real torch -> qwen_tts
+        import (that success path is unit-covered in
+        ``tests/unit/test_qwen_host.py``). The assertions below stay
+        verdict-agnostic, so the test remains valid when torch *is* present.
         """
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        (stub_dir / "torch.py").write_text(
+            'raise ModuleNotFoundError("No module named \'torch\'", name="torch")\n',
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                part for part in (str(stub_dir), os.environ.get("PYTHONPATH")) if part
+            ),
+        }
         argv = [
             sys.executable,
             "-m",
@@ -155,7 +173,9 @@ class TestQwenHostEntry:
             "--qwen-host",
             "--qwen-host-check",
         ]
-        proc = subprocess.run(argv, cwd=tmp_path, capture_output=True, timeout=180, check=False)
+        proc = subprocess.run(
+            argv, cwd=tmp_path, capture_output=True, timeout=60, check=False, env=env
+        )
         stderr = proc.stderr.decode("utf-8", "replace")
         assert proc.returncode in (0, 1), stderr
         # stdout carries exactly one JSON verdict and no protocol frames.
@@ -171,6 +191,7 @@ class TestQwenHostEntry:
         assert '"event": "import_check"' in stderr
 
 
+@pytest.mark.slow
 class TestQwenGgufHostEntry:
     """``--qwen-gguf-host``: the frozen-build re-dispatch for the native host.
 
@@ -185,7 +206,7 @@ class TestQwenGgufHostEntry:
     def test_the_gguf_host_half_serves_the_frame_channel_and_never_imports_qt(
         self, tmp_path: Path
     ) -> None:
-        argv = [sys.executable, "-X", "importtime", "-m", "vienetts_app", "--qwen-gguf-host"]
+        argv = [sys.executable, "-m", "vienetts_app", "--qwen-gguf-host"]
         cwd = tmp_path / "thư mục có dấu cách"
         cwd.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(

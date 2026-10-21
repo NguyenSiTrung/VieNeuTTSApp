@@ -8,7 +8,9 @@ as separate screens — with the right PNG dimensions. The harness itself reject
 single-colour and stale grabs, so a zero exit also means real renders.
 
 Reduced matrix for CI cost: every screen x both themes (exercises the live
-theme flip) at 640x420 (exercises the resize from the 1120x740 default).
+theme flip) at 640x420 (exercises the resize from the 1120x740 default). Split
+into one item per theme so the two halves run independently (xdist workers), not
+as one long serial subprocess.
 """
 
 import os
@@ -54,11 +56,21 @@ def png_size(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", header[16:24])
 
 
-def test_matrix_writes_every_destination_theme_and_size(tmp_path) -> None:
-    themes, size = ("dark", "light"), (640, 420)
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_matrix_writes_every_destination_theme_and_size(tmp_path, theme) -> None:
+    size = (640, 420)
     env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--matrix", str(tmp_path), "--sizes", "640x420"],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--matrix",
+            str(tmp_path),
+            "--themes",
+            theme,
+            "--sizes",
+            f"{size[0]}x{size[1]}",
+        ],
         capture_output=True,
         text=True,
         env=env,
@@ -68,9 +80,9 @@ def test_matrix_writes_every_destination_theme_and_size(tmp_path) -> None:
     assert proc.returncode == 0, proc.stderr
 
     assert {screen.split("-")[0] for screen in SCREENS} == {tab_id for tab_id, _ in TABS}
-    expected = {
-        f"{screen}-{theme}-{size[0]}x{size[1]}.png" for theme in themes for screen in SCREENS
-    }
+    # This item covers exactly its one theme; the other theme is its own item,
+    # so the two together still cover every screen x theme.
+    expected = {f"{screen}-{theme}-{size[0]}x{size[1]}.png" for screen in SCREENS}
     assert {p.name for p in tmp_path.iterdir()} == expected
     for name in expected:
         assert png_size(tmp_path / name) == size, name

@@ -638,7 +638,9 @@ def run_driver(tmp_path: Path, scenarios: list[str]) -> dict[str, dict]:
 @pytest.fixture(scope="module")
 def studio_layout_results(tmp_path_factory) -> dict[str, dict]:
     """One QML application for the read-only layout scenarios (empty/open/responsive)."""
-    return run_driver(tmp_path_factory.mktemp("studio-layout"), ["empty_state", "open", "responsive"])
+    return run_driver(
+        tmp_path_factory.mktemp("studio-layout"), ["empty_state", "open", "responsive"]
+    )
 
 
 @pytest.fixture(scope="module")

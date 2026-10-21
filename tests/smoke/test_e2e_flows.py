@@ -954,6 +954,8 @@ DRIVER = textwrap.dedent(
             out["reopen_ok"] = audiobook2.openBook(book_id)
             out["resumed_chapter"] = audiobook2.currentChapterIndex
             out["resumed_shelf"] = [b["id"] for b in audiobook2.books]
+            # The id the shelf must restore — not a self-comparison.
+            out["book_id"] = book_id
             audiobook2.playChapter(audiobook2.currentChapterIndex)
             out["resume_seek_ms"] = (
                 recording.positions[-1] if recording.positions else -1
@@ -1915,6 +1917,7 @@ class TestQwenProfilesE2E:
 
 
 class TestQwenRecoveryE2E:
+    @pytest.mark.slow
     def test_cancel_switch_guard_crash_recovery_and_shutdown(self, tmp_path) -> None:
         """Task 7.2: a user cancel settles one cancelled terminal and keeps the
         host alive, a switch is refused mid-job, a host crash fails the job with
@@ -2092,6 +2095,7 @@ class TestQwenGgufE2E:
 
 
 class TestAudiobookE2E:
+    @pytest.mark.slow
     def test_full_round_trip_render_play_advance_resume(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["audiobook_e2e"])
         result = results["audiobook_e2e"]
@@ -2113,6 +2117,6 @@ class TestAudiobookE2E:
         # Reopen: shelf restored, chapter/position resumed, ZERO resynthesis.
         assert result["reopen_ok"] is True
         assert result["resumed_chapter"] == 1
-        assert result["resumed_shelf"] == [result["resumed_shelf"][0]]
+        assert result["resumed_shelf"] == [result["book_id"]]
         assert result["resume_seek_ms"] == 25_000
         assert result["no_resynthesis"] is True

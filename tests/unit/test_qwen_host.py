@@ -1479,10 +1479,16 @@ class TestTorchPosture:
         assert seen == [True]
         assert state["active"] is False
 
-        # Without torch the same generation runs plain.
+        # Without torch the same generation runs plain. ``None`` makes
+        # ``import torch`` raise ImportError (the "runtime has no torch" case)
+        # instead of letting the REAL torch import: a real import here would
+        # leave torch's C++ static registrations live while teardown drops the
+        # module, so the next ``import torch`` in this worker re-registers the
+        # ``triton`` TORCH_LIBRARY and dies with "Only a single TORCH_LIBRARY
+        # can be used to register the namespace triton".
         tmp_path = tmp_path / "case-b"
         tmp_path.mkdir(parents=True, exist_ok=True)
-        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        monkeypatch.setitem(sys.modules, "torch", None)
         host, model = loaded_host(tmp_path)
         assert run_synth(host).terminal.fields["status"] == "ok"
         assert len(model.custom_calls) == 1

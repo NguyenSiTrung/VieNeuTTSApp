@@ -1791,26 +1791,66 @@ def _theme_tokens() -> dict[str, dict[str, str]]:
     return tokens
 
 
+# Shell smoke is split into three disjoint driver groups (the assertions of
+# the old single giant test, unchanged) so pytest-xdist can run them in
+# parallel. Each fixture boots ONE offscreen Qt subprocess; the driver
+# rebuilds the app for every scenario inside its loop, so the groups are
+# independent — except ``lazy_tabs``, which records startup state and must
+# share the process with ``nav_group``.
+@pytest.fixture(scope="module")
+def shell_nav_results(tmp_path_factory) -> dict[str, dict]:
+    """One QML application for navigation, sidebar, restart, badge and chrome.
+
+    ``lazy_tabs`` records the startup state, so it is the first scenario of
+    this process and shares it with ``nav_group``.
+    """
+    return run_driver(
+        tmp_path_factory.mktemp("shell-nav"),
+        ["lazy_tabs", "nav_group", "restart"],
+    )
+
+
+@pytest.fixture(scope="module")
+def shell_edge_results(tmp_path_factory) -> dict[str, dict]:
+    """One QML application for the narrow-layout scan and edge surfaces."""
+    return run_driver(
+        tmp_path_factory.mktemp("shell-edge"),
+        ["audio_gate_tabs", "modelsmissing", "foreground"],
+    )
+
+
+@pytest.fixture(scope="module")
+def shell_scan_results(tmp_path_factory) -> dict[str, dict]:
+    """One QML application for the 1120x740 rendered-size/hierarchy scan."""
+    return run_driver(tmp_path_factory.mktemp("shell-scan"), ["type_scan_1120x740"])
+
+
 class TestShellSmoke:
-    """One subprocess covers the whole shell: navigation, theme, badge, edges."""
+    """Shell smoke split into parallel items: navigation/theme, edges, scan."""
 
     @pytest.mark.slow
-    def test_shell_navigation_theme_badge_and_edge_surfaces(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            # nav_group = navigate + consentcopy + updatebadge + card_shadows on
-            # ONE window; audio_gate_tabs = narrow_layout + the audio gate on
-            # ONE window (each result keeps its own key).
-            [
-                "lazy_tabs",
-                "nav_group",
-                "restart",
-                "audio_gate_tabs",
-                "modelsmissing",
-                "foreground",
-                "type_scan_1120x740",
-            ],
-        )
+    def test_shell_navigation_theme_statusbar_and_restart(self, shell_nav_results) -> None:
+        self._check_navigation(shell_nav_results)
+        self._check_sidebar(shell_nav_results)
+        self._check_restart(shell_nav_results)
+        self._check_update_badge(shell_nav_results)
+        self._check_statusbar(shell_nav_results)
+        self._check_consent_copy(shell_nav_results)
+        self._check_card_shadows(shell_nav_results)
+        self._check_lazy_tabs(shell_nav_results)
+
+    @pytest.mark.slow
+    def test_shell_narrow_layout_audio_gate_and_edge_surfaces(self, shell_edge_results) -> None:
+        self._check_narrow_layout(shell_edge_results)
+        self._check_audio_gate(shell_edge_results)
+        self._check_models_missing(shell_edge_results)
+        self._check_foreground(shell_edge_results)
+
+    @pytest.mark.slow
+    def test_shell_type_scan_1120x740(self, shell_scan_results) -> None:
+        self._check_type_scan(shell_scan_results)
+
+    def _check_navigation(self, results: dict[str, dict]) -> None:
         result = results["navigate"]
         assert result["window"] == "mainWindow"
         assert result["tabs_present"] is True
@@ -1860,6 +1900,7 @@ class TestShellSmoke:
         assert result["emotion_in_toolbar"] is True
         assert result["mode_names_missing"] == []
 
+    def _check_sidebar(self, results: dict[str, dict]) -> None:
         # FR-3.7 / AC: the sidebar shows the six destinations, in
         # order, Cài đặt pinned to the bottom with the update dot inside it.
         sidebar = results["sidebar"]
@@ -1891,6 +1932,7 @@ class TestShellSmoke:
         assert sidebar["create_keeps_mode"] == ["create", "files"]
         assert sidebar["voices_drops_pick"] == [True, "voices", False]
 
+    def _check_restart(self, results: dict[str, dict]) -> None:
         # Live theme switch (dark → light, then OS flip under pref=system) in
         # the SAME bridge instance that the restart rebuild persists.
         result = results["restart"]
@@ -1900,6 +1942,104 @@ class TestShellSmoke:
         assert result["persisted_pref"] == "light"
         assert result["persisted_effective"] == "light"
 
+    def _check_update_badge(self, results: dict[str, dict]) -> None:
+        result = results["updatebadge"]
+        assert result["dot_found"] is True
+        assert result["dot_hidden_initially"] is True
+        assert result["update_available"] is True
+        assert result["dot_visible_after_check"] is True
+        assert result["status_link_found"] is True
+        assert result["status_link_hidden_initially"] is True
+        assert result["status_link_visible_after_check"] is True
+        assert result["tab_before_link"] != "settings"
+        assert result["tab_after_link"] == "settings"
+        assert result["section_after_link"] == "updates"
+
+    def _check_statusbar(self, results: dict[str, dict]) -> None:
+        # FR-2.1 / AC-2: one status surface. The bar spans the window bottom;
+        # the moved names exist once, inside it; the sidebar card is gone.
+        result = results["statusbar"]
+        bar_x, bar_y, bar_w, bar_h = result["bar"]
+        win_w, win_h = result["window_size"]
+        assert bar_x == 0 and bar_w == win_w
+        assert bar_y + bar_h == win_h
+        assert 34 <= bar_h <= 48
+        assert result["moved"] == {
+            "engineReadout": [1, True],
+            "exportOnlyNotice": [1, True],
+            "audioRefreshButton": [1, True],
+            "statusUpdateButton": [1, True],
+        }
+        assert result["nav_engine_card"] == []
+        # The readout falls back to the model state word while the engine
+        # note is still pending, in every model state; never "" or "…".
+        assert result["note_pending"] == "…"
+        states = result["states"]
+        expected = {
+            "checking": ("checking", "Đang kiểm tra..."),
+            "unavailable": ("missing", "Chưa có mô hình"),
+            "ready": ("ready", "Sẵn sàng"),
+        }
+        assert set(states) >= {"unavailable", "ready", "ready+note"}
+        for model_state, snap in states.items():
+            assert snap["readout"].strip() not in ("", "…", "..."), (model_state, snap)
+            assert snap["readout_visible"] is True, (model_state, snap)
+            if model_state in expected:
+                readiness, word = expected[model_state]
+                assert snap["readiness"] == readiness, (model_state, snap)
+                assert snap["readout"] == word, (model_state, snap)
+                assert snap["state_visible"] is False  # no duplicate word
+        # Once the detector lands, the readout is the engine note and the
+        # state word sits beside the dot.
+        assert states["ready+note"]["readout"] == "SMOKE NOTE"
+        assert states["ready+note"]["state_text"] == "Sẵn sàng"
+        assert states["ready+note"]["state_visible"] is True
+
+    def _check_consent_copy(self, results: dict[str, dict]) -> None:
+        result = results["consentcopy"]
+        assert result["consent_found"] is True
+        text = result["consent_text"]
+        assert "đồng ý của chính người được sao chép" in text
+        assert "quyền sử dụng giọng nói" in text
+        assert "trách nhiệm của bạn" in text
+        assert "mạo danh" in text
+
+    def _check_card_shadows(self, results: dict[str, dict]) -> None:
+        # Cards use an analytic shadow bound to the theme tokens (perf 6.3).
+        result = results["card_shadows"]
+        tokens = _theme_tokens()
+        for theme in ("dark", "light"):
+            shadows = result[theme]
+            assert shadows, f"no card shadows found in {theme}"
+            assert all("RectangularShadow" in s["cls"] for s in shadows)
+            assert all(s["z"] < 0 for s in shadows)
+            visible = [s["color"] for s in shadows if s["visible"]]
+            assert visible, f"no visible card shadow in {theme}"
+            allowed = {tokens["shadowColor"][theme], tokens["shadowSubtle"][theme]}
+            assert set(visible) <= allowed, (theme, set(visible), allowed)
+        # The two themes really resolve to different shadow colours.
+        assert {s["color"] for s in result["dark"]} != {s["color"] for s in result["light"]}
+
+    def _check_lazy_tabs(self, results: dict[str, dict]) -> None:
+        # Only the landing tab is built before the first frame (perf track 6.1).
+        result = results["lazy_tabs"]
+        assert result["loaders_found"] is True
+        assert result["loaders_async"] is True
+        # Nothing but the create page's compose workspace is instantiated
+        # when create_app returns.
+        assert result["create_built_at_startup"] is True
+        assert result["built_at_startup"] == []
+        assert result["prebuild_at_startup"] is False
+        # The idle prebuild fires only AFTER the first frame was presented...
+        assert result["prebuild_at_first_frame"] is False
+        # ...and then builds every deferred tab without a visit.
+        assert result["tabs_ready"] is True
+        assert result["built_after_idle"] == sorted(
+            ["createModes", "subtitles", "studio", "audiobook", "voices", "settings"]
+        )
+        assert result["loaders_ready"] is True
+
+    def _check_narrow_layout(self, results: dict[str, dict]) -> None:
         result = results["narrow_layout"]
         assert result["notice_visible"] is True
         # The status bar is pinned to the window bottom at full width and the
@@ -1980,57 +2120,38 @@ class TestShellSmoke:
         assert short["dock_bottom"] <= short["status_top"]
         assert short["editor_visible_height"] >= 80, short
 
-        result = results["updatebadge"]
-        assert result["dot_found"] is True
-        assert result["dot_hidden_initially"] is True
-        assert result["update_available"] is True
-        assert result["dot_visible_after_check"] is True
-        assert result["status_link_found"] is True
-        assert result["status_link_hidden_initially"] is True
-        assert result["status_link_visible_after_check"] is True
-        assert result["tab_before_link"] != "settings"
-        assert result["tab_after_link"] == "settings"
-        assert result["section_after_link"] == "updates"
+    def _check_audio_gate(self, results: dict[str, dict]) -> None:
+        # Export-only notice posture (FR-4.6a): the notice/refresh affordance and
+        # the cloning preview gate are read while the probe is still False,
+        # before the single hot-plug flip that clears them (see the gate block
+        # below, which shares this scenario).
+        result = results["audio_gate_tabs"]
+        assert result["notice_found"] is True
+        assert result["notice_visible_off"] is True
+        assert result["audio_available_off"] is False
+        assert result["refresh_found"] is True
+        assert result["refresh_variant"] == "quiet"
+        assert result["refresh_visible_off"] is True
+        assert result["preview_found"] is True
+        assert result["preview_enabled_off"] is False
+        assert result["audio_available_on"] is True
+        assert result["notice_visible_on"] is False
+        assert result["preview_enabled_on"] is True
 
-        # FR-2.1 / AC-2: one status surface. The bar spans the window bottom;
-        # the moved names exist once, inside it; the sidebar card is gone.
-        result = results["statusbar"]
-        bar_x, bar_y, bar_w, bar_h = result["bar"]
-        win_w, win_h = result["window_size"]
-        assert bar_x == 0 and bar_w == win_w
-        assert bar_y + bar_h == win_h
-        assert 34 <= bar_h <= 48
-        assert result["moved"] == {
-            "engineReadout": [1, True],
-            "exportOnlyNotice": [1, True],
-            "audioRefreshButton": [1, True],
-            "statusUpdateButton": [1, True],
-        }
-        assert result["nav_engine_card"] == []
-        # The readout falls back to the model state word while the engine
-        # note is still pending, in every model state; never "" or "…".
-        assert result["note_pending"] == "…"
-        states = result["states"]
-        expected = {
-            "checking": ("checking", "Đang kiểm tra..."),
-            "unavailable": ("missing", "Chưa có mô hình"),
-            "ready": ("ready", "Sẵn sàng"),
-        }
-        assert set(states) >= {"unavailable", "ready", "ready+note"}
-        for model_state, snap in states.items():
-            assert snap["readout"].strip() not in ("", "…", "..."), (model_state, snap)
-            assert snap["readout_visible"] is True, (model_state, snap)
-            if model_state in expected:
-                readiness, word = expected[model_state]
-                assert snap["readiness"] == readiness, (model_state, snap)
-                assert snap["readout"] == word, (model_state, snap)
-                assert snap["state_visible"] is False  # no duplicate word
-        # Once the detector lands, the readout is the engine note and the
-        # state word sits beside the dot.
-        assert states["ready+note"]["readout"] == "SMOKE NOTE"
-        assert states["ready+note"]["state_text"] == "Sẵn sàng"
-        assert states["ready+note"]["state_visible"] is True
+        result = results["audio_gate_tabs"]
+        assert result["audio_ready"] is True
+        assert result["export_path_set"] is True
+        assert result["wav_exists"] is True
+        assert result["text_export_enabled_off"] is True
+        assert result["para_export_enabled_off"] is True
+        assert result["audio_available_off_after_ready"] is False
+        assert result["text_play_disabled_off"] is True
+        assert result["para_play_disabled_off"] is True
+        assert result["audio_available_after_refresh"] is True
+        assert result["text_play_enabled_after_refresh"] is True
+        assert result["para_play_enabled_after_refresh"] is True
 
+    def _check_models_missing(self, results: dict[str, dict]) -> None:
         # Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell.
         # A factory-injected engine raising the REAL marker message through
         # the REAL worker thread → controller → QML overlay.
@@ -2050,44 +2171,7 @@ class TestShellSmoke:
         assert result["cancel_invoked"] is True
         assert result["flag_still_true"] is True
 
-        # Export-only notice posture (FR-4.6a): the notice/refresh affordance and
-        # the cloning preview gate are read while the probe is still False,
-        # before the single hot-plug flip that clears them (see the gate block
-        # below, which shares this scenario).
-        result = results["audio_gate_tabs"]
-        assert result["notice_found"] is True
-        assert result["notice_visible_off"] is True
-        assert result["audio_available_off"] is False
-        assert result["refresh_found"] is True
-        assert result["refresh_variant"] == "quiet"
-        assert result["refresh_visible_off"] is True
-        assert result["preview_found"] is True
-        assert result["preview_enabled_off"] is False
-        assert result["audio_available_on"] is True
-        assert result["notice_visible_on"] is False
-        assert result["preview_enabled_on"] is True
-
-        result = results["consentcopy"]
-        assert result["consent_found"] is True
-        text = result["consent_text"]
-        assert "đồng ý của chính người được sao chép" in text
-        assert "quyền sử dụng giọng nói" in text
-        assert "trách nhiệm của bạn" in text
-        assert "mạo danh" in text
-
-        result = results["audio_gate_tabs"]
-        assert result["audio_ready"] is True
-        assert result["export_path_set"] is True
-        assert result["wav_exists"] is True
-        assert result["text_export_enabled_off"] is True
-        assert result["para_export_enabled_off"] is True
-        assert result["audio_available_off_after_ready"] is False
-        assert result["text_play_disabled_off"] is True
-        assert result["para_play_disabled_off"] is True
-        assert result["audio_available_after_refresh"] is True
-        assert result["text_play_enabled_after_refresh"] is True
-        assert result["para_play_enabled_after_refresh"] is True
-
+    def _check_foreground(self, results: dict[str, dict]) -> None:
         result = results["foreground"]
         assert result["idle_hidden"] is True
         assert result["state_after_submit"] == "queued"
@@ -2107,39 +2191,7 @@ class TestShellSmoke:
         assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True
 
-        # Only the landing tab is built before the first frame (perf track 6.1).
-        result = results["lazy_tabs"]
-        assert result["loaders_found"] is True
-        assert result["loaders_async"] is True
-        # Nothing but the create page's compose workspace is instantiated
-        # when create_app returns.
-        assert result["create_built_at_startup"] is True
-        assert result["built_at_startup"] == []
-        assert result["prebuild_at_startup"] is False
-        # The idle prebuild fires only AFTER the first frame was presented...
-        assert result["prebuild_at_first_frame"] is False
-        # ...and then builds every deferred tab without a visit.
-        assert result["tabs_ready"] is True
-        assert result["built_after_idle"] == sorted(
-            ["createModes", "subtitles", "studio", "audiobook", "voices", "settings"]
-        )
-        assert result["loaders_ready"] is True
-
-        # Cards use an analytic shadow bound to the theme tokens (perf 6.3).
-        result = results["card_shadows"]
-        tokens = _theme_tokens()
-        for theme in ("dark", "light"):
-            shadows = result[theme]
-            assert shadows, f"no card shadows found in {theme}"
-            assert all("RectangularShadow" in s["cls"] for s in shadows)
-            assert all(s["z"] < 0 for s in shadows)
-            visible = [s["color"] for s in shadows if s["visible"]]
-            assert visible, f"no visible card shadow in {theme}"
-            allowed = {tokens["shadowColor"][theme], tokens["shadowSubtle"][theme]}
-            assert set(visible) <= allowed, (theme, set(visible), allowed)
-        # The two themes really resolve to different shadow colours.
-        assert {s["color"] for s in result["dark"]} != {s["color"] for s in result["light"]}
-
+    def _check_type_scan(self, results: dict[str, dict]) -> None:
         # Rendered-size scan (AC-1): every destination activated at 1120x740.
         result = results["type_scan_1120x740"]
         assert result["tabs_ready"] is True

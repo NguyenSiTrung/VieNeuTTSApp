@@ -598,13 +598,17 @@ def capture_matrix(
                     ):
                         raise RuntimeError("window stopped presenting frames")
 
-            def stable_grab(name: str) -> Any:
+            def stable_grab(name: str, *, animated: bool) -> Any:
                 # Theme flips animate every card colour (Behavior on color,
-                # Theme.durationBase): two frames are not enough, so grab
-                # until two grabs ~60 ms apart match. A never-settling scene
-                # (a spinner) is kept with a warning rather than failing.
+                # Theme.durationBase) and page swaps animate their transition,
+                # so only those shots grab until two grabs ~60 ms apart match.
+                # A scene on the same page after settle() has nothing left to
+                # animate, so it is grabbed once. A never-settling scene (a
+                # spinner) is kept with a warning rather than failing.
                 settle()
                 image = window.grabWindow()
+                if not animated:
+                    return image
                 deadline = time.monotonic() + stable_timeout_s
                 while True:
                     pump(app, 0.06)
@@ -617,7 +621,7 @@ def capture_matrix(
                         print(f"WARNING: {name} never settled; kept last grab", file=sys.stderr)
                         return image
 
-            previous, previous_page = QByteArray(), ""
+            previous, previous_page, previous_theme = QByteArray(), "", ""
             for theme in themes:
                 bridge.themePreference = theme
                 for width, height in sizes:
@@ -642,7 +646,12 @@ def capture_matrix(
                         if bridge.effectiveTheme != theme:
                             raise RuntimeError(f"theme {theme!r} did not apply")
                         name = matrix_file_name(dest, theme, (width, height))
-                        image = stable_grab(name)
+                        # Only a just-flipped theme or a page swap animates;
+                        # consecutive screens on one page (create's modes,
+                        # voices' views, a destination's data state) just
+                        # change bindings, which settle() already covers.
+                        animated = theme != previous_theme or page != previous_page
+                        image = stable_grab(name, animated=animated)
                         if not pages[0].property("visible"):
                             raise RuntimeError(f"screen {dest!r} does not show {page}")
                         if image.isNull():
@@ -662,7 +671,7 @@ def capture_matrix(
                         # so equal back-to-back grabs of ONE page are expected.
                         if encoded == previous and page != previous_page:
                             raise RuntimeError(f"{name}: identical to the previous grab (stale)")
-                        previous, previous_page = encoded, page
+                        previous, previous_page, previous_theme = encoded, page, theme
                         path = out_dir / name
                         path.write_bytes(encoded.data())
                         saved.append(path)

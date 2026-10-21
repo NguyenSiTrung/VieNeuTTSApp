@@ -3028,10 +3028,12 @@ DRIVER = textwrap.dedent(
             card = editor.parentItem()
             while card is not None and card.property("metricWords") is None:
                 card = card.parentItem()
-            wait_ms(400)  # let the import's metrics debounce settle
+            # The metrics debounce is 250 ms (DocumentEditorCard): wait for the
+            # condition instead of sleeping a fixed 400 ms.
+            wait_for(lambda: card.property("metricWords") not in (None, 0), 3000)
             out["words_before_clear"] = card.property("metricWords")
             click_item(pfind("paragraphClearButton"))
-            wait_ms(400)
+            wait_for(lambda: card.property("metricWords") == 0, 3000)
             out["clear_text"] = editor.property("text")
             out["clear_char_count"] = pfind("charCountLabel").property("text")
             out["clear_words"] = card.property("metricWords")
@@ -3040,7 +3042,7 @@ DRIVER = textwrap.dedent(
                 editor,
                 QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier),
             )
-            wait_ms(400)
+            wait_for(lambda: card.property("metricWords") not in (None, 0), 3000)
             out["undo_text"] = editor.property("text")
             out["undo_char_count"] = pfind("charCountLabel").property("text")
             out["undo_words"] = card.property("metricWords")
@@ -3100,33 +3102,29 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["filled_generate_enabled"] = generate.property("enabled")
 
-            def settle_metrics():
-                # Outlast the 250 ms metric debounce while pumping events.
-                import time as _time
-
-                deadline = _time.monotonic() + 0.45
-                while _time.monotonic() < deadline:
-                    app.processEvents()
-                    _time.sleep(0.01)
+            def metrics_text() -> str:
+                return find("textMetricsLabel").property("text")
 
             # Script-aware metric chip (bead m9mr): a no-space CJK paragraph
             # must count its characters, not collapse to one whitespace
             # "word" (23 Han chars -> ~6s at 240 chars/min, 28 chars total).
             # Typed as a burst: the chip is debounced, so no metric pass runs
-            # per keystroke — exactly one runs once typing pauses.
-            settle_metrics()
+            # per keystroke — exactly one runs once typing pauses. Each step
+            # waits on the chip text itself instead of sleeping past the
+            # 250 ms debounce (a fixed sleep can miss it on a loaded worker).
+            assert wait_for(lambda: metrics_text() == "4 từ · 17 ký tự · ~2s", 5000)
             controller.metrics_calls.clear()
             cjk = "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
             for end in range(1, len(cjk) + 1):
                 editor.setProperty("text", cjk[:end])
                 app.processEvents()
             out["metrics_calls_during_burst"] = len(controller.metrics_calls)
-            settle_metrics()
+            assert wait_for(lambda: metrics_text() == "23 từ · 28 ký tự · ~6s", 5000)
             out["metrics_calls_after_burst"] = list(controller.metrics_calls)
-            out["cjk_metrics_text"] = find("textMetricsLabel").property("text")
+            out["cjk_metrics_text"] = metrics_text()
             editor.setProperty("text", "Xin chào thế giới")
-            settle_metrics()
-            out["vi_metrics_text"] = find("textMetricsLabel").property("text")
+            assert wait_for(lambda: metrics_text() == "4 từ · 17 ký tự · ~2s", 5000)
+            out["vi_metrics_text"] = metrics_text()
 
             generate.click()
             app.processEvents()
@@ -4869,9 +4867,14 @@ DRIVER = textwrap.dedent(
             out["model_repo"]["repo_after_blank"] = controller.modelRepo
 
             results["settings_engine_affecting_writes"] = out
-            out = {"scenario": "settings_theme"}
+        elif scenario == "settings_ui_group":
+            # Second window for the plain-fake Settings surfaces from the theme
+            # switch onward (theme/language/output/delegates/profile card/section
+            # nav/waveform): split from settings_group so the two halves are
+            # parallel pytest items instead of one ~13 s driver scenario.
             bridge.setCurrentTab("settings")
             settings_tab = settings_section("general")
+            out = {"scenario": "settings_theme"}
             # Color mode is an AppSegmented (FR-1.6): the root keeps the
             # tested `themeCombo` name; segments are Repeater delegates named
             # themeCombo_<value> (visual-tree lookup only).
@@ -7395,16 +7398,18 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestTextParagraphTabSmoke:
+    """The Text tab and paragraph workspace as four parallel items.
+
+    Each test owns its driver subprocess (one QGuiApplication per process),
+    so ``-n auto`` spreads them over workers instead of serialising every
+    surface behind one ~15 s item. The driver records the text-tab flows
+    under the ``text_group`` run and the paragraph generate/inspector pair
+    under ``generate_flow``.
+    """
+
     @pytest.mark.slow
-    def test_text_paragraph_and_subtitle_surface_flows(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            # text_group = load + stream_bindings + error_flow + export_flow +
-            # voice_picker_popup + para_import on ONE window; para_group =
-            # para_batch + srt_surface on ONE window (each result keeps its
-            # own key).
-            ["text_group", "generate_flow", "para_import_guard", "para_group"],
-        )
+    def test_text_surface_picker_stream_export_and_import(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["text_group"])
         result = results["load"]
         # ⚑ contract: every named element exists under the real Main.qml.
         assert result["missing"] == []
@@ -7512,65 +7517,6 @@ class TestTextParagraphTabSmoke:
         assert result["audition_voice"] == "adam_north"
         assert result["popup_still_open"] is True
 
-        result = results["generate_flow"]
-        # Generate is wired through the STREAMING slot (FR-4.3): same
-        # (text, voice) payload the batch seam used to receive, but
-        # slot_hits proves which submit path ran.
-        assert result["initial_generate_enabled"] is False
-        assert result["filled_generate_enabled"] is True
-        # Script-aware metric chip (bead m9mr): Chinese writes without
-        # spaces, so the old whitespace split showed "1 từ · 28 ký tự · ~1s".
-        # 23 Han characters (full stops are not words) -> ~6s at 240/min.
-        assert result["cjk_metrics_text"] == "23 từ · 28 ký tự · ~6s"
-        # Debounced chip (perf_hardening FR-2.5): 28 keystrokes, zero metric
-        # passes while typing, then exactly one pass over the settled text.
-        assert result["metrics_calls_during_burst"] == 0
-        assert result["metrics_calls_after_burst"] == [
-            "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
-        ]
-        # Space-delimited Vietnamese keeps the old numbers exactly
-        # (4 tokens, 17 chars, max(1, round(4 / 2.5)) = 2s).
-        assert result["vi_metrics_text"] == "4 từ · 17 ký tự · ~2s"
-        assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
-        assert result["slot_hits"] == ["generateStream"]
-        # Busy state: the dock's Dừng REPLACES Tạo âm thanh in the same slot
-        # (FR-2.2/2.3), with progress below; Generate's busy binding stays live.
-        assert result["busy_generate_visible"] is False
-        assert result["busy_generate_busy"] is True
-        assert result["busy_cancel_visible"] is True
-        assert result["busy_cancel_text"] == "Dừng"
-        assert result["busy_label_visible"] is True
-        assert result["busy_progress_visible"] is True
-        assert result["busy_progress_value"] == 0
-        assert result["busy_progress_indeterminate"] is True
-        assert result["busy_play_enabled"] is False
-        assert result["cancel_calls"] == 1
-        # Progress value transitions 0 → 0.5 → 1 with indeterminate clearing.
-        assert result["progress_mid"] == 0.5
-        assert result["indeterminate_mid"] is False
-        assert result["progress_full"] == 1.0
-        # Done: play enabled, busy UI reverts.
-        assert result["play_enabled_after"] is True
-        assert result["play_enabled_while_busy_with_artifact"] is True
-        assert result["export_enabled_while_busy_with_artifact"] is True
-        assert result["quick_enabled_while_busy_with_artifact"] is True
-        assert result["progress_hidden_after"] is True
-        assert result["cancel_hidden_after"] is True
-        assert result["generate_visible_after"] is True
-
-        # Merged from disabled_states: the blank/whitespace gating ran at the
-        # top of this same engine. `filled_generate_enabled`,
-        # `busy_generate_visible` and `busy_cancel_visible` are asserted above
-        # (the merged flow re-records identical values).
-        assert result["text_after_clear"] == ""
-        assert result["text_after_undo"] == "Xin chào thế giới"
-        assert result["whitespace_generate_enabled"] is False
-        assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
-        assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
-        assert result["idle_export_enabled"] is False
-        assert result["idle_quick_enabled"] is False
-        assert result["idle_play_enabled"] is False
-
         result = results["export_flow"]
         assert result["export_disabled_without_audio"] is True
         assert result["quick_disabled_without_audio"] is True
@@ -7629,14 +7575,69 @@ class TestTextParagraphTabSmoke:
         assert result["undo_words"] == result["words_before_clear"]
         assert result["undo_generate_enabled"] is True
 
-        result = results["para_import_guard"]
-        # Missing importDocument on the controller must not crash the tab:
-        # the error label explains and the editor stays untouched.
-        assert result["invoked"] is True
-        assert result["error_visible"] is True
-        assert result["error_text"] == "Không thể nhập tệp"
-        assert result["editor_unchanged"] is True
-        assert result["no_import_recorded"] is True
+    @pytest.mark.slow
+    def test_paragraph_generate_and_inspector_bindings(self, tmp_path) -> None:
+        # One subprocess: the inspector reads are recorded by the same
+        # generate_flow run that drives the Text tab generate path.
+        results = run_driver(tmp_path, ["generate_flow"])
+        result = results["generate_flow"]
+        # Generate is wired through the STREAMING slot (FR-4.3): same
+        # (text, voice) payload the batch seam used to receive, but
+        # slot_hits proves which submit path ran.
+        assert result["initial_generate_enabled"] is False
+        assert result["filled_generate_enabled"] is True
+        # Script-aware metric chip (bead m9mr): Chinese writes without
+        # spaces, so the old whitespace split showed "1 từ · 28 ký tự · ~1s".
+        # 23 Han characters (full stops are not words) -> ~6s at 240/min.
+        assert result["cjk_metrics_text"] == "23 từ · 28 ký tự · ~6s"
+        # Debounced chip (perf_hardening FR-2.5): 28 keystrokes, zero metric
+        # passes while typing, then exactly one pass over the settled text.
+        assert result["metrics_calls_during_burst"] == 0
+        assert result["metrics_calls_after_burst"] == [
+            "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
+        ]
+        # Space-delimited Vietnamese keeps the old numbers exactly
+        # (4 tokens, 17 chars, max(1, round(4 / 2.5)) = 2s).
+        assert result["vi_metrics_text"] == "4 từ · 17 ký tự · ~2s"
+        assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
+        assert result["slot_hits"] == ["generateStream"]
+        # Busy state: the dock's Dừng REPLACES Tạo âm thanh in the same slot
+        # (FR-2.2/2.3), with progress below; Generate's busy binding stays live.
+        assert result["busy_generate_visible"] is False
+        assert result["busy_generate_busy"] is True
+        assert result["busy_cancel_visible"] is True
+        assert result["busy_cancel_text"] == "Dừng"
+        assert result["busy_label_visible"] is True
+        assert result["busy_progress_visible"] is True
+        assert result["busy_progress_value"] == 0
+        assert result["busy_progress_indeterminate"] is True
+        assert result["busy_play_enabled"] is False
+        assert result["cancel_calls"] == 1
+        # Progress value transitions 0 → 0.5 → 1 with indeterminate clearing.
+        assert result["progress_mid"] == 0.5
+        assert result["indeterminate_mid"] is False
+        assert result["progress_full"] == 1.0
+        # Done: play enabled, busy UI reverts.
+        assert result["play_enabled_after"] is True
+        assert result["play_enabled_while_busy_with_artifact"] is True
+        assert result["export_enabled_while_busy_with_artifact"] is True
+        assert result["quick_enabled_while_busy_with_artifact"] is True
+        assert result["progress_hidden_after"] is True
+        assert result["cancel_hidden_after"] is True
+        assert result["generate_visible_after"] is True
+
+        # Merged from disabled_states: the blank/whitespace gating ran at the
+        # top of this same engine. `filled_generate_enabled`,
+        # `busy_generate_visible` and `busy_cancel_visible` are asserted above
+        # (the merged flow re-records identical values).
+        assert result["text_after_clear"] == ""
+        assert result["text_after_undo"] == "Xin chào thế giới"
+        assert result["whitespace_generate_enabled"] is False
+        assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
+        assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
+        assert result["idle_export_enabled"] is False
+        assert result["idle_quick_enabled"] is False
+        assert result["idle_play_enabled"] is False
 
         # Merged from para_generate (+para_cancel): the paragraph tab drives its
         # own facade through the same controller — the driver's reads are
@@ -7772,6 +7773,21 @@ class TestTextParagraphTabSmoke:
         assert insp["narrow_inspector"][1] >= insp["narrow_editor"][3], insp
         assert insp["narrow_beside_slot_visible"] is False
 
+    @pytest.mark.slow
+    def test_paragraph_import_guard_without_controller_slot(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["para_import_guard"])
+        result = results["para_import_guard"]
+        # Missing importDocument on the controller must not crash the tab:
+        # the error label explains and the editor stays untouched.
+        assert result["invoked"] is True
+        assert result["error_visible"] is True
+        assert result["error_text"] == "Không thể nhập tệp"
+        assert result["editor_unchanged"] is True
+        assert result["no_import_recorded"] is True
+
+    @pytest.mark.slow
+    def test_paragraph_batch_queue_and_subtitle_surface(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["para_group"])
         result = results["para_batch"]
         # Two exclusive surfaces behind one mode switch: the document editor
         # owns "document" mode (where the legacy "paragraph" alias lands), the
@@ -7914,22 +7930,17 @@ class TestTextParagraphTabSmoke:
 
 
 class TestCloningStudioTabSmoke:
+    """Cloning, the voice library and Studio as separate parallel items.
+
+    Each test owns its driver subprocess (one QGuiApplication per process),
+    so the three surface families no longer serialise behind one ~13 s
+    item. Studio re-synthesizes with the fake project, not with a clone
+    enrolled by the cloning test, so they split cleanly.
+    """
+
     @pytest.mark.slow
-    def test_cloning_and_studio_surfaces(self, tmp_path) -> None:
-        """The Cloning tab's gate/enroll/denoise flows and the Studio surface.
-
-        One subprocess for both surface families (one QGuiApplication per
-        process): an enrolled clone is what the Studio re-synthesizes with, so
-        the two are asserted together.
-
-        Cloning: the consent gate, enrollment, denoise preview, removal, the
-        busy/disabled states and the per-profile capability branches.
-        Studio: the objectName contract, the feeder entry, the empty-state
-        guide cards, and every binding the fake project drives (clip
-        provenance, the engine-mismatch offer, transport, range ops, history).
-        Native dialogs stay closed headless (same policy as export).
-        """
-        results = run_driver(tmp_path, ["clone_group", "studio_load", "voices_library"])
+    def test_cloning_gate_enroll_denoise_and_capability(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["clone_group"])
         # ── Cloning ────────────────────────────────────────────────────────
         result = results["clone_gate"]
         # ⚑ contract: every named element exists under the cloningTab subtree.
@@ -8046,6 +8057,9 @@ class TestCloningStudioTabSmoke:
         assert base["rows_after"] == ["Giọng Base"]
         assert base["row_profiles_after"] == ["Hồ sơ: Qwen3-TTS Base 0.6B"]
 
+    @pytest.mark.slow
+    def test_voice_library_catalog_search_and_clones(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["voices_library"])
         # ── Giọng đọc library (Task 3.5 / AC-5) ────────────────────────────
         lib = results["voices_lib"]
         assert lib["library_visible"] is True
@@ -8136,6 +8150,9 @@ class TestCloningStudioTabSmoke:
         assert "tab Sao chép" not in lib["base_empty_reason"]
         assert lib["base_clone"] == {"groups": {}, "empty_hidden": True, "clones": ["clone_1"]}
 
+    @pytest.mark.slow
+    def test_studio_surface_contract_and_bindings(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["studio_load"])
         # ── Studio ─────────────────────────────────────────────────────────
         result = results["studio_load"]
         # Contract: every named element exists under the studioTab subtree.
@@ -8240,23 +8257,16 @@ class TestCloningStudioTabSmoke:
 
 class TestSettingsTabSmoke:
     @pytest.mark.slow
-    def test_engine_profiles_install_and_synthesis_bindings(self, tmp_path) -> None:
-        """Task 6.1's shared profile/language controls + Qwen install cards, and
-        Task 6.2's synthesis surfaces bound to the active profile.
+    def test_qwen_install_cards_and_variant_picker(self, tmp_path) -> None:
+        """Task 6.1's Qwen install cards and Task 5.2's variant picker.
 
-        One subprocess for all three scenarios (one QGuiApplication per
-        process): the profile control is what the synthesis surfaces reuse, the
-        Qwen cards are the only place an engine can be installed, and the
-        capability bindings are what a user sees once they pick one — so they
-        are asserted together.
+        One subprocess for both scenarios (one QGuiApplication per process):
+        the variant picker re-publishes the same install cards, so both read
+        the same fake profile state.
         """
         results = run_driver(
             tmp_path,
-            [
-                "settings_qwen_states",
-                "settings_qwen_variants",
-                "surface_profile_bindings",
-            ],
+            ["settings_qwen_states", "settings_qwen_variants"],
         )
 
         qwen = results["settings_qwen_states"]
@@ -8497,6 +8507,11 @@ class TestSettingsTabSmoke:
         assert back["metal_absent"] is True
         assert back["row_keys"] == ["qwenModelRow_base", "qwenModelRow_customvoice"]
 
+    @pytest.mark.slow
+    def test_synthesis_surfaces_bound_to_active_profile(self, tmp_path) -> None:
+        # The capability table is the only source of truth here — the fake
+        # republishes its catalogs exactly as the real controller does.
+        results = run_driver(tmp_path, ["surface_profile_bindings"])
         # ── Synthesis surfaces bound to the active profile ─────────────────
         # The Text tab's picker and language control are read through every
         # profile state (VieNeu with and without a chosen language, Qwen
@@ -8735,12 +8750,10 @@ class TestSettingsTabSmoke:
         assert settled["variant_calls"] == [["gguf", "Q4_K_M"]]
 
     @pytest.mark.slow
-    def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
-        # ONE window drives every plain-fake Settings scenario in sequence
-        # (settings_group): load, update/CUDA states, engine writes, theme,
-        # language, output, control delegates, engine-profile card, section nav,
-        # waveform repaint discipline and the combo popup delegates. Each keeps
-        # its own result key.
+    @pytest.mark.slow
+    def test_settings_load_states_cuda_and_engine_writes(self, tmp_path) -> None:
+        # settings_group: the load contract, the update/CUDA state rows and
+        # every engine-affecting write on ONE window; each keeps its key.
         results = run_driver(tmp_path, ["settings_group"])
         result = results["settings_load"]
         assert result["all_present"] is True
@@ -8846,52 +8859,6 @@ class TestSettingsTabSmoke:
         assert "2" in result["local_summary"]
         assert result["discover_calls"] == 1
 
-        profiles = results["settings_engine_profiles"]
-        result = profiles["ready"]
-        assert result["all_present"] is True
-        assert result["combo_count"] == 3  # VieNeu + both Qwen checkpoints
-        assert result["combo_index"] == 0  # VieNeu is the default
-        assert result["badge_text"] == "Sẵn sàng"
-        assert result["device_text"] == "Thiết bị: CPU"
-        assert "sẵn sàng" in result["status_text"]
-        # Language control: the profile's own list, native names, resolved code.
-        # VieNeu is shown here with an EXPLICIT language in effect ("vi"), which
-        # is the only state in which its control appears (its engine takes no
-        # language argument — see the 6.2 scenario for the unset branch).
-        assert result["language_count"] == 2
-        assert result["language_labels"] == ["Tiếng Việt", "English"]
-        assert result["language_index"] == 0
-        assert result["language_visible"] is True
-        assert "VieNeu-TTS v3 Turbo" in result["language_note"]
-
-        result = profiles["switch"]
-        assert result["calls"] == ["qwen_custom_0_6b"]  # combo → controller
-        assert result["combo_index"] == 1
-        assert result["language_count"] == 3
-        assert result["language_labels"] == ["Auto", "中文", "日本語"]
-        assert result["language_index"] == 0  # the profile default is auto
-        assert result["language_visible"] is True
-        assert "tự nhận diện" in result["auto_note"]
-        assert result["language_calls"] == ["zh"]  # picker → controller
-
-        # Readiness branches: the picker never claims a profile is usable when
-        # it is not, and shows the profile's own failure reason.
-        assert profiles["missing"]["badge_text"] == "Chưa sẵn sàng"
-        assert "Cài đặt" in profiles["missing"]["status_text"]
-        assert profiles["failed"]["badge_text"] == "Cần chú ý"
-        assert profiles["failed"]["status_text"] == "install metadata is corrupt"
-        # A runtime that failed to import is the OTHER axis: the reason comes
-        # from the host, not from the model error or the generic sentence.
-        assert profiles["runtime_failed"]["badge_text"] == "Cần chú ý"
-        assert profiles["runtime_failed"]["status_text"] == (
-            "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
-        )
-        assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
-        assert "không có runtime" in profiles["unsupported"]["status_text"]
-        # Switching mid-job is refused by the controller, so the control is
-        # disabled rather than offering a call that would only fail.
-        assert profiles["busy"]["combo_enabled"] is False
-
         writes = results["settings_engine_affecting_writes"]
         result = writes["model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).
@@ -8906,7 +8873,19 @@ class TestSettingsTabSmoke:
         assert result["engine_retired_with_engine"] is True
         # Blank → back to the official default repo.
         assert result["repo_after_blank"] == ""
+        result = writes["engine"]
+        assert result["backend_after"] == "torch"
+        # Once an engine is live, an engine-affecting write retires it on the
+        # spot — the next submission rebuilds under the new value (FR-3.5, AC-4).
+        assert result["precision_after"] == "fp32"
+        assert result["engine_retired_with_engine"] is True
 
+    @pytest.mark.slow
+    def test_settings_theme_language_output_and_delegates(self, tmp_path) -> None:
+        # settings_ui_group: theme, language, output dir, the control/combo
+        # delegates, the profile card and the section nav on ONE window —
+        # split from settings_group so both halves run as parallel items.
+        results = run_driver(tmp_path, ["settings_ui_group"])
         result = results["settings_theme"]
         assert result["pref_before"] == "system"
         assert result["bridge_pref_after"] == "light"
@@ -8954,13 +8933,6 @@ class TestSettingsTabSmoke:
         assert result["label_after"].endswith("exports")
         assert result["reset_visible"] is True
         assert result["output_dir_after_reset"] == ""
-
-        result = writes["engine"]
-        assert result["backend_after"] == "torch"
-        # Once an engine is live, an engine-affecting write retires it on the
-        # spot — the next submission rebuilds under the new value (FR-3.5, AC-4).
-        assert result["precision_after"] == "fp32"
-        assert result["engine_retired_with_engine"] is True
 
         result = results["settings_control_delegates"]
         assert result["temp_before"] == 0.8
@@ -9113,6 +9085,52 @@ class TestSettingsTabSmoke:
         assert result["hidden_paints_on_show"] >= 1
         assert result["paints_after_envelope"] >= 1
         assert result["paints_after_resize"] >= 1
+
+        profiles = results["settings_engine_profiles"]
+        result = profiles["ready"]
+        assert result["all_present"] is True
+        assert result["combo_count"] == 3  # VieNeu + both Qwen checkpoints
+        assert result["combo_index"] == 0  # VieNeu is the default
+        assert result["badge_text"] == "Sẵn sàng"
+        assert result["device_text"] == "Thiết bị: CPU"
+        assert "sẵn sàng" in result["status_text"]
+        # Language control: the profile's own list, native names, resolved code.
+        # VieNeu is shown here with an EXPLICIT language in effect ("vi"), which
+        # is the only state in which its control appears (its engine takes no
+        # language argument — see the 6.2 scenario for the unset branch).
+        assert result["language_count"] == 2
+        assert result["language_labels"] == ["Tiếng Việt", "English"]
+        assert result["language_index"] == 0
+        assert result["language_visible"] is True
+        assert "VieNeu-TTS v3 Turbo" in result["language_note"]
+
+        result = profiles["switch"]
+        assert result["calls"] == ["qwen_custom_0_6b"]  # combo → controller
+        assert result["combo_index"] == 1
+        assert result["language_count"] == 3
+        assert result["language_labels"] == ["Auto", "中文", "日本語"]
+        assert result["language_index"] == 0  # the profile default is auto
+        assert result["language_visible"] is True
+        assert "tự nhận diện" in result["auto_note"]
+        assert result["language_calls"] == ["zh"]  # picker → controller
+
+        # Readiness branches: the picker never claims a profile is usable when
+        # it is not, and shows the profile's own failure reason.
+        assert profiles["missing"]["badge_text"] == "Chưa sẵn sàng"
+        assert "Cài đặt" in profiles["missing"]["status_text"]
+        assert profiles["failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["failed"]["status_text"] == "install metadata is corrupt"
+        # A runtime that failed to import is the OTHER axis: the reason comes
+        # from the host, not from the model error or the generic sentence.
+        assert profiles["runtime_failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["runtime_failed"]["status_text"] == (
+            "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
+        )
+        assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
+        assert "không có runtime" in profiles["unsupported"]["status_text"]
+        # Switching mid-job is refused by the controller, so the control is
+        # disabled rather than offering a call that would only fail.
+        assert profiles["busy"]["combo_enabled"] is False
 
 
 class TestStreamLifecycleSmoke:

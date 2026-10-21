@@ -177,7 +177,12 @@ def test_nemotron_3_diarization_gguf_audiocpp_cpu_turns(tmp_path: Path) -> None:
     model_dir = tmp_path / "models" / "diarization"
     model_dir.mkdir(parents=True, exist_ok=True)
     gguf_file = model_dir / "nemotron-3-diarization-q8_0.gguf"
-    gguf_file.write_bytes(b"GGUF_WEIGHTS")
+    # The managed-model size guard rejects truncated catalog artifacts; a sparse
+    # file keeps this fake at the real size without writing 102 MB.
+    from vienetts_app.core.ai_models import DIARIZATION_GGUF_MODELS
+
+    with gguf_file.open("wb") as fh:
+        fh.truncate(int(DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"].size_bytes))
 
     wav = write_wav_file(np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "in.wav", 16_000)
     cues = [

@@ -1,0 +1,265 @@
+"""Regression tests for diarization hardening: fallback warnings, cancel, timeout, cache.
+
+These cover the failure modes that previously produced silent wrong output:
+``auto`` swallowing the model error, a missing turns file being treated as a
+crash, a hung child process blocking forever, 48 kHz audio producing 3x-off
+timestamps, and every re-run re-shelling out to the CLI.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from vienetts_app.core.ai_models import DIARIZATION_GGUF_MODELS
+from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.diarization import (
+    DiarizationCancelled,
+    DiarizationConfig,
+    DiarizationError,
+    apply_speaker_ceiling,
+    diarize_cues,
+    remap_speakers_to_previous,
+)
+from vienetts_app.core.subtitles import Cue
+
+TURNS_TWO_SPEAKERS = json.dumps(
+    [
+        {"start_sample": 0, "end_sample": 32000, "speaker_id": "speaker_0", "confidence": 1.0},
+        {
+            "start_sample": 35200,
+            "end_sample": 67200,
+            "speaker_id": "speaker_1",
+            "confidence": 0.98,
+        },
+    ]
+)
+
+
+def _install_fake_cli(tmp_path: Path, script: str, *, variant: str = "") -> Path:
+    bin_dir = tmp_path / "runtimes" / "audiocpp" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli = bin_dir / ("audiocpp_cli.exe" if __import__("os").name == "nt" else "audiocpp_cli")
+    cli.write_text(script, encoding="utf-8")
+    cli.chmod(0o755)
+    if variant:
+        (bin_dir.parent / "runtime.json").write_text(
+            json.dumps({"variant": variant}), encoding="utf-8"
+        )
+    model_dir = tmp_path / "models" / "diarization"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    # Match the catalog size: a truncated managed GGUF now reads as "not
+    # installed" (sparse file, so this costs no disk space).
+    spec = DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"]
+    with (model_dir / spec.filename).open("wb") as fh:
+        fh.truncate(int(spec.size_bytes))
+    return cli
+
+
+def _turns_writer(turns: str) -> str:
+    return (
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "--turns-out" ]; then\n'
+        "    shift\n"
+        f"    printf '%s' '{turns}' > \"$1\"\n"
+        "    exit 0\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "exit 1\n"
+    )
+
+
+def _cues() -> list[Cue]:
+    return [Cue(1, 100, 1900, "Một."), Cue(2, 2300, 4100, "Hai.")]
+
+
+@pytest.fixture()
+def mono16(tmp_path: Path) -> Path:
+    return write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "in16.wav", sample_rate=16_000
+    )
+
+
+def test_auto_records_fallback_reason_instead_of_hiding_it(tmp_path: Path, mono16: Path) -> None:
+    notes: list[str] = []
+    # No CLI/model installed -> primary cannot run, acoustic must take over.
+    tagged = diarize_cues(
+        mono16,
+        _cues(),
+        DiarizationConfig(backend="auto"),
+        data_dir=tmp_path,
+        notes=notes,
+    )
+    assert len(tagged) == 2
+    assert any("Nemotron-3" in note for note in notes), notes
+    assert any("dự phòng" in note for note in notes), notes
+
+
+def test_auto_never_swallows_cancellation(tmp_path: Path, mono16: Path) -> None:
+    with pytest.raises(DiarizationCancelled):
+        diarize_cues(
+            mono16,
+            _cues(),
+            DiarizationConfig(backend="auto"),
+            data_dir=tmp_path,
+            cancel_check=lambda: True,
+        )
+
+
+def test_missing_turns_file_means_no_speech_not_failure(tmp_path: Path) -> None:
+    _install_fake_cli(tmp_path, "#!/bin/sh\nexit 0\n")
+    wav = write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "silent.wav", sample_rate=16_000
+    )
+    notes: list[str] = []
+    tagged = diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+        data_dir=tmp_path,
+        notes=notes,
+    )
+    assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_01"]
+    assert any("Không phát hiện giọng nói" in note for note in notes), notes
+
+
+def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:
+    _install_fake_cli(tmp_path, "#!/bin/sh\nsleep 30\n")
+    wav = write_wav_file(
+        np.zeros(16_000 * 2, dtype=np.float32), tmp_path / "hang.wav", sample_rate=16_000
+    )
+    with pytest.raises(DiarizationError, match="quá thời gian"):
+        diarize_cues(
+            wav,
+            _cues(),
+            DiarizationConfig(backend="nemotron_gguf", device="cpu", timeout_s=0.7),
+            data_dir=tmp_path,
+        )
+
+
+def test_48k_wav_is_downmixed_to_16k_before_the_model(tmp_path: Path) -> None:
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    cli_py = (
+        "#!/usr/bin/env python3\n"
+        "import json, sys, wave\n"
+        "args = sys.argv[1:]\n"
+        "out = args[args.index('--turns-out') + 1]\n"
+        "audio = args[args.index('--audio') + 1]\n"
+        "with wave.open(audio) as w:\n"
+        "    if w.getframerate() != 16000 or w.getnchannels() != 1:\n"
+        "        sys.stderr.write(f'bad input {w.getframerate()}Hz/{w.getnchannels()}ch\\n')\n"
+        "        sys.exit(3)\n"
+        "    total = w.getnframes()\n"
+        "json.dump([{'start_sample': 0, 'end_sample': min(32000, total),"
+        " 'speaker_id': 'speaker_0'}], open(out, 'w'))\n"
+    )
+    _install_fake_cli(tmp_path, cli_py)
+    sr = 48_000
+    wav = write_wav_file(
+        np.zeros(sr * 3, dtype=np.float32), tmp_path / "movie48.wav", sample_rate=sr
+    )
+    work_dir = tmp_path / "work"
+    tagged = diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+        data_dir=tmp_path,
+        work_dir=work_dir,
+    )
+    assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_01"]
+    assert (work_dir / "source_wav_16k.wav").is_file()
+
+
+def test_turns_are_cached_across_runs(tmp_path: Path) -> None:
+    counter = tmp_path / "calls.txt"
+    script = _turns_writer(TURNS_TWO_SPEAKERS).replace(
+        "#!/bin/sh\n", f"#!/bin/sh\necho x >> '{counter}'\n"
+    )
+    _install_fake_cli(tmp_path, script)
+    wav = write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "cached.wav", sample_rate=16_000
+    )
+    work_dir = tmp_path / "work"
+    cfg = DiarizationConfig(backend="nemotron_gguf", device="cpu")
+    first = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
+    second = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
+    assert [c.speaker for c in first] == ["SPEAKER_01", "SPEAKER_02"]
+    assert [c.speaker for c in second] == ["SPEAKER_01", "SPEAKER_02"]
+    assert counter.read_text().count("x") == 1
+
+
+def test_speaker_ceiling_merges_surplus_speakers() -> None:
+    cues = [
+        Cue(1, 0, 1000, "a", speaker="SPEAKER_01"),
+        Cue(2, 1000, 2000, "b", speaker="SPEAKER_02"),
+        Cue(3, 2000, 3000, "c", speaker="SPEAKER_03"),
+        Cue(4, 3000, 4000, "d", speaker="SPEAKER_04"),
+    ]
+    capped = apply_speaker_ceiling(cues, 2)
+    assert {c.speaker for c in capped} <= {"SPEAKER_01", "SPEAKER_02"}
+    assert apply_speaker_ceiling(cues, 0) == cues
+    assert {c.speaker for c in apply_speaker_ceiling(cues, 1)} == {"SPEAKER_01"}
+
+
+def test_labels_are_remapped_to_previous_run() -> None:
+    previous = [
+        Cue(1, 0, 2000, "a", speaker="SPEAKER_01"),
+        Cue(2, 2000, 4000, "b", speaker="SPEAKER_02"),
+    ]
+    updated = [
+        Cue(1, 0, 2000, "a", speaker="SPEAKER_02"),
+        Cue(2, 2000, 4000, "b", speaker="SPEAKER_01"),
+    ]
+    remapped = remap_speakers_to_previous(previous, updated)
+    assert [c.speaker for c in remapped] == ["SPEAKER_01", "SPEAKER_02"]
+
+    fresh = remap_speakers_to_previous(
+        previous, [Cue(1, 10_000, 12_000, "c", speaker="SPEAKER_01")]
+    )
+    assert fresh[0].speaker not in {"SPEAKER_01", "SPEAKER_02"}
+
+
+def _arg_logger(path: Path, turns: str) -> str:
+    head = "#!/bin/sh\n" + 'printf \'%s\\n\' "$@" > "' + str(path) + '"\n'
+    return head + _turns_writer(turns).split("#!/bin/sh\n", 1)[1]
+
+
+def test_cpu_only_runtime_forces_f32_even_on_auto(tmp_path: Path) -> None:
+    args_file = tmp_path / "args.txt"
+    _install_fake_cli(tmp_path, _arg_logger(args_file, TURNS_TWO_SPEAKERS))
+    wav = write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "a.wav", sample_rate=16_000
+    )
+    diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="nemotron_gguf", device="auto"),
+        data_dir=tmp_path,
+    )
+    args = args_file.read_text(encoding="utf-8")
+    assert "best" in args.splitlines()
+    assert "nemotron_3_diar.weight_type=f32" in args
+
+
+def test_gpu_runtime_keeps_native_weight_type(tmp_path: Path) -> None:
+    args_file = tmp_path / "args_gpu.txt"
+    _install_fake_cli(tmp_path, _arg_logger(args_file, TURNS_TWO_SPEAKERS), variant="vulkan")
+    wav = write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "b.wav", sample_rate=16_000
+    )
+    diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="nemotron_gguf", device="vulkan"),
+        data_dir=tmp_path,
+    )
+    args = args_file.read_text(encoding="utf-8")
+    assert "vulkan" in args.splitlines()
+    assert "weight_type" not in args

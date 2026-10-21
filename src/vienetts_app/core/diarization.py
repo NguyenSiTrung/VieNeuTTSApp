@@ -1,23 +1,29 @@
 """Speaker diarization and speaker reference clip extraction for multi-speaker video dubbing.
 
 Supports:
-1. ``nemo`` — NVIDIA NeMo diarizer (ClusteringDiarizer / Sortformer) when installed,
-   or RTTM output alignment.
+1. ``nemotron_gguf`` — ``audiocpp_cli`` + ``Nemotron-3-Diarization-GGUF`` turns,
+   the accurate on-device path (CPU/Vulkan/Metal).
 2. ``acoustic`` — Built-in zero-dependency NumPy spectral + pitch ($F_0$) + filterbank
-   speaker embedding extractor and cosine agglomerative clustering.
+   speaker embedding extractor and cosine agglomerative clustering. This is a
+   fallback, not a peer of the model: it is labelled in the UI as such.
 3. Reference clip selection & slicing (`select_speaker_reference_clip`,
    `extract_speaker_reference_wav`) so any detected speaker can be cloned directly
    from the source video in one click.
+
+``auto`` tries the model, then acoustic, and records the reason for the fallback
+in ``notes`` so the UI never presents heuristic labels as model output.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -31,17 +37,27 @@ from vienetts_app.core.audio import read_wav_range, write_wav_file
 from vienetts_app.core.subtitles import Cue
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
+logger = logging.getLogger(__name__)
+
 
 class DiarizationError(RuntimeError):
     """Speaker diarization or reference clip extraction failed; message is user-actionable."""
 
 
+class DiarizationCancelled(DiarizationError):
+    """The user cancelled; the ``auto`` fallback chain must never swallow this."""
+
+
 @dataclass(frozen=True)
 class DiarizationConfig:
-    backend: str = "auto"  # "auto" | "nemotron_gguf" | "acoustic" | "nemo"
-    max_speakers: int = 0  # 0 = auto (1..8), >0 = cap
+    backend: str = "auto"  # "auto" | "nemotron_gguf" | "acoustic"
+    max_speakers: int = 0  # 0 = auto; >0 = hard ceiling (capped at 8)
     model: str = "nemotron-3-diarization-q8_0"
-    device: str = "cpu"  # "cpu" | "cuda" | "metal" | "vulkan" | "best"
+    device: str = "auto"  # "auto" | "cpu" | "vulkan" | "metal"
+    # 0 = automatic (logical cores, capped at 16). Passed to --threads.
+    threads: int = 0
+    # 0 = derive from audio duration. Guards against a hung/crashed child.
+    timeout_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -63,7 +79,10 @@ def parse_audiocpp_turns(json_text: str, sample_rate: int = 16_000) -> list[Rttm
     sr = max(1, int(sample_rate))
     items: list[Any]
     if isinstance(payload, dict):
-        sr = max(1, int(payload.get("sample_rate") or sr))
+        # The CLI never writes sample_rate; only the server's SSE wrapper does.
+        # Coerce textually to keep a float-ish value from raising ValueError.
+        with contextlib.suppress(TypeError, ValueError):
+            sr = max(1, int(float(payload.get("sample_rate") or sr)))
         raw_list = payload.get("speaker_turns")
         items = raw_list if isinstance(raw_list, list) else []
     elif isinstance(payload, list):
@@ -80,8 +99,12 @@ def parse_audiocpp_turns(json_text: str, sample_rate: int = 16_000) -> list[Rttm
         if raw_spk not in speaker_order:
             speaker_order[raw_spk] = f"SPEAKER_{len(speaker_order) + 1:02d}"
         if "start_sample" in entry and "end_sample" in entry:
-            s_samp = max(0, int(entry["start_sample"]))
-            e_samp = max(s_samp + 1, int(entry["end_sample"]))
+            # Tolerate JSON numbers serialized as strings ("1760.0").
+            try:
+                s_samp = max(0, int(float(entry["start_sample"])))
+                e_samp = max(s_samp + 1, int(float(entry["end_sample"])))
+            except (TypeError, ValueError):
+                continue
             start_ms = int(round(s_samp * 1000.0 / sr))
             end_ms = max(start_ms + 1, int(round(e_samp * 1000.0 / sr)))
         else:
@@ -141,6 +164,161 @@ def assign_speakers_from_turns(cues: Sequence[Cue], turns: Sequence[RttmTurn]) -
             best_spk = nearest.speaker
         out.append(replace(cue, speaker=best_spk))
     return out
+
+
+#: Nemotron-3-Diarization supports at most eight speakers; the UI ceiling is
+#: clamped to this so "0..16" can never promise labels the model cannot emit.
+MAX_MODEL_SPEAKERS = 8
+
+
+def _relabel_in_order(cues: Sequence[Cue]) -> list[Cue]:
+    """Renumber speaker labels by first appearance (SPEAKER_01, 02, ...)."""
+    mapping: dict[str, str] = {}
+    out: list[Cue] = []
+    for cue in cues:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        if label not in mapping:
+            mapping[label] = f"SPEAKER_{len(mapping) + 1:02d}"
+        out.append(replace(cue, speaker=mapping[label]))
+    return out
+
+
+def apply_speaker_ceiling(cues: Sequence[Cue], max_speakers: int) -> list[Cue]:
+    """Enforce ``max_speakers`` as a ceiling by merging surplus speakers.
+
+    ``max_speakers`` used to be ignored by the Nemotron path (the model decides
+    its own count) and treated as an exact k by the acoustic path, so a user
+    asking for "at most 3" could get 5 labels. Excess speakers are merged into
+    the kept speaker whose turns overlap them most, then labels are renumbered
+    in first-appearance order.
+    """
+    if not cues:
+        return []
+    cap = int(max_speakers)
+    if cap <= 0:
+        return list(cues)
+    cap = min(cap, MAX_MODEL_SPEAKERS)
+    if cap == 1:
+        return [replace(c, speaker="SPEAKER_01") for c in cues]
+    ordered: list[str] = []
+    for cue in cues:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        if label not in ordered:
+            ordered.append(label)
+    if len(ordered) <= cap:
+        return _relabel_in_order(cues)
+
+    durations = {label: 0 for label in ordered}
+    for cue in cues:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        durations[label] += max(1, cue.end_ms - cue.start_ms)
+    first_seen = {label: i for i, label in enumerate(ordered)}
+    kept = sorted(ordered, key=lambda label: (-durations[label], first_seen[label]))[:cap]
+    kept_set = set(kept)
+    dropped = [label for label in ordered if label not in kept_set]
+
+    kept_intervals = {label: [] for label in kept}
+    dropped_intervals: dict[str, list[tuple[int, int]]] = {label: [] for label in dropped}
+    for cue in cues:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        if label in kept_set:
+            kept_intervals[label].append((cue.start_ms, cue.end_ms))
+        else:
+            dropped_intervals[label].append((cue.start_ms, cue.end_ms))
+
+    merge_into: dict[str, str] = {}
+    for label in dropped:
+        best = kept[0]
+        best_overlap = -1
+        for candidate in kept:
+            overlap = sum(
+                max(0, min(e1, e2) - max(s1, s2))
+                for s1, e1 in dropped_intervals[label]
+                for s2, e2 in kept_intervals[candidate]
+            )
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best = candidate
+        merge_into[label] = best
+
+    merged = [
+        replace(cue, speaker=merge_into.get((cue.speaker or "").strip(), cue.speaker or ""))
+        for cue in cues
+    ]
+    return _relabel_in_order(merged)
+
+
+def remap_speakers_to_previous(previous: Sequence[Cue], updated: Sequence[Cue]) -> list[Cue]:
+    """Map fresh diarization labels onto the labels already in the project.
+
+    Re-running diarization renumbered speakers from scratch, so a voice the
+    user had cloned for ``SPEAKER_01`` silently moved to another person. New
+    labels are matched to old ones by temporal overlap (greedy, highest first);
+    unmatched new speakers receive a fresh number after the old maximum.
+    """
+    if not previous or not updated:
+        return list(updated)
+    old_order: list[str] = []
+    for cue in previous:
+        label = (cue.speaker or "").strip()
+        if label and label not in old_order:
+            old_order.append(label)
+    if not old_order:
+        return list(updated)
+    new_order: list[str] = []
+    for cue in updated:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        if label not in new_order:
+            new_order.append(label)
+
+    old_intervals: dict[str, list[tuple[int, int]]] = {label: [] for label in old_order}
+    new_intervals: dict[str, list[tuple[int, int]]] = {label: [] for label in new_order}
+    for cue in previous:
+        label = (cue.speaker or "").strip()
+        if label in old_intervals:
+            old_intervals[label].append((cue.start_ms, cue.end_ms))
+    for cue in updated:
+        label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
+        new_intervals[label].append((cue.start_ms, cue.end_ms))
+
+    pairs: list[tuple[int, int, int]] = []
+    for ni, new_label in enumerate(new_order):
+        for oi, old_label in enumerate(old_order):
+            overlap = sum(
+                max(0, min(e1, e2) - max(s1, s2))
+                for s1, e1 in new_intervals[new_label]
+                for s2, e2 in old_intervals[old_label]
+            )
+            if overlap > 0:
+                pairs.append((overlap, ni, oi))
+    pairs.sort(reverse=True)
+    assignment: dict[str, str] = {}
+    used_old: set[str] = set()
+    for _overlap, ni, oi in pairs:
+        new_label = new_order[ni]
+        old_label = old_order[oi]
+        if new_label in assignment or old_label in used_old:
+            continue
+        assignment[new_label] = old_label
+        used_old.add(old_label)
+
+    used_numbers = set()
+    for label in old_order:
+        with contextlib.suppress(ValueError):
+            used_numbers.add(int(label.rsplit("_", 1)[-1]))
+    next_number = max(used_numbers, default=0) + 1
+    for new_label in new_order:
+        if new_label in assignment:
+            continue
+        while next_number in used_numbers:
+            next_number += 1
+        assignment[new_label] = f"SPEAKER_{next_number:02d}"
+        used_numbers.add(next_number)
+
+    return [
+        replace(cue, speaker=assignment[(cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"])
+        for cue in updated
+    ]
 
 
 def _cue_acoustic_embedding(samples: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -223,25 +401,36 @@ def _cue_acoustic_embedding(samples: np.ndarray, sample_rate: int) -> np.ndarray
     return feat / norm if norm > 1e-6 else feat
 
 
-def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[int]:
-    """Cosine agglomerative clustering returning 0-based speaker cluster indices."""
+def _cluster_embeddings(
+    embeddings: np.ndarray,
+    max_speakers: int = 0,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[int]:
+    """Cosine agglomerative clustering returning 0-based speaker cluster indices.
+
+    ``max_speakers`` is a ceiling, not an exact k: the best silhouette among
+    2..ceiling wins. The previous exact-k behaviour turned "at most 4" into
+    "exactly 4 labels", splitting a 2-person video into 4 speakers.
+    """
     n = embeddings.shape[0]
     if n == 0:
         return []
-    if n == 1 or max_speakers == 1:
+    if n == 1:
+        return [0] * n
+    cap = min(int(max_speakers), MAX_MODEL_SPEAKERS) if int(max_speakers) > 0 else 0
+    if cap == 1:
         return [0] * n
 
-    # Pairwise cosine distance matrix
     sim = np.clip(embeddings @ embeddings.T, -1.0, 1.0)
     dist = 1.0 - sim
     np.fill_diagonal(dist, 0.0)
 
-    # If max pairwise distance is tiny, everyone is the same speaker
-    if max_speakers <= 0 and float(np.max(dist)) < 0.08:
+    # If max pairwise distance is tiny, everyone is the same speaker.
+    if cap == 0 and float(np.max(dist)) < 0.08:
         return [0] * n
 
-    max_k = min(n, max_speakers) if max_speakers > 1 else min(6, n)
-    min_k = max_k if max_speakers > 1 else 2
+    max_k = min(n, cap) if cap else min(6, n)
     clusters: list[list[int]] = [[i] for i in range(n)]
     cluster_sum = dist.astype(np.float64, copy=True)
     sizes = np.ones(n, dtype=np.float64)
@@ -257,7 +446,9 @@ def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[i
     if len(clusters) <= max_k:
         partitions[len(clusters)] = _snapshot()
 
-    while len(clusters) > min_k:
+    while len(clusters) > 1:
+        if cancel_check is not None and cancel_check():
+            raise DiarizationCancelled("Đã hủy phân tách người nói.")
         m = len(clusters)
         avg_dist = cluster_sum / np.outer(sizes, sizes)
         np.fill_diagonal(avg_dist, np.inf)
@@ -276,43 +467,42 @@ def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[i
         if len(clusters) <= max_k:
             partitions[len(clusters)] = _snapshot()
 
-    if max_speakers > 1:
-        raw_labels = partitions.get(max_k, [0] * n)
-    else:
-        best_k = 1
-        best_score = 0.12  # minimum silhouette threshold to split into >=2 speakers
-        best_labels = [0] * n
-        for k in range(2, max_k + 1):
-            cand = partitions.get(k)
-            if cand is None:
-                continue
-            cand_arr = np.asarray(cand, dtype=np.int32)
-            mean_to_cluster = np.zeros((n, k), dtype=np.float64)
-            counts = np.zeros(k, dtype=np.int32)
-            for c_id in range(k):
-                mask = cand_arr == c_id
-                cnt = int(np.sum(mask))
-                counts[c_id] = cnt
-                if cnt > 0:
-                    mean_to_cluster[:, c_id] = np.sum(dist[:, mask], axis=1)
-            idx_range = np.arange(n)
-            own_c = cand_arr
-            own_cnt = counts[own_c]
-            a_vals = np.where(
-                own_cnt > 1,
-                mean_to_cluster[idx_range, own_c] / np.maximum(own_cnt - 1, 1),
-                0.0,
-            )
-            other_means = mean_to_cluster / np.maximum(counts[None, :], 1)
-            other_means[idx_range, own_c] = np.inf
-            b_vals = np.min(other_means, axis=1)
-            denom = np.maximum(np.maximum(a_vals, b_vals), 1e-6)
-            mean_sil = float(np.mean((b_vals - a_vals) / denom))
-            if mean_sil > best_score:
-                best_score = mean_sil
-                best_k = k
-                best_labels = cand
-        raw_labels = best_labels if best_k > 1 else [0] * n
+    best_k = 1
+    best_score = 0.12  # minimum silhouette threshold to split into >=2 speakers
+    best_labels = [0] * n
+    for k in range(2, max_k + 1):
+        if cancel_check is not None and cancel_check():
+            raise DiarizationCancelled("Đã hủy phân tách người nói.")
+        cand = partitions.get(k)
+        if cand is None:
+            continue
+        cand_arr = np.asarray(cand, dtype=np.int32)
+        mean_to_cluster = np.zeros((n, k), dtype=np.float64)
+        counts = np.zeros(k, dtype=np.int32)
+        for c_id in range(k):
+            mask = cand_arr == c_id
+            cnt = int(np.sum(mask))
+            counts[c_id] = cnt
+            if cnt > 0:
+                mean_to_cluster[:, c_id] = np.sum(dist[:, mask], axis=1)
+        idx_range = np.arange(n)
+        own_c = cand_arr
+        own_cnt = counts[own_c]
+        a_vals = np.where(
+            own_cnt > 1,
+            mean_to_cluster[idx_range, own_c] / np.maximum(own_cnt - 1, 1),
+            0.0,
+        )
+        other_means = mean_to_cluster / np.maximum(counts[None, :], 1)
+        other_means[idx_range, own_c] = np.inf
+        b_vals = np.min(other_means, axis=1)
+        denom = np.maximum(np.maximum(a_vals, b_vals), 1e-6)
+        mean_sil = float(np.mean((b_vals - a_vals) / denom))
+        if mean_sil > best_score:
+            best_score = mean_sil
+            best_k = k
+            best_labels = cand
+    raw_labels = best_labels if best_k > 1 else [0] * n
     # Renumber clusters in order of first appearance (0 -> SPEAKER_01, 1 -> SPEAKER_02, ...)
     remap: dict[int, int] = {}
     ordered: list[int] = []
@@ -323,14 +513,185 @@ def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[i
     return ordered
 
 
+TURNS_CACHE_FILENAME = "diar_turns_cache.json"
+SHARED_WAV_FILENAME = "source_16k.wav"
+WAV_INPUT_16K_FILENAME = "source_wav_16k.wav"
+#: Model input is 16 kHz mono; a 48 kHz WAV used to be fed to the CLI as-is,
+#: which made every timestamp three times too long.
+MODEL_SAMPLE_RATE = 16_000
+
+
+def _resolve_cli_backend(config: DiarizationConfig, data_dir: Path | None) -> str:
+    """Map the settings device to a ``--backend`` value the install supports."""
+    if data_dir is not None:
+        from vienetts_app.core.ai_models import installed_audiocpp_variant
+
+        installed_variant = installed_audiocpp_variant(data_dir)
+    else:
+        installed_variant = ""
+    device = (config.device or "auto").strip().lower()
+    if device == "cpu":
+        return "cpu"
+    if device == "metal" and sys.platform == "darwin":
+        return "metal"
+    if device == "vulkan" and installed_variant == "vulkan":
+        return "vulkan"
+    # "auto", or a GPU the installed CPU/Metal runtime cannot serve: let the
+    # binary pick the best compiled backend instead of failing on "vulkan".
+    return "best"
+
+
+def _runtime_is_cpu_only(data_dir: Path | None) -> bool:
+    """True when the installed audio.cpp build has no GPU backend compiled in."""
+    if data_dir is None:
+        return False
+    from vienetts_app.core.ai_models import installed_audiocpp_variant
+
+    return installed_audiocpp_variant(data_dir) in ("", "cpu")
+
+
+def _resolve_threads(config: DiarizationConfig) -> int:
+    if int(config.threads) > 0:
+        return max(1, min(64, int(config.threads)))
+    # f32 on CPU scales to 16 threads in upstream measurements; the old
+    # min(8, cpu//2) left ~35% on the table on an 18-core box.
+    return max(1, min(16, os.cpu_count() or 4))
+
+
+def _wav_duration_s(wav_path: Path) -> float:
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(wav_path))
+        if info.samplerate:
+            return float(info.frames) / float(info.samplerate)
+    except Exception:  # noqa: BLE001 - duration is only a timeout heuristic
+        return 0.0
+    return 0.0
+
+
+def _turns_cache_key(wav_path: Path, config: DiarizationConfig) -> str:
+    try:
+        stat = wav_path.stat()
+    except OSError:
+        return ""
+    return f"{wav_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config.model}"
+
+
+def _load_cached_turns(work_dir: Path | None, key: str) -> list[RttmTurn] | None:
+    if work_dir is None or not key:
+        return None
+    path = work_dir / TURNS_CACHE_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("key") != key:
+        return None
+    turns = data.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return None
+    try:
+        return parse_audiocpp_turns(json.dumps(turns))
+    except DiarizationError:
+        return None
+
+
+def _store_cached_turns(work_dir: Path | None, key: str, turns: list[RttmTurn]) -> None:
+    if work_dir is None or not key or not turns:
+        return
+    raw = [
+        {
+            "start_sample": int(round(t.start_ms * MODEL_SAMPLE_RATE / 1000.0)),
+            "end_sample": int(round(t.end_ms * MODEL_SAMPLE_RATE / 1000.0)),
+            "speaker_id": t.speaker,
+        }
+        for t in turns
+    ]
+    with contextlib.suppress(OSError):
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / TURNS_CACHE_FILENAME).write_text(
+            json.dumps({"key": key, "turns": raw}), encoding="utf-8"
+        )
+
+
+def _is_16k_mono_wav(path: Path) -> bool:
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+    except Exception:  # noqa: BLE001 - not a readable WAV: treat as needing conversion
+        return False
+    return int(info.samplerate) == MODEL_SAMPLE_RATE and int(info.channels) == 1
+
+
+def _ensure_16k_wav(
+    src: Path,
+    work_dir: Path | None,
+    data_dir: Path | None,
+    temp_dir: tempfile.TemporaryDirectory[str] | None,
+) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+    """Return a 16 kHz mono WAV for ``src``, converting and caching it if needed."""
+    if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
+        return src, temp_dir
+
+    filename = SHARED_WAV_FILENAME if src.suffix.lower() != ".wav" else WAV_INPUT_16K_FILENAME
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target = work_dir / filename
+    else:
+        temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
+        target = Path(temp_dir.name) / "diar_16k.wav"
+
+    sidecar = target.with_name(target.name + ".json")
+    try:
+        src_stat = src.stat()
+    except OSError:
+        src_stat = None
+    expected = None
+    if src_stat is not None:
+        expected = {
+            "source": str(src.resolve()),
+            "size": src_stat.st_size,
+            "mtime_ns": src_stat.st_mtime_ns,
+        }
+    reusable = False
+    if target.is_file() and target.stat().st_size > 0:
+        try:
+            stored = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = None
+        if isinstance(stored, dict) and expected is not None:
+            reusable = all(stored.get(k) == v for k, v in expected.items())
+        elif src_stat is not None:
+            # The ASR step writes this WAV without a sidecar; accept it only
+            # when it is at least as new as the media it was extracted from.
+            reusable = target.stat().st_mtime >= src_stat.st_mtime
+    if reusable:
+        return target, temp_dir
+
+    try:
+        extract_video_audio(
+            src, target, sample_rate=MODEL_SAMPLE_RATE, mono=True, data_dir=data_dir
+        )
+    except VideoDubError as exc:
+        raise DiarizationError(str(exc)) from exc
+    if expected is not None:
+        with contextlib.suppress(OSError):
+            sidecar.write_text(json.dumps(expected), encoding="utf-8")
+    return target, temp_dir
+
+
 def _run_nemotron_gguf_diarization(
     wav_path: Path,
     cues: Sequence[Cue],
     config: DiarizationConfig,
     *,
     data_dir: Path | None = None,
+    work_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
 ) -> list[Cue]:
     cli = resolve_audiocpp_cli(data_dir)
     if cli is None:
@@ -347,14 +708,22 @@ def _run_nemotron_gguf_diarization(
             "Hãy nhấn 'Tải mô hình Diarization' trong Cài đặt → Mô hình."
         )
 
-    if progress_cb is not None:
-        progress_cb(0.15)
+    cache_key = _turns_cache_key(wav_path, config)
+    cached = _load_cached_turns(work_dir, cache_key)
+    if cached is not None:
+        if progress_cb is not None:
+            progress_cb(1.0)
+        return assign_speakers_from_turns(cues, cached)
 
-    backend_dev = (config.device or "cpu").strip().lower()
-    if backend_dev not in ("cpu", "cuda", "vulkan", "metal", "best"):
-        backend_dev = "cpu"
-    threads = max(1, min(8, (os.cpu_count() or 4) // 2))
-    turns_out = wav_path.parent / f".nemotron_turns_{uuid.uuid4().hex}.json"
+    if progress_cb is not None:
+        progress_cb(0.1)
+    backend_dev = _resolve_cli_backend(config, data_dir)
+    threads = _resolve_threads(config)
+    turns_temp = tempfile.TemporaryDirectory(prefix="vienetts_turns_")
+    turns_out = Path(turns_temp.name) / "turns.json"
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        turns_out = work_dir / f".nemotron_turns_{uuid.uuid4().hex}.json"
 
     cmd = [
         str(cli),
@@ -373,56 +742,81 @@ def _run_nemotron_gguf_diarization(
         "--turns-out",
         str(turns_out),
     ]
-    if backend_dev == "cpu":
+    use_f32 = backend_dev == "cpu" or (backend_dev == "best" and _runtime_is_cpu_only(data_dir))
+    if use_f32:
+        # Verified upstream: forcing f32 on CPU is ~2x faster than the native
+        # mixed q8/BF16 path, and matches the NeMo parity reference. "best"
+        # resolves to the CPU backend on a CPU-only install, so it needs the
+        # same option or the default device (auto) runs at half speed.
         cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
 
+    duration_s = _wav_duration_s(wav_path)
+    timeout_s = (
+        float(config.timeout_s)
+        if float(config.timeout_s) > 0
+        else max(180.0, duration_s * 6.0 + 60.0)
+    )
+    started = time.monotonic()
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         while True:
             if cancel_check is not None and cancel_check():
                 proc.kill()
                 with contextlib.suppress(Exception):
-                    proc.communicate(timeout=1.0)
-                raise DiarizationError("Đã hủy phân tách người nói.")
+                    proc.communicate(timeout=2.0)
+                raise DiarizationCancelled("Đã hủy phân tách người nói.")
+            if time.monotonic() - started > timeout_s:
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.communicate(timeout=2.0)
+                raise DiarizationError(
+                    f"Phân tách người nói quá thời gian chờ ({timeout_s:.0f}s) — "
+                    "hãy thử video ngắn hơn hoặc chọn runtime CPU."
+                )
             try:
-                stdout, stderr = proc.communicate(timeout=0.1)
+                stdout, stderr = proc.communicate(timeout=0.2)
                 break
             except subprocess.TimeoutExpired:
                 continue
-        if proc.returncode != 0 or not turns_out.is_file():
+        if proc.returncode != 0:
             detail = (stderr or stdout or "").strip().splitlines()[-1:] or ["audiocpp_cli failed"]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
+        if not turns_out.is_file():
+            # Verified upstream: an empty result writes no turns file at all.
+            if notes is not None:
+                notes.append(
+                    "Không phát hiện giọng nói nào trong video, nên chưa có nhãn người nói."
+                )
+            if progress_cb is not None:
+                progress_cb(1.0)
+            return assign_speakers_from_turns(cues, [])
         turns = parse_audiocpp_turns(
             turns_out.read_text(encoding="utf-8", errors="replace"),
-            sample_rate=16_000,
+            sample_rate=MODEL_SAMPLE_RATE,
         )
+        if not turns:
+            if notes is not None:
+                notes.append(
+                    "Không phát hiện giọng nói nào trong video, nên chưa có nhãn người nói."
+                )
+            if progress_cb is not None:
+                progress_cb(1.0)
+            return assign_speakers_from_turns(cues, [])
+        _store_cached_turns(work_dir, cache_key, turns)
         if progress_cb is not None:
             progress_cb(1.0)
         return assign_speakers_from_turns(cues, turns)
     finally:
+        turns_temp.cleanup()
         with contextlib.suppress(OSError):
             turns_out.unlink(missing_ok=True)
-
-
-def _run_nemo_diarization(
-    wav_path: Path,
-    cues: Sequence[Cue],
-    config: DiarizationConfig,
-) -> list[Cue]:
-    """Attempt NVIDIA NeMo diarization in a subprocess; raises DiarizationError if unavailable."""
-    script = "import json, sys\nimport nemo.collections.asr as nemo_asr\nprint('NEMO_AVAILABLE')\n"
-    probe = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if probe.returncode != 0 or "NEMO_AVAILABLE" not in probe.stdout:
-        raise DiarizationError(
-            "Chưa cài đặt gói NVIDIA NeMo (nemo_toolkit[asr]) trên môi trường này."
-        )
-    # Fallback to acoustic when full NeMo manifest config is not provisioned locally
-    return _run_acoustic_diarization(wav_path, cues, config)
 
 
 def _run_acoustic_diarization(
@@ -442,16 +836,20 @@ def _run_acoustic_diarization(
     embeddings: list[np.ndarray] = []
     for i, cue in enumerate(cues):
         if cancel_check is not None and cancel_check():
-            raise DiarizationError("Đã hủy phân tách người nói.")
+            raise DiarizationCancelled("Đã hủy phân tách người nói.")
         start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
         stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
         samples, _ = read_wav_range(wav_path, start_f, stop_f)
         embeddings.append(_cue_acoustic_embedding(samples, sr))
         if progress_cb is not None:
-            progress_cb(min(0.85, (i + 1) / max(1, len(cues)) * 0.85))
+            progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
 
     emb_matrix = np.vstack(embeddings) if embeddings else np.zeros((0, 24), dtype=np.float32)
-    cluster_ids = _cluster_embeddings(emb_matrix, max_speakers=max(0, int(config.max_speakers)))
+    cluster_ids = _cluster_embeddings(
+        emb_matrix,
+        max_speakers=max(0, int(config.max_speakers)),
+        cancel_check=cancel_check,
+    )
     if progress_cb is not None:
         progress_cb(1.0)
     return [
@@ -469,12 +867,18 @@ def diarize_cues(
     data_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
 ) -> list[Cue]:
-    """Label each ``Cue`` with ``SPEAKER_01``..``SPEAKER_NN`` from ``media_path``."""
+    """Label each ``Cue`` with ``SPEAKER_01``..``SPEAKER_NN`` from ``media_path``.
+
+    ``notes`` (optional) receives user-facing warnings — the reason ``auto``
+    fell back to the acoustic heuristic, or "no speech detected". The UI shows
+    them; swallowing them made heuristic labels look like model output.
+    """
     if not cues:
         return []
     if cancel_check is not None and cancel_check():
-        raise DiarizationError("Đã hủy phân tách người nói.")
+        raise DiarizationCancelled("Đã hủy phân tách người nói.")
     cfg = config or DiarizationConfig()
     src = Path(media_path)
     if not src.is_file():
@@ -484,56 +888,60 @@ def diarize_cues(
 
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
     try:
-        if src.suffix.lower() == ".wav":
-            wav_path = src
-        else:
-            shared_wav = work_dir / "source_16k.wav" if work_dir is not None else None
-            if shared_wav is not None and shared_wav.is_file() and shared_wav.stat().st_size > 0:
-                wav_path = shared_wav
-            else:
-                if work_dir is not None:
-                    work_dir.mkdir(parents=True, exist_ok=True)
-                    wav_path = shared_wav  # type: ignore[assignment]
-                else:
-                    temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
-                    wav_path = Path(temp_dir_obj.name) / "diar_16k.wav"
-                try:
-                    extract_video_audio(
-                        src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir
-                    )
-                except VideoDubError as exc:
-                    raise DiarizationError(str(exc)) from exc
+        wav_path, temp_dir_obj = _ensure_16k_wav(src, work_dir, data_dir, None)
 
         if cancel_check is not None and cancel_check():
-            raise DiarizationError("Đã hủy phân tách người nói.")
+            raise DiarizationCancelled("Đã hủy phân tách người nói.")
 
         backend = (cfg.backend or "auto").strip()
-        if backend == "nemotron_gguf":
+        if backend == "nemo":  # legacy setting value; settings.py migrates it
+            backend = "nemotron_gguf"
+
+        def _primary() -> list[Cue]:
             return _run_nemotron_gguf_diarization(
                 wav_path,
                 cues,
                 cfg,
                 data_dir=data_dir,
+                work_dir=work_dir,
                 progress_cb=progress_cb,
                 cancel_check=cancel_check,
+                notes=notes,
             )
-        if backend == "nemo":
-            return _run_nemo_diarization(wav_path, cues, cfg)
+
+        def _acoustic(scale_from: float = 0.0) -> list[Cue]:
+            if progress_cb is None:
+                return _run_acoustic_diarization(wav_path, cues, cfg, cancel_check=cancel_check)
+            return _run_acoustic_diarization(
+                wav_path,
+                cues,
+                cfg,
+                progress_cb=lambda p: progress_cb(scale_from + (1.0 - scale_from) * p),
+                cancel_check=cancel_check,
+            )
+
+        if backend == "nemotron_gguf":
+            return apply_speaker_ceiling(_primary(), cfg.max_speakers)
         if backend == "auto":
-            with contextlib.suppress(DiarizationError):
-                return _run_nemotron_gguf_diarization(
-                    wav_path,
-                    cues,
-                    cfg,
-                    data_dir=data_dir,
-                    progress_cb=progress_cb,
-                    cancel_check=cancel_check,
+            try:
+                return apply_speaker_ceiling(_primary(), cfg.max_speakers)
+            except DiarizationCancelled:
+                raise
+            except DiarizationError as exc:
+                logger.warning("Nemotron-3 diarization unavailable, using acoustic: %s", exc)
+                if notes is not None:
+                    notes.append(f"Không dùng được mô hình Nemotron-3: {exc}")
+            try:
+                result = _acoustic(scale_from=0.1)
+            except DiarizationCancelled:
+                raise
+            if notes is not None:
+                notes.append(
+                    "Nhãn người nói được tạo bằng phương pháp dự phòng (âm học), "
+                    "độ chính xác thấp hơn mô hình Nemotron-3."
                 )
-            with contextlib.suppress(DiarizationError):
-                return _run_nemo_diarization(wav_path, cues, cfg)
-        return _run_acoustic_diarization(
-            wav_path, cues, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-        )
+            return apply_speaker_ceiling(result, cfg.max_speakers)
+        return apply_speaker_ceiling(_acoustic(), cfg.max_speakers)
     finally:
         if temp_dir_obj is not None:
             with contextlib.suppress(OSError):

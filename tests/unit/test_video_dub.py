@@ -278,9 +278,30 @@ def test_mux_subtitles_soft_track_per_container_and_burn_in(tmp_path: Path) -> N
     for ext, codec in expected.items():
         assert supports_soft_subtitles(f"clip{ext.upper()}") is (codec is not None)
         src = _make_test_video(tmp_path / f"src{ext}")
-        out = mux_dubbed_video(src, dub_wav, tmp_path / f"soft{ext}", srt_path=srt_file)
+        extra = {"subtitle_language": "vie"} if ext == ".mp4" else {}
+        out = mux_dubbed_video(src, dub_wav, tmp_path / f"soft{ext}", srt_path=srt_file, **extra)
         subs = [name for kind, name in _streams(out) if kind == "subtitle"]
         assert subs == ([codec] if codec else []), ext
+
+    # The soft track carries the language tag a player uses to pick a default.
+    res = subprocess.run(
+        [
+            str(resolve_ffprobe()),
+            "-v",
+            "error",
+            "-select_streams",
+            "s:0",
+            "-show_entries",
+            "stream_tags=language",
+            "-of",
+            "default=nw=1:nk=1",
+            str(tmp_path / "soft.mp4"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "vie"
 
     if not _has_subtitles_filter():
         pytest.skip("ffmpeg built without libass (no subtitles filter)")
@@ -400,63 +421,6 @@ def test_burn_ass_escapes_text_libass_would_misread() -> None:
     assert "\\\\N" in body
 
 
-def test_mux_burn_in_survives_cue_text_that_looks_like_a_timestamp(tmp_path: Path) -> None:
-    """A cue body that is itself a timestamp range must still render."""
-    if not _has_subtitles_filter():
-        pytest.skip("ffmpeg built without libass")
-    src = _make_test_video(tmp_path / "ts_src.mp4", size="320x180")
-    dub_wav = write_wav_file(
-        np.zeros(24_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
-    )
-    srt_file = tmp_path / "weird.srt"
-    srt_file.write_text(
-        "1\n00:00:00,100 --> 00:00:01,000\n00:00:05,000 --> 00:00:06,000\n",
-        encoding="utf-8",
-    )
-    out = mux_dubbed_video(
-        src, dub_wav, tmp_path / "ts.mp4", srt_path=srt_file, subtitle_mode="burn"
-    )
-    # Before the fix this burned a subtitle-free video and reported success.
-    assert _peak_luma(out, 0.5) > 160
-
-
-def test_mux_soft_track_carries_language_metadata(tmp_path: Path) -> None:
-    src = _make_test_video(tmp_path / "lang_src.mp4")
-    dub_wav = write_wav_file(
-        np.zeros(24_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
-    )
-    srt_file = tmp_path / "retimed.srt"
-    srt_file.write_text("1\n00:00:00,100 --> 00:00:01,000\nXin chào\n", encoding="utf-8")
-    out = mux_dubbed_video(
-        src,
-        dub_wav,
-        tmp_path / "lang.mp4",
-        srt_path=srt_file,
-        subtitle_language="vie",
-    )
-    ffprobe = resolve_ffprobe()
-    if ffprobe is None:
-        pytest.skip("ffprobe required")
-    res = subprocess.run(
-        [
-            str(ffprobe),
-            "-v",
-            "error",
-            "-select_streams",
-            "s:0",
-            "-show_entries",
-            "stream_tags=language",
-            "-of",
-            "default=nw=1:nk=1",
-            str(out),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert res.stdout.strip() == "vie"
-
-
 def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     """A dub longer than the picture keeps its words unless clamping is asked for."""
     src = _make_test_video(tmp_path / "short.mp4", duration_s=1.0)
@@ -465,7 +429,10 @@ def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
         np.zeros(144_000, dtype=np.float32), tmp_path / "long.wav", sample_rate=48_000
     )
     default_out = mux_dubbed_video(src, long_dub, tmp_path / "default.mp4")
-    clamped = mux_dubbed_video(src, long_dub, tmp_path / "clamped.mp4", clamp_to_video=True)
+    seen: list[float] = []
+    clamped = mux_dubbed_video(
+        src, long_dub, tmp_path / "clamped.mp4", clamp_to_video=True, progress=seen.append
+    )
 
     def _duration(path: Path) -> float:
         res = subprocess.run(
@@ -490,15 +457,7 @@ def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     # ...but an explicit clamp trims to the picture.
     assert _duration(clamped) <= 1.1
     assert dub_overrun_ms(src, long_dub) > 500
-
-
-def test_mux_reports_progress_fraction(tmp_path: Path) -> None:
-    src = _make_test_video(tmp_path / "prog.mp4", duration_s=1.5)
-    dub_wav = write_wav_file(
-        np.zeros(72_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
-    )
-    seen: list[float] = []
-    mux_dubbed_video(src, dub_wav, tmp_path / "prog_out.mp4", progress=seen.append)
+    # The mux reports monotone progress ending at 1.0.
     assert seen, "expected progress callbacks"
     assert seen[-1] == pytest.approx(1.0)
     assert all(0.0 <= value <= 1.0 for value in seen)

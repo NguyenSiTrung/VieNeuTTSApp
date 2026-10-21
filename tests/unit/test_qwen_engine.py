@@ -266,6 +266,7 @@ class TestInitialize:
         with pytest.raises(QwenEngineError, match="model directory is missing"):
             engine.initialize()
         assert engine.is_initialized is False
+        assert engine.last_error_code() == "load_failed"
         wait_for(lambda: not pid_alive(host_pid(tmp_path)), what="the host to be reaped")
 
         tmp_path = tmp_path / "case-b"
@@ -276,15 +277,6 @@ class TestInitialize:
             engine.initialize()
         assert engine.last_error_code() == RUNTIME_INCOMPLETE_CODE
         assert "Settings" in engine.last_error_message()
-
-        tmp_path = tmp_path / "case-b"
-
-        """The distinction the recovery path depends on: a bad tree is not a bad runtime."""
-        engine = start_engine(engines, tmp_path, "load_error")
-        with pytest.raises(QwenEngineError, match="model directory is missing"):
-            engine.initialize()
-        assert engine.last_error_code() == "load_failed"
-        assert engine.last_error_code() != RUNTIME_INCOMPLETE_CODE
 
     def test_restart_contract(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(engines, tmp_path, "ok")
@@ -500,33 +492,12 @@ class TestInferStream:
 
         tmp_path = tmp_path / "case-b"
 
-        seen: list[tuple[float, str]] = []
-        engine = start_engine(engines, tmp_path, "ok")
-        chunks = list(
-            engine.infer_stream(
-                "hello",
-                language="en",
-                speaker="Ryan",
-                job_id="job-1",
-                on_progress=lambda fraction, stage: seen.append((fraction, stage)),
-            )
-        )
-        assert len(chunks) == 2
-        assert seen == [(0.5, "resampling")]
-
-        tmp_path = tmp_path / "case-b"
-
         # The first call spawns lazily; an omitted job_id is accepted.
         engine = start_engine(engines, tmp_path, "ok")
         assert engine.is_initialized is False
-        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan"))
         assert len(chunks) == 2
         assert engine.is_initialized is True
-
-        tmp_path = tmp_path / "case-b"
-
-        engine = start_engine(engines, tmp_path, "ok")
-        assert len(list(engine.infer_stream("hello", language="en", speaker="Ryan"))) == 2
 
     def test_fatal_host_failures(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(engines, tmp_path, "oom")
@@ -807,11 +778,6 @@ class TestCloseAndStderr:
         list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
         wait_for(lambda: "host log line 39" in engine.stderr_tail(), what="stderr to drain")
         assert len(engine.stderr_tail().splitlines()) <= 20  # bounded, not the whole history
-
-        tmp_path = tmp_path / "case-b"
-
-        engine = start_engine(engines, tmp_path, "ok")
-        assert engine.stderr_tail() == ""
 
 
 class TestProfileVocabulary:

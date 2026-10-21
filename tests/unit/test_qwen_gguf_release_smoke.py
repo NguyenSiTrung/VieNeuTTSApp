@@ -517,46 +517,12 @@ class TestRepeatedJobs:
 
 
 # --------------------------------------------------------------------------- #
-# cancellation and crash recovery
+# crash recovery
 # --------------------------------------------------------------------------- #
-
-
-class TestCancellation:
-    @pytest.mark.slow
-    def test_a_settled_cancel_keeps_the_host(self, tmp_path: Path) -> None:
-        engine = host_fake.engine_for(tmp_path, "graceful_cancel", cancel_timeout=2.0)
-        request = request_for(tmp_path)
-        engine.initialize()
-        pid = host_fake.host_pid(tmp_path)
-        # No pid= here: it only arms the "wait for the host to be reaped" probe,
-        # which would burn its full 2 s on a host that is SUPPOSED to survive.
-        report = smoke.check_cancellation(
-            engine, request, timer_factory=when_the_host_has_the_job(tmp_path)
-        )
-        alive = smoke.process_alive(pid)
-        engine.close()
-
-        assert report["terminal"] == "cancelled"
-        assert report["hostAliveAfterCancel"] is True
-        assert alive is True
-
-    def test_a_host_that_will_not_stop_is_terminated_and_recovers(self, tmp_path: Path) -> None:
-        engine, mode_file = engine_with_switchable_mode(
-            tmp_path, "hang_synthesize", cancel_timeout=0.3
-        )
-        request = request_for(tmp_path)
-        engine.initialize()
-        pid = host_fake.host_pid(tmp_path)
-        mode_file.write_text("ok", encoding="utf-8")
-        report = smoke.check_cancellation(
-            engine, request, pid=pid, timer_factory=when_the_host_has_the_job(tmp_path)
-        )
-        engine.close()
-
-        assert report["terminal"] == "cancelled"
-        assert report["hostAliveAfterCancel"] is False
-        assert report["hostReaped"] is True
-        assert report["recovered"] is True
+# Cancellation terminals live in the PyTorch-host release smoke
+# (TestCancellation in test_qwen_release_smoke.py): QwenGgufEngine inherits
+# ``cancel``/``infer_stream`` unchanged and the GGUF host kill/restart path is
+# covered by TestRestart below.
 
 
 class TestRestart:

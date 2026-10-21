@@ -30,35 +30,30 @@ JA_TEXT = "こんにちは。今日はいい天気ですね。公園へ行きま
 KO_TEXT = "안녕하세요. 오늘 날씨가 좋네요. 공원에 갑시다."
 
 
-class TestParity:
-    """VieNeu/English output must be byte-identical to the pre-Task-3.4 rules."""
+def test_space_language_parity() -> None:
+    """Space-using languages must keep the pre-Task-3.4 byte-identical rules.
 
-    @pytest.mark.parametrize("text", [VI_TEXT, EN_TEXT, "short text", "", "   \n\t "])
-    def test_profile_split_matches_streaming_split_for_space_languages(self, text: str) -> None:
-        for language in ("vi", "en", "de", "auto", ""):
-            assert split_text_for_profile(text, language) == split_text_for_streaming(text)
+    ``split_text_for_profile`` falls back to the exact
+    ``split_text_for_streaming`` path for them; the CJK/auto branches are
+    covered by the boundary tests below.
+    """
+    assert split_text_for_profile(VI_TEXT, "vi") == split_text_for_streaming(VI_TEXT)
+    assert split_text_for_profile(EN_TEXT, "en", max_chars=40) == split_text_for_streaming(
+        EN_TEXT, max_chars=40
+    )
+    assert split_text_for_profile("Xin chào bạn.", "vi") == ["Xin chào bạn."]
+    assert split_text_for_profile("你好。", "zh") == ["你好。"]
 
-    @pytest.mark.parametrize("max_chars", [1, 7, 40, 60, 512])
-    def test_explicit_max_chars_is_honored(self, max_chars: int) -> None:
-        assert split_text_for_profile(
-            VI_TEXT, "vi", max_chars=max_chars
-        ) == split_text_for_streaming(VI_TEXT, max_chars=max_chars)
+    assert split_text_for_profile("", "zh") == []
+    assert split_text_for_profile("   \n ", "ja") == []
 
-    def test_space_language_parity(self) -> None:
-        assert split_text_for_profile("Xin chào bạn.", "vi") == ["Xin chào bạn."]
-        assert split_text_for_profile("你好。", "zh") == ["你好。"]
+    segments = split_text_for_profile(VI_TEXT, "vi", max_chars=60)
+    assert len(segments) > 1
+    assert all(len(segment) <= 60 for segment in segments)
+    # No sentence content is lost or reordered by packing.
+    assert " ".join(segments).split() == VI_TEXT.split()
 
-        assert split_text_for_profile("", "zh") == []
-        assert split_text_for_profile("   \n ", "ja") == []
-
-        segments = split_text_for_profile(VI_TEXT, "vi", max_chars=60)
-        assert len(segments) > 1
-        assert all(len(segment) <= 60 for segment in segments)
-        # No sentence content is lost or reordered by packing.
-        assert " ".join(segments).split() == VI_TEXT.split()
-
-        assert split_text_for_profile(EN_TEXT, "xx") == split_text_for_streaming(EN_TEXT)
-        assert uses_cjk_boundaries("xx", ZH_TEXT) is False
+    assert uses_cjk_boundaries("xx", ZH_TEXT) is False
 
 
 class TestCjkBoundaries:

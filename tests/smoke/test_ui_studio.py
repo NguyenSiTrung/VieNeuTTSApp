@@ -636,15 +636,34 @@ def run_driver(tmp_path: Path, scenarios: list[str]) -> dict[str, dict]:
 
 
 @pytest.fixture(scope="module")
-def studio_results(tmp_path_factory) -> dict[str, dict]:
-    tmp_path = tmp_path_factory.mktemp("studio")
-    return run_driver(tmp_path, ["empty_state", "open", "effects", "responsive", "subtitle"])
+def studio_layout_results(tmp_path_factory) -> dict[str, dict]:
+    """One QML application for the read-only layout scenarios (empty/open/responsive)."""
+    return run_driver(tmp_path_factory.mktemp("studio-layout"), ["empty_state", "open", "responsive"])
+
+
+@pytest.fixture(scope="module")
+def studio_edit_results(tmp_path_factory) -> dict[str, dict]:
+    """One QML application for the mutating scenarios (effects/subtitle).
+
+    ``open`` is a prerequisite: the effects scenario asserts on the panel of an
+    opened project, and ``responsive`` needs the same timeline.
+    """
+    return run_driver(tmp_path_factory.mktemp("studio-edit"), ["open", "effects", "subtitle"])
 
 
 @pytest.mark.slow
 class TestStudioSmoke:
-    def test_empty_state_points_at_the_new_destinations(self, studio_results) -> None:
-        r = studio_results["empty_state"]
+    def test_layout_empty_state_timeline_and_reparents(self, studio_layout_results) -> None:
+        self._check_empty_state(studio_layout_results)
+        self._check_timeline(studio_layout_results)
+        self._check_reparents(studio_layout_results)
+
+    def test_effects_and_subtitle_flows(self, studio_edit_results) -> None:
+        self._check_effects(studio_edit_results)
+        self._check_subtitle(studio_edit_results)
+
+    def _check_empty_state(self, results: dict[str, dict]) -> None:
+        r = results["empty_state"]
         assert r["op_stack_visible"] is False
         assert r["guide_cards"] == 4
         # No "Tab Văn bản" / "Tab Đoạn văn" leftovers from the old shell.
@@ -655,8 +674,8 @@ class TestStudioSmoke:
         assert r["subtitle_nav"] == "subtitles"
         assert r["audiobook_nav"] == "audiobook"
 
-    def test_timeline_blocks_selection_and_playhead(self, studio_results) -> None:
-        r = studio_results["open"]
+    def _check_timeline(self, results: dict[str, dict]) -> None:
+        r = results["open"]
         assert r["opened"] is True
         assert r["missing"] == []
         assert r["op_stack_visible"] is True
@@ -682,8 +701,8 @@ class TestStudioSmoke:
         assert r["clip_rows"] == 2
         assert r["clip_numbers"] == ["01", "02"]
 
-    def test_effects_panel_stages_and_applies_once(self, studio_results) -> None:
-        r = studio_results["effects"]
+    def _check_effects(self, results: dict[str, dict]) -> None:
+        r = results["effects"]
         # The apply button is the screen's ONE primary, idle or not.
         assert r["primaries_idle"] == ["studioApplyButton"]
         assert r["primaries_pending"] == ["studioApplyButton"]
@@ -732,8 +751,8 @@ class TestStudioSmoke:
         assert r["compare_after_click"] == ["base", "base"]
         assert r["compare_after_controller"] == "pending"
 
-    def test_panel_reparents_and_floors_hold(self, studio_results) -> None:
-        r = studio_results["responsive"]
+    def _check_reparents(self, results: dict[str, dict]) -> None:
+        r = results["responsive"]
         assert r["wide_side_visible"] is True
         assert r["wide_panel_right_of_timeline"] is True
         assert r["narrow_side_visible"] is False
@@ -745,8 +764,8 @@ class TestStudioSmoke:
         assert r["small_targets"] == []
         assert r["small_text"] == []
 
-    def test_subtitle_studio_window_navigation_speed_and_save_back(self, studio_results) -> None:
-        r = studio_results["subtitle"]
+    def _check_subtitle(self, results: dict[str, dict]) -> None:
+        r = results["subtitle"]
         assert r["sub_btn_visible"] is True
         assert r["sub_btn_enabled"] is True
         assert r["tab_after_open"] == "studio"

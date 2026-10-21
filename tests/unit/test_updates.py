@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from vienetts_app.core.updates import (
-    KOFI_URL,
     UpdateInfo,
     asset_platform_key,
     check_for_updates,
@@ -159,8 +158,3 @@ class TestCheckForUpdates:
         info = check_for_updates("0.1.5", platform_key="linux-x64", fetcher=lambda url: [])
         assert info.available is False
         assert info.error != ""
-
-
-class TestKofiSupportUrl:
-    def test_kofi_url_constant(self) -> None:
-        assert KOFI_URL == "https://ko-fi.com/ares9x"

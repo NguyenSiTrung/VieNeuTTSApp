@@ -92,6 +92,8 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
         filename="ggml-tiny.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
         size_mb=75.0,
+        size_bytes=77_691_713,
+        sha256="be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
     ),
     "base": DownloadableModelSpec(
         id="base",
@@ -99,6 +101,8 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
         filename="ggml-base.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         size_mb=142.0,
+        size_bytes=147_951_465,
+        sha256="60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
     ),
     "small": DownloadableModelSpec(
         id="small",
@@ -106,6 +110,8 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
         filename="ggml-small.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
         size_mb=466.0,
+        size_bytes=487_601_967,
+        sha256="1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
     ),
     "medium": DownloadableModelSpec(
         id="medium",
@@ -113,6 +119,8 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
         filename="ggml-medium-q5_0.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
         size_mb=514.0,
+        size_bytes=539_212_467,
+        sha256="19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
     ),
     "large-v3-turbo": DownloadableModelSpec(
         id="large-v3-turbo",
@@ -122,6 +130,8 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
         ),
         size_mb=547.0,
+        size_bytes=574_041_195,
+        sha256="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
     ),
 }
 
@@ -342,7 +352,7 @@ def asr_models_dir(data_dir: Path) -> Path:
 def resolve_asr_model_path(model_id_or_path: str, data_dir: Path | None = None) -> Path | None:
     raw = (model_id_or_path or "base").strip()
     cand = Path(raw)
-    if cand.is_file():
+    if cand.is_file() and cand.suffix.lower() in (".bin", ".gguf"):
         return cand
     if data_dir is None:
         return None
@@ -350,11 +360,19 @@ def resolve_asr_model_path(model_id_or_path: str, data_dir: Path | None = None) 
     spec = WHISPER_GGUF_MODELS.get(raw)
     if spec is not None:
         p = base / spec.filename
-        if p.is_file() and p.stat().st_size > 0:
+        if p.is_file() and _managed_model_size_ok(p, spec):
             return p
+        return None
+    by_filename = {s.filename: s for s in WHISPER_GGUF_MODELS.values()}
     for name in (raw, f"ggml-{raw}.bin", f"{raw}.bin"):
         p = base / name
-        if p.is_file() and p.stat().st_size > 0:
+        if not p.is_file() or p.suffix.lower() not in (".bin", ".gguf"):
+            continue
+        matched_spec = by_filename.get(p.name)
+        if matched_spec is not None:
+            if _managed_model_size_ok(p, matched_spec):
+                return p
+        elif p.stat().st_size > 0:
             return p
     return None
 
@@ -371,17 +389,37 @@ def download_asr_model(
     url_override: str = "",
 ) -> Path:
     key = (model_id or "base").strip()
-    spec = WHISPER_GGUF_MODELS.get(key) or WHISPER_GGUF_MODELS["base"]
+    spec = WHISPER_GGUF_MODELS.get(key)
+    if spec is None:
+        raise AiModelInstallError(f"Mô hình ASR {key!r} không có trong danh mục của ứng dụng.")
     url = url_override.strip() or spec.url
     target = asr_models_dir(data_dir) / spec.filename
-    return _stream_download(url, target, progress_cb=progress_cb)
+    return _stream_download(
+        url,
+        target,
+        progress_cb=progress_cb,
+        expected_size=0 if url_override.strip() else spec.size_bytes,
+        expected_sha256="" if url_override.strip() else spec.sha256,
+        min_free_bytes=0 if url_override.strip() else spec.size_bytes + INSTALL_SPACE_HEADROOM,
+    )
 
 
-def remove_asr_model(model_id: str, data_dir: Path) -> None:
+def remove_asr_model(model_id: str, data_dir: Path) -> bool:
+    """Remove an installed Whisper model, refusing paths outside ``models/whisper``."""
     path = resolve_asr_model_path(model_id, data_dir)
-    if path is not None:
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+    if path is None:
+        return False
+    base = asr_models_dir(data_dir).resolve()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    if not resolved.is_relative_to(base) or resolved.suffix.lower() not in (".bin", ".gguf"):
+        return False
+    with contextlib.suppress(OSError):
+        resolved.unlink(missing_ok=True)
+        return not resolved.exists()
+    return False
 
 
 # ── audio.cpp Native Runtime (audiocpp_cli) ──────────────────────────────────

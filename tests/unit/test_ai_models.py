@@ -42,6 +42,9 @@ def test_catalog_contains_nemotron_3_gguf_and_whisper_models() -> None:
 
     for key in ("tiny", "base", "small", "medium", "large-v3-turbo"):
         assert key in WHISPER_GGUF_MODELS
+        spec = WHISPER_GGUF_MODELS[key]
+        assert spec.size_bytes > 0
+        assert len(spec.sha256) == 64
 
 
 def test_download_and_remove_asr_and_diarization_models(
@@ -53,6 +56,11 @@ def test_download_and_remove_asr_and_diarization_models(
         DIARIZATION_GGUF_MODELS,
         "nemotron-3-diarization-q8_0",
         replace(DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"], size_bytes=0, sha256=""),
+    )
+    monkeypatch.setitem(
+        WHISPER_GGUF_MODELS,
+        "base",
+        replace(WHISPER_GGUF_MODELS["base"], size_bytes=0, sha256=""),
     )
     tar_buf = io.BytesIO()
     with tarfile.open(fileobj=tar_buf, mode="w:gz") as tf:
@@ -111,7 +119,7 @@ def test_download_and_remove_asr_and_diarization_models(
         remove_diarization_model("nemotron-3-diarization-q8_0", tmp_path)
         assert is_diarization_model_installed("nemotron-3-diarization-q8_0", tmp_path) is False
 
-        remove_asr_model("base", tmp_path)
+        assert remove_asr_model("base", tmp_path) is True
         assert is_asr_model_installed("base", tmp_path) is False
     finally:
         server.shutdown()
@@ -120,7 +128,7 @@ def test_download_and_remove_asr_and_diarization_models(
 
 def test_truncated_managed_model_is_not_reported_installed(tmp_path: Path) -> None:
     """A GGUF left truncated by the old downloader must read as "not installed"."""
-    from vienetts_app.core.ai_models import diarization_models_dir
+    from vienetts_app.core.ai_models import asr_models_dir, diarization_models_dir
 
     spec = DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"]
     target = diarization_models_dir(tmp_path) / spec.filename
@@ -130,6 +138,15 @@ def test_truncated_managed_model_is_not_reported_installed(tmp_path: Path) -> No
 
     assert resolve_diarization_model_path("nemotron-3-diarization-q8_0", tmp_path) is None
     assert is_diarization_model_installed("nemotron-3-diarization-q8_0", tmp_path) is False
+
+    asr_spec = WHISPER_GGUF_MODELS["base"]
+    asr_target = asr_models_dir(tmp_path) / asr_spec.filename
+    asr_target.parent.mkdir(parents=True, exist_ok=True)
+    asr_target.write_bytes(b"GGML" + b"\0" * 8)
+    assert asr_target.stat().st_size != asr_spec.size_bytes
+
+    assert resolve_asr_model_path("base", tmp_path) is None
+    assert is_asr_model_installed("base", tmp_path) is False
 
 
 def _serve(payload: dict[str, bytes]):
@@ -183,12 +200,21 @@ def test_truncated_body_is_rejected_and_part_file_removed(tmp_path: Path) -> Non
                 tmp_path,
                 url_override=f"http://127.0.0.1:{server.server_port}/model.gguf",
             )
+        with pytest.raises(AiModelInstallError):
+            download_asr_model(
+                "base",
+                tmp_path,
+                url_override=f"http://127.0.0.1:{server.server_port}/model.bin",
+            )
     finally:
         server.shutdown()
         server.server_close()
     models_dir = tmp_path / "models" / "diarization"
     assert not list(models_dir.glob("*.gguf"))
     assert not list(models_dir.glob("*.part"))
+    asr_dir = tmp_path / "models" / "whisper"
+    assert not list(asr_dir.glob("*.bin"))
+    assert not list(asr_dir.glob("*.part"))
 
 
 def test_sha256_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -210,16 +236,26 @@ def test_remove_diarization_model_refuses_paths_outside_app_dir(tmp_path: Path) 
     victim = tmp_path / "important.gguf"
     victim.write_bytes(b"keep me")
     assert remove_diarization_model(str(victim), tmp_path) is False
+    assert remove_asr_model(str(victim), tmp_path) is False
     assert victim.is_file()
+
+    non_model = tmp_path / "notes.txt"
+    non_model.write_text("keep", encoding="utf-8")
+    assert resolve_asr_model_path(str(non_model), tmp_path) is None
+    assert remove_asr_model(str(non_model), tmp_path) is False
+    assert non_model.is_file()
 
     traversal = f"../../{tmp_path.name}/important.gguf"
     assert remove_diarization_model(traversal, tmp_path / "models") is False
+    assert remove_asr_model(traversal, tmp_path / "models") is False
     assert victim.is_file()
 
 
 def test_unknown_model_id_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(AiModelInstallError):
+    with pytest.raises(AiModelInstallError, match="không có trong danh mục"):
         download_diarization_model("not-in-catalog", tmp_path, url_override="http://x/y.gguf")
+    with pytest.raises(AiModelInstallError, match="không có trong danh mục"):
+        download_asr_model("not-in-catalog", tmp_path, url_override="http://x/y.bin")
 
 
 def _runtime_tar(script: str) -> bytes:

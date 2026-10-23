@@ -32,3 +32,8 @@ under `conductor/archive/`.
 
 ## [x] Track: Harden and optimize on-device ASR & Video Dubbing subtitles (model/runtime verification, whisper.cpp runtime installer, cancel/fallback semantics, non-speech filtering, caching & QML controls)
 *Link: [./tracks/asr_hardening_20261021/](./tracks/asr_hardening_20261021/)*
+
+---
+
+## [ ] Track: Overhaul the Lồng tiếng & Phụ đề (Dubbing & Subtitles) tab — data safety, pinned dock, derived state, workflow clarity and design-system conformance (from the 2026-10-23 UI/UX audit)
+*Link: [./tracks/subtitles_ux_overhaul_20261023/](./tracks/subtitles_ux_overhaul_20261023/)*

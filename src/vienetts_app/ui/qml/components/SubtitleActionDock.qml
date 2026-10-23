@@ -30,6 +30,9 @@ Rectangle {
     readonly property bool busy: available && subtitleController.rendering === true
     readonly property bool aiBusy: available && subtitleController.aiBusy === true
     readonly property bool exporting: available && subtitleController.exporting === true
+    // The controller's derived owner is the single source for "who is busy";
+    // a render and an export can never both be true.
+    readonly property string busyOwner: available ? subtitleController.busyOwner : ""
     readonly property bool hasTrack: available && subtitleController.rendered === true
     readonly property bool hasVideo: available && subtitleController.hasVideo === true
     readonly property bool hasSpeakers: available && subtitleController.hasSpeakers === true
@@ -238,7 +241,7 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingSm
-            visible: root.busy || root.exporting
+            visible: root.busyOwner === "render" || root.busyOwner === "export"
 
             AppProgressBar {
                 id: dockProgress
@@ -246,17 +249,17 @@ Rectangle {
                 objectName: "subtitleProgressBar"
                 Layout.fillWidth: true
                 accessibleLabel: qsTr("Tiến độ tạo âm thanh")
-                value: root.exporting
+                value: root.busyOwner === "export"
                     ? (root.available ? subtitleController.exportProgress : 0)
                     : (root.available ? subtitleController.renderProgress : 0)
-                indeterminate: root.exporting
+                indeterminate: root.busyOwner === "export"
                     ? (root.available ? subtitleController.exportProgress === 0 : true)
                     : (root.busy && subtitleController.renderProgress === 0)
             }
 
             Label {
                 objectName: "subtitleExportProgressLabel"
-                visible: root.exporting
+                visible: root.busyOwner === "export"
                 text: qsTr("Đang xuất video… %1%").arg(
                     Math.round((root.available ? subtitleController.exportProgress : 0) * 100))
                 color: Theme.textMuted
@@ -269,7 +272,7 @@ Rectangle {
                 variant: "danger"
                 size: "sm"
                 text: qsTr("Hủy xuất")
-                visible: root.exporting
+                visible: root.busyOwner === "export"
                 onClicked: {
                     if (root.available)
                         subtitleController.cancelExport();

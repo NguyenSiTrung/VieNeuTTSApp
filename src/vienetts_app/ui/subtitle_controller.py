@@ -61,7 +61,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, Qt, Signal, Slot
 
@@ -126,6 +126,36 @@ from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
+
+
+# Controller properties with no QML binding. They are public Python surface for
+# hosts and integrations (Studio bridges, tests), not dead code: the unit test
+# ``test_every_property_is_consumed_or_api_only`` asserts this list stays exact.
+#  - state: the canonical derived state machine (QML gates on the mutually
+#    exclusive primitives that derive it; busyOwner is read by the dock).
+#  - title / sourcePath / videoPath / cueCount / cues / policySummary: project
+#    metadata for hosts (Studio opens a project by id, not by parsing QML).
+#  - durationMs / positionMs / activeCharStart / activeCharEnd: transport
+#    position API used by Python consumers; the card shows activeCue instead.
+#  - invalidationReason / exportBlockedReason: machine-readable companions to
+#    the human-readable invalidationMessage and export gating.
+API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
+    {
+        "activeCharEnd",
+        "activeCharStart",
+        "cueCount",
+        "cues",
+        "durationMs",
+        "exportBlockedReason",
+        "invalidationReason",
+        "policySummary",
+        "positionMs",
+        "sourcePath",
+        "state",
+        "title",
+        "videoPath",
+    }
+)
 
 
 def _default_player_factory() -> PlaybackController:

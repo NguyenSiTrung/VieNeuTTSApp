@@ -4418,6 +4418,44 @@ DRIVER = textwrap.dedent(
             )
             pump(0.2)
             out["focus_scroll_after"] = float(page_shell.property("scrollContentY"))
+            # The focus follower is bound to the Window itself (an unimported
+            # `root.Window` leaves the Connections target undefined).
+            followers = page_shell.findChildren(QObject, "pageFocusFollower")
+            out["focus_follower_bound"] = bool(
+                followers and followers[0].property("target") is not None
+            )
+            # Scrolled-page regression: a fully visible control must not move
+            # the page. The old viewport/content-coordinate mix scrolled to the
+            # item's viewport y (a jump to the top) whenever contentY > 0.
+            scroll_view = sfind("pageScrollView")
+            flick = scroll_view.property("contentItem")
+            QMetaObject.invokeMethod(
+                page_shell, "scrollToContentY", Q_ARG("QVariant", 100000)
+            )
+            pump(0.1)
+            focus_before = float(flick.property("contentY"))
+            candidate = None
+            for item in item_walk(page_shell):
+                if not item.objectName() or item.width() <= 0 or item.height() <= 0:
+                    continue
+                y_view = float(item.mapToItem(flick, 0, 0).y())
+                if 0 <= y_view and y_view + item.height() <= float(flick.property("height")):
+                    cursor = item.parent()
+                    while cursor is not None and cursor is not page_shell:
+                        cursor = cursor.parent()
+                    if cursor is page_shell:
+                        candidate = item
+                        break
+            if candidate is not None:
+                QMetaObject.invokeMethod(
+                    page_shell, "ensureFocusVisible", Q_ARG("QVariant", candidate)
+                )
+                pump(0.1)
+            out["focus_visible_keeps_scroll"] = [
+                focus_before,
+                float(flick.property("contentY")),
+                candidate.objectName() if candidate is not None else "",
+            ]
             window.setWidth(focus_size[0])
             window.setHeight(focus_size[1])
             pump(0.1)
@@ -8747,6 +8785,11 @@ class TestTextParagraphTabSmoke:
         assert result["wide_by_window_width"] == [False, False, True, True]
         assert result["cue_scrollbar"] is True
         assert result["speaker_picker_width_640"] > 0
+        assert result["focus_follower_bound"] is True
+        focus_keep = result["focus_visible_keeps_scroll"]
+        assert focus_keep[0] > 0, focus_keep
+        assert focus_keep[0] == focus_keep[1], focus_keep
+        assert focus_keep[2] != "", focus_keep
         assert result["export_menu_clicks"] == [True, True, True]
         assert result["project_rows_visible"] == 2
         assert result["opened_project"] == "proj_a"

@@ -8,6 +8,7 @@ all exercised without an engine or an audio device.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import Property, QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, write_wav_file
@@ -28,7 +29,7 @@ from vienetts_app.core.subtitle_project import (
 )
 from vienetts_app.core.subtitles import parse_cues
 from vienetts_app.ui.bg_ops import SyncOrderedExecutor, run_sync
-from vienetts_app.ui.subtitle_controller import SubtitleController
+from vienetts_app.ui.subtitle_controller import API_ONLY_PROPERTIES, SubtitleController
 
 SRT = "1\n00:00:00,000 --> 00:00:02,000\nXin chào\n\n2\n00:00:03,000 --> 00:00:05,000\nTạm biệt\n"
 
@@ -2045,3 +2046,33 @@ def test_video_overrun_is_probed_once_per_render(tmp_path, monkeypatch):
     controller.videoChanged.emit()
     assert controller.videoOverrunMs == 4200
     assert calls == [1, 1, 1]
+
+
+QML_COMPONENTS = Path(__file__).resolve().parents[2] / "src" / "vienetts_app" / "ui" / "qml"
+
+
+def test_every_property_is_consumed_or_api_only() -> None:
+    """Task 4.8: no controller property is dead surface.
+
+    Every ``@Property`` is either read from QML as
+    ``subtitleController.<name>`` or listed in ``API_ONLY_PROPERTIES`` with a
+    documented reason. The list must stay exact: a stale entry that QML does
+    consume fails the second half, so deleting a binding forces the list to be
+    revisited.
+    """
+    properties = {
+        name for name, value in SubtitleController.__dict__.items() if isinstance(value, Property)
+    }
+    assert properties, "introspection found no @Property descriptors"
+
+    qml = "\n".join(path.read_text(encoding="utf-8") for path in QML_COMPONENTS.rglob("*.qml"))
+
+    def referenced(name: str) -> bool:
+        return bool(re.search(rf"subtitleController\s*\.\s*{re.escape(name)}\b", qml))
+
+    unbound = {name for name in properties if not referenced(name)}
+    assert unbound == set(API_ONLY_PROPERTIES), {
+        "undocumented": sorted(unbound - API_ONLY_PROPERTIES),
+        "stale_api_only": sorted(API_ONLY_PROPERTIES - unbound),
+        "unknown": sorted(API_ONLY_PROPERTIES - properties),
+    }

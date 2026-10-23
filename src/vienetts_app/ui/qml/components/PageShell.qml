@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import ".."
 
 // Standard scrollable page scaffold: a centered content column with a max
@@ -33,6 +34,10 @@ Item {
         ? scrollView.contentItem.contentY : 0
     // The scroll viewport's height (hosts size a fold-filling block with it).
     readonly property real viewportHeight: scrollView.availableHeight
+
+    // Connections is a QtObject, and Window.window only resolves on Items, so
+    // the attached lookup lives here and the Connections targets this alias.
+    readonly property Window pageWindow: Window.window
 
     // Mode switches swap the whole page content: the new mode must start at
     // the top instead of inheriting the old scroll offset (which pushed the
@@ -70,7 +75,9 @@ Item {
         const flick = scrollView.contentItem;
         if (!flick)
             return;
-        const y = item.mapToItem(flick, 0, 0).y;
+        // Content coordinates, not the Flickable's viewport: when the page is
+        // scrolled, a viewport y of 20 must not be compared with contentY.
+        const y = item.mapToItem(flick.contentItem, 0, 0).y;
         const bottom = y + item.height;
         if (y < flick.contentY)
             flick.contentY = y;
@@ -141,10 +148,11 @@ Item {
     // Active-focus changes arrive on the Window, so the item is mapped into
     // the scroll content and only moved when it sits outside the viewport.
     Connections {
-        target: root.Window.window
+        objectName: "pageFocusFollower"
+        target: root.pageWindow
 
         function onActiveFocusItemChanged() {
-            const item = root.Window.window ? root.Window.window.activeFocusItem : null;
+            const item = root.pageWindow ? root.pageWindow.activeFocusItem : null;
             if (item)
                 root.ensureFocusVisible(item);
         }

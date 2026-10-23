@@ -133,6 +133,22 @@ def test_translator_loading() -> None:
         ("Hủy xuất", "Cancel export"),
     ):
         assert translator.translate("SubtitleActionDock", source) == english
+    # FR-4.7: dialog filters and the two copy strings that used to slip out
+    # of the catalog.
+    for source, english in (
+        ("Phụ đề SubRip (*.srt)", "SubRip subtitles (*.srt)"),
+        ("Tất cả tệp (*)", "All files (*)"),
+        (
+            "Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)",
+            "Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)",
+        ),
+        ("THỜI GIAN & GIỌNG ĐỌC", "TIMING & VOICE"),
+    ):
+        assert translator.translate("SubtitleCard", source) == english
+    assert (
+        translator.translate("SubtitleActionDock", "Tiến độ tạo âm thanh")
+        == "Audio generation progress"
+    )
     assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"
     # Sách nói's player (dock skin, FR-2.4): prev/next icon buttons' names.
     for source, english in (

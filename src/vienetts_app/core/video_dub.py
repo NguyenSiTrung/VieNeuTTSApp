@@ -704,7 +704,10 @@ def mux_dubbed_video(
     ``clamp_to_video`` trims the result to the source picture's duration. It is
     OFF by default on purpose: a dub that outran the video must never lose its
     last words, so the caller decides between a frozen tail and truncated
-    speech (see :func:`dub_overrun_ms`). ``progress`` is called with 0.0–1.0
+    speech (see :func:`dub_overrun_ms`). Neither the subtitle exporter nor the
+    Studio splice passes it: both keep every spoken word and surface the
+    overrun as a warning instead. It stays as an API-only opt-in for callers
+    that explicitly prefer a hard cut. ``progress`` is called with 0.0–1.0
     while ffmpeg runs (burn-in can take minutes). ``cancel_check`` is polled
     while ffmpeg runs; returning True terminates it and raises
     :class:`VideoDubError` (the partial file is discarded).

@@ -199,11 +199,16 @@ class TestQmlThemeAndComponents:
             hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
             return (hi + 0.05) / (lo + 0.05)
 
-        for text in ("text", "textMuted", "textSubtle"):
-            for surface in ("bg", "surface", "surfaceCard", "statusBarBg"):
+        for text in ("text", "textMuted", "textSubtle", "warningText", "errorText", "successText"):
+            for surface in ("bg", "surface", "surfaceCard", "surfaceAlt", "statusBarBg"):
                 for mode in ("dark", "light"):
                     ratio = contrast(color_token(text)[mode], color_token(surface)[mode])
                     assert ratio >= 4.5, f"{text} on {surface} ({mode}) = {ratio:.2f}:1"
+        # Accent-filled controls carry accentText, which is the only text token
+        # meant to sit ON the accent surface.
+        for mode in ("dark", "light"):
+            ratio = contrast(color_token("accentText")[mode], color_token("accent")[mode])
+            assert ratio >= 4.5, f"accentText on accent ({mode}) = {ratio:.2f}:1"
         # Status bar (FR-2.1): one step darker than bg in both themes, and its
         # warning copy stays AA on it.
         for mode in ("dark", "light"):
@@ -276,3 +281,87 @@ class TestStatusBarLogic:
         for readiness in ("ready", "busy", "failed", "unsupported", "missing"):
             assert call("readinessKey", "ready", True, readiness) == readiness
         assert call("readinessKey", "ready", True, "checking") == "checking"
+
+
+def test_subtitle_card_never_paints_text_with_the_warning_fill() -> None:
+    """Theme.warning is a 3:1 fill; text on it fails AA in light mode (4.1)."""
+    card = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "SubtitleCard.qml"
+    ).read_text(encoding="utf-8")
+    assert "color: Theme.warning\n" not in card
+    assert "Theme.warningText" in card
+
+
+def test_subtitle_surfaces_use_the_shared_design_system() -> None:
+    """4.2: panels/badges/progress come from components, not hand-rolled skins."""
+    card = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "SubtitleCard.qml"
+    ).read_text(encoding="utf-8")
+    dock = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "SubtitleActionDock.qml"
+    ).read_text(encoding="utf-8")
+    assert not re.search(r"(?<!App)ProgressBar \{", card)
+    assert not re.search(r"(?<!App)ProgressBar \{", dock)
+    assert "AppProgressBar {" in card and "AppProgressBar {" in dock
+    for panel in ("subtitleVideoBar", "subtitleTimingPanel", "subtitleSpeakerBar"):
+        assert f'objectName: "{panel}"' in card
+    assert "StatusBadge {" in card
+    assert "SectionLabel {" in card
+
+
+def test_subtitle_fields_use_the_shared_text_field() -> None:
+    """4.3: no inline TextField skin or literal field height remains in the card."""
+    card = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "SubtitleCard.qml"
+    ).read_text(encoding="utf-8")
+    assert not re.search(r"(?<!App)TextField \{", card)
+    assert "AppTextField {" in card
+    field = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "AppTextField.qml"
+    ).read_text(encoding="utf-8")
+    assert "Theme.controlHeightSm" in field
+    assert "accessibleLabel" in field
+
+
+def test_subtitle_card_does_not_set_the_deprecated_header_subtitle() -> None:
+    """4.8: AppCard.subtitle is deprecated and never rendered."""
+    card = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "vienetts_app"
+        / "ui"
+        / "qml"
+        / "components"
+        / "SubtitleCard.qml"
+    ).read_text(encoding="utf-8")
+    assert "\n    subtitle:" not in card

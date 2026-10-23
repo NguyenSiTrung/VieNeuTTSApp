@@ -2019,3 +2019,29 @@ def test_notice_level_separates_errors_from_info(env, tmp_path):
     assert controller.importSrt(load_srt(tmp_path)) is True
     assert controller.errorText == ""
     assert controller.noticeLevel == "info"
+
+
+def test_video_overrun_is_probed_once_per_render(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def _fake_overrun(*args, **kwargs):
+        calls.append(1)
+        return 4200
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.dub_overrun_ms", _fake_overrun)
+    controller, _, _ = _rendered_controller(tmp_path)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake_mp4")
+    controller._project = replace(controller._project, video_path=str(video))  # noqa: SLF001
+    controller.videoChanged.emit()
+
+    assert controller.videoOverrunMs == 4200
+    assert controller.videoOverrunMs == 4200
+    assert calls == [1]
+
+    # The two events that can change the answer each drop the cache.
+    controller.renderedChanged.emit()
+    assert controller.videoOverrunMs == 4200
+    controller.videoChanged.emit()
+    assert controller.videoOverrunMs == 4200
+    assert calls == [1, 1, 1]

@@ -201,6 +201,7 @@ class SubtitleController(QObject):
     #: Burn-in re-encodes and can take minutes; this carries ffmpeg's fraction
     #: so the card shows a real bar instead of a silent freeze.
     exportProgressChanged = Signal()
+    overrunChanged = Signal()
     videoChanged = Signal()
     speakersChanged = Signal()
     aiBusyChanged = Signal()
@@ -299,6 +300,11 @@ class SubtitleController(QObject):
 
         self._player_state = "stopped"
         self._position_ms = 0
+        # FR-4.6: probing ffprobe on every QML read (property bindings re-run
+        # per frame in a few cases) blocked the GUI thread. Cache the answer
+        # under a key that includes the wav's identity; invalidate on the two
+        # events that can change it.
+        self._overrun_cache: tuple[tuple[Any, ...], int] | None = None
         self._cues_cache: list[dict[str, Any]] | None = None
         # Row-level mirror of `cues` for the QML cue list (perf 6.4): a
         # re-import diffs by cue index instead of rebuilding every row.
@@ -319,6 +325,9 @@ class SubtitleController(QObject):
             self.videoChanged,
         ):
             signal.connect(self._refresh_state)
+
+        self.renderedChanged.connect(self._invalidate_overrun)
+        self.videoChanged.connect(self._invalidate_overrun)
 
         self._wire_player()
 
@@ -1000,7 +1009,7 @@ class SubtitleController(QObject):
         vp = self.videoPath
         return supports_soft_subtitles(vp) if vp else True
 
-    @Property(int, notify=videoChanged)
+    @Property(int, notify=overrunChanged)
     def videoOverrunMs(self) -> int:
         """How far the rendered dub runs past the video (0 when it fits).
 
@@ -1014,9 +1023,22 @@ class SubtitleController(QObject):
         wav = self._store.wav_path(project.id)
         if not wav.is_file():
             return 0
-        with contextlib.suppress(Exception):
-            return dub_overrun_ms(vp, wav, data_dir=self._data_dir)
+        with contextlib.suppress(OSError):
+            stat = wav.stat()
+            key = (str(vp), str(wav), stat.st_mtime_ns, stat.st_size)
+            if self._overrun_cache is not None and self._overrun_cache[0] == key:
+                return self._overrun_cache[1]
+            with contextlib.suppress(Exception):
+                value = dub_overrun_ms(vp, wav, data_dir=self._data_dir)
+                self._overrun_cache = (key, value)
+                return value
         return 0
+
+    def _invalidate_overrun(self) -> None:
+        if self._overrun_cache is None:
+            return
+        self._overrun_cache = None
+        self.overrunChanged.emit()
 
     @Property("QVariantList", notify=speakersChanged)
     def speakers(self) -> list[dict[str, Any]]:

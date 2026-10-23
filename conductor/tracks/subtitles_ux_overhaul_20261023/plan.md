@@ -218,7 +218,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
 > Eight tasks all edit `SubtitleCard.qml`; sequential within the phase. Independent of
 > Phase 3, so the two phases can overlap if file ownership is coordinated.
 
-- [ ] **Task 4.1: Contrast fix and text-token audit**
+- [x] **Task 4.1: Contrast fix and text-token audit**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_theme.py, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `Theme.warning` is not used as a text colour in `SubtitleCard.qml`; the fit badge uses `Theme.warningText`.
@@ -226,7 +226,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Swap `:577` to `Theme.warningText`; add the guard test.
 
-- [ ] **Task 4.2: Adopt `AppCard { elevation: 0 }`, shared ProgressBar skin, `StatusBadge`, `SectionLabel`**
+- [x] **Task 4.2: Adopt `AppCard { elevation: 0 }`, shared ProgressBar skin, `StatusBadge`, `SectionLabel`**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/components/AppProgressBar.qml, src/vienetts_app/ui/qml/components/qmldir, src/vienetts_app/ui/qml/qmldir, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - No bare `ProgressBar` remains in `SubtitleCard.qml`; both use the shared skin and carry `Accessible.name`.
@@ -235,7 +235,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add `components/AppProgressBar.qml`; refactor the panels/badges/labels.
 
-- [ ] **Task 4.3: `AppTextField` component replacing three inline skins**
+- [x] **Task 4.3: `AppTextField` component replacing three inline skins**
   <!-- files: src/vienetts_app/ui/qml/components/AppTextField.qml, src/vienetts_app/ui/qml/components/qmldir, src/vienetts_app/ui/qml/qmldir, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `AppTextField` exposes `text`/`placeholderText`/`accessibleLabel` and mirrors `text` (per the text-pin rule).
@@ -244,7 +244,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - New component + registration in both `qmldir`s; replace the three call sites.
 
-- [ ] **Task 4.4: Single-primary rule and action-row regrouping**
+- [x] **Task 4.4: Single-primary rule and action-row regrouping**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - At most one `primary` button is visible in any reachable state (assert across empty / cues_ready / rendering / rendered / stale).
@@ -253,7 +253,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Demote the cue Save; move the toggle beside the SRT export and Studio into the dock.
 
-- [ ] **Task 4.5: Accessibility pass — focus, names, tooltips, focus-follow**
+- [x] **Task 4.5: Accessibility pass — focus, names, tooltips, focus-follow**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/components/AppNumberField.qml, src/vienetts_app/ui/qml/components/AppSlider.qml, src/vienetts_app/ui/qml/components/AppCombo.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - The cue list is focusable with `Accessible.role` and can be navigated by keyboard.
@@ -263,7 +263,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add `accessibleLabel` plumbing to the components; add focus-follow in `PageShell`.
 
-- [ ] **Task 4.6: Move `videoOverrunMs` off the GUI-thread binding path**
+- [x] **Task 4.6: Move `videoOverrunMs` off the GUI-thread binding path**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - Reading `videoOverrunMs` never spawns a subprocess (cached); it recomputes only on `videoChanged`/render completion.
@@ -271,7 +271,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Cache the computed overrun; invalidate on the relevant NOTIFY signals.
 
-- [ ] **Task 4.7: i18n — missing strings, dialog filters, stale guideline**
+- [x] **Task 4.7: i18n — missing strings, dialog filters, stale guideline**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/i18n/vienetts_en.ts, conductor/product-guidelines.md, tests/unit/test_i18n.py -->
   - Red tests:
     - The two previously-untranslated strings and the two `FileDialog` filters resolve in the English catalog.
@@ -279,7 +279,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Wrap in `qsTr()`, run `scripts/update_i18n.sh`, correct the `product-guidelines.md` i18n claim.
 
-- [ ] **Task 4.8: Dead-surface cleanup — deprecated `subtitle`, unbound properties, `clamp_to_video`**
+- [x] **Task 4.8: Dead-surface cleanup — deprecated `subtitle`, unbound properties, `clamp_to_video`**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/core/video_dub.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `AppCard.subtitle` is no longer set by `SubtitleCard`.

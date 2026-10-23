@@ -2085,6 +2085,7 @@ DRIVER = textwrap.dedent(
                     self._rendering = False
                     self._rendered = True
                     self._exporting = False
+                    self._stale = False
                     self._active_cue = -1
                     self._voice = ""
                     self._rate_cap = 1.5
@@ -2120,6 +2121,7 @@ DRIVER = textwrap.dedent(
                     self.rate_cap_sets = []
                     self.cancel_render_calls = 0
                     self.cancel_export_calls = 0
+                    self.seek_calls = []
                     # 50 rows so follow-scroll has somewhere to scroll to.
                     self._cues = [
                         {
@@ -2304,7 +2306,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot(int)
                 def seekToCue(self, index):
-                    pass
+                    self.seek_calls.append(int(index))
 
                 @Slot(int)
                 def seek(self, ms):
@@ -2415,11 +2417,11 @@ DRIVER = textwrap.dedent(
 
                 @Property(bool, notify=staleChanged)
                 def renderStale(self):
-                    return False
+                    return self._stale
 
                 @Property(str, notify=staleChanged)
                 def renderStaleReason(self):
-                    return ""
+                    return "Bản lồng tiếng không còn khớp." if self._stale else ""
 
                 @Property(int, notify=projectsChanged)
                 def projectCount(self):
@@ -4200,6 +4202,18 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["speaker_calls"] = list(fake_subtitle.speaker_calls)
             out["speaker_no_raw_field"] = not bool(ifind("subtitleSpeakerVoiceField"))
+            out["panel_classes"] = {
+                name: str(sfind(name).metaObject().className())
+                for name in (
+                    "subtitleVideoBar",
+                    "subtitleTimingPanel",
+                    "subtitleSpeakerBar",
+                )
+            }
+            out["progress_labels"] = {
+                "dock": str(sfind("subtitleProgressBar").property("accessibleLabel")),
+                "ai": str(sfind("subtitleAiProgressBar").property("accessibleLabel")),
+            }
             # FR-3.5: a disabled gated control always explains itself.
             gated_names = (
                 "subtitleImportButton",
@@ -4265,6 +4279,115 @@ DRIVER = textwrap.dedent(
                 "calls": fake_subtitle.clear_notice_calls,
                 "message": str(banner.property("message")),
             }
+
+            # FR-4.4: never two primary buttons in one reachable state.
+            def visible_primary_count():
+                count = 0
+                for item in item_walk(subtitles_tab()):
+                    try:
+                        variant = item.property("variant")
+                    except (RuntimeError, TypeError):
+                        continue
+                    if variant != "primary":
+                        continue
+                    visible = True
+                    cursor = item
+                    while cursor is not None:
+                        try:
+                            if not bool(cursor.property("visible")):
+                                visible = False
+                                break
+                        except (RuntimeError, TypeError):
+                            visible = False
+                            break
+                        cursor = cursor.parentItem()
+                    if visible:
+                        count += 1
+                return count
+
+            out["primary_counts"] = {}
+            for label, rendered, rendering, stale in (
+                ("cues_ready", False, False, False),
+                ("rendering", False, True, False),
+                ("rendered", True, False, False),
+                ("stale", True, False, True),
+            ):
+                fake_subtitle._rendered = rendered
+                fake_subtitle.renderedChanged.emit()
+                fake_subtitle._rendering = rendering
+                fake_subtitle.renderingChanged.emit()
+                fake_subtitle._stale = stale
+                fake_subtitle.staleChanged.emit()
+                app.processEvents()
+                out["primary_counts"][label] = visible_primary_count()
+            fake_subtitle._rendered = True
+            fake_subtitle.renderedChanged.emit()
+            fake_subtitle._rendering = False
+            fake_subtitle.renderingChanged.emit()
+            fake_subtitle._stale = False
+            fake_subtitle.staleChanged.emit()
+            app.processEvents()
+            out["save_variant"] = str(
+                ifind("subtitleCueSaveEditButton")[0].property("variant")
+            )
+
+            # FR-4.5: keyboard navigation, labels, and focus-follow.
+            cue_list_item = sfind("subtitleCueList")
+            cue_list_item.forceActiveFocus()
+            pump(0.05)
+            for _ in range(2):
+                app.sendEvent(
+                    cue_list_item,
+                    QKeyEvent(
+                        QEvent.Type.KeyPress,
+                        Qt.Key.Key_Down,
+                        Qt.KeyboardModifier.NoModifier,
+                    ),
+                )
+            pump(0.05)
+            out["cue_seeks"] = list(fake_subtitle.seek_calls)
+            out["accessible_labels"] = {
+                name: str(sfind(name).property("accessibleLabel"))
+                for name in (
+                    "subtitleModeCombo",
+                    "subtitleRateSlider",
+                    "subtitleMaxGapField",
+                    "subtitleOffsetField",
+                    "subtitleVideoMixCombo",
+                    "subtitleVideoBgGainField",
+                    "subtitleEmbedModeCombo",
+                    "subtitleTranslateLanguageCombo",
+                )
+            }
+            out["action_tooltips"] = {
+                name: str(sfind(name).property("tooltipText"))
+                for name in (
+                    "subtitleRenderButton",
+                    "subtitlePlayButton",
+                    "subtitleStudioButton",
+                    "subtitleExportMenuButton",
+                    "subtitleTranscribeButton",
+                    "subtitleRefineAsrButton",
+                )
+            }
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "produce"))
+            focus_size = (window.width(), window.height())
+            window.setWidth(640)
+            window.setHeight(420)
+            pump(0.2)
+            page_shell = sfind("subtitlesWorkspace")
+            QMetaObject.invokeMethod(page_shell, "scrollToTop")
+            pump(0.1)
+            out["focus_scroll_before"] = float(page_shell.property("scrollContentY"))
+            offset_field = sfind("subtitleOffsetField")
+            QMetaObject.invokeMethod(
+                page_shell, "ensureFocusVisible", Q_ARG("QVariant", offset_field)
+            )
+            pump(0.2)
+            out["focus_scroll_after"] = float(page_shell.property("scrollContentY"))
+            window.setWidth(focus_size[0])
+            window.setHeight(focus_size[1])
+            pump(0.1)
 
             # Video attachment + embed options live in the Source stage.
             QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "source"))
@@ -8402,6 +8525,10 @@ class TestTextParagraphTabSmoke:
         assert result["speaker_calls"] == [[result["speaker_calls"][0][0], "voice_en_01"]]
         assert result["speaker_calls"][0][0] in ("SPEAKER_01", "SPEAKER_02")
         assert result["speaker_no_raw_field"] is True
+        assert all(cls.startswith("AppCard") for cls in result["panel_classes"].values()), result[
+            "panel_classes"
+        ]
+        assert all(result["progress_labels"].values()), result["progress_labels"]
         assert all(result["busy_reasons"].values()), result["busy_reasons"]
         assert result["hint"] == {
             "text": "Chưa có bản âm thanh — hãy tạo trước.",
@@ -8413,6 +8540,20 @@ class TestTextParagraphTabSmoke:
             "action": "Đã hiểu",
         }
         assert result["banner_dismissed"] == {"calls": 1, "message": ""}
+        assert result["primary_counts"] == {
+            "cues_ready": 1,
+            "rendering": 1,
+            "rendered": 1,
+            "stale": 1,
+        }
+        assert result["save_variant"] == "secondary"
+        # FR-4.5: arrows move+seek the cue list; labels and tooltips exist;
+        # focusing a below-the-fold control scrolls it into view.
+        assert result["cue_seeks"] == [1, 2]
+        assert all(result["accessible_labels"].values()), result["accessible_labels"]
+        assert all(result["action_tooltips"].values()), result["action_tooltips"]
+        assert result["focus_scroll_before"] == 0
+        assert result["focus_scroll_after"] > 0
 
 
 class TestCloningStudioTabSmoke:

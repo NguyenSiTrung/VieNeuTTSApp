@@ -8,17 +8,21 @@
 
 ## UI Copy Tone
 - Minimal, technical, precise but clear; avoid jargon.
-- English-first in v1; bilingual (vi/en) copy is a follow-up (see
-  Localization).
+- Vietnamese is the **source** language (`qsTr()` literals); English ships as a
+  complete catalog (`ui/i18n/vienetts_en.ts` → `.qm`). No entry may stay
+  `type="unfinished"` — run `scripts/update_i18n.sh` after any copy change.
 
 ## Brand Messaging
 - Privacy-first headline: *"Your voice never leaves your device."*
 - Quality claim: 48 kHz studio-grade Vietnamese voices, fully offline.
 
 ## Localization
-- English UI for v1, but guarantee full Vietnamese diacritic rendering
-  (system font fallback / proper `Font` selection).
-- Vietnamese localization tracked as a follow-up.
+- Vietnamese source copy must render with full diacritics (bundled Be Vietnam
+  Pro; system fallback when the fonts are absent).
+- English is a shipped translation, not a follow-up: `vienetts_en.ts` is the
+  single catalog and `test_i18n` fails on unfinished or context-drifted strings.
+- Add future locales as sibling `vienetts_<lang>.ts` catalogs; never fork copy
+  inside QML.
 
 ## Motion & Interactivity
 - Professional but expressive: subtle transitions, animated waveform and

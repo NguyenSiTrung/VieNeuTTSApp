@@ -98,6 +98,8 @@ Rectangle {
                 size: "lg"
                 iconKind: "wave"
                 text: qsTr("Tạo âm thanh")
+                tooltipText: qsTr("Tạo bản lồng tiếng và phụ đề đã căn chỉnh (Ctrl+Enter)")
+                accessibleLabel: text
                 visible: root.loaded
                 enabled: root.loaded && !root.busy && !root.exporting
                     && EngineState.blockerReason === ""
@@ -131,6 +133,9 @@ Rectangle {
                 checked: root.playerState === "playing"
                 size: "md"
                 // No track yet: play() renders first — label says so.
+                tooltipText: !root.hasTrack
+                    ? qsTr("Chưa có bản âm thanh: tạo trước rồi phát") : qsTr("Phát hoặc tạm dừng bản lồng tiếng")
+                accessibleLabel: text
                 text: !root.hasTrack ? qsTr("Tạo và phát")
                     : root.playerState === "playing" ? qsTr("Tạm dừng") : qsTr("Phát")
                 iconKind: root.playerState === "playing" ? "pause" : "play"
@@ -220,6 +225,8 @@ Rectangle {
                 size: "md"
                 iconKind: "studio"
                 text: qsTr("Mở trong Studio")
+                tooltipText: qsTr("Mở dự án phụ đề này trong Studio để chỉnh từng đoạn")
+                accessibleLabel: text
                 visible: root.loaded
                 enabled: root.hasTrack && !root.busy && !root.exporting
                 onClicked: root.openStudio()
@@ -233,56 +240,18 @@ Rectangle {
             spacing: Theme.spacingSm
             visible: root.busy || root.exporting
 
-            ProgressBar {
+            AppProgressBar {
                 id: dockProgress
 
                 objectName: "subtitleProgressBar"
                 Layout.fillWidth: true
-                from: 0
-                to: 1
+                accessibleLabel: qsTr("Tiến độ tạo âm thanh")
                 value: root.exporting
                     ? (root.available ? subtitleController.exportProgress : 0)
                     : (root.available ? subtitleController.renderProgress : 0)
                 indeterminate: root.exporting
                     ? (root.available ? subtitleController.exportProgress === 0 : true)
                     : (root.busy && subtitleController.renderProgress === 0)
-
-                background: Rectangle {
-                    implicitHeight: 6
-                    radius: 3
-                    color: Theme.surfaceAlt
-                }
-                contentItem: Item {
-                    id: progressTrack
-
-                    clip: true
-
-                    Rectangle {
-                        visible: !dockProgress.indeterminate
-                        width: dockProgress.visualPosition * parent.width
-                        height: parent.height
-                        radius: 3
-                        color: Theme.accent
-                    }
-
-                    Rectangle {
-                        id: indetBar
-
-                        visible: dockProgress.indeterminate
-                        width: parent.width * 0.3
-                        height: parent.height
-                        radius: 3
-                        color: Theme.accent
-
-                        XAnimator on x {
-                            from: -indetBar.width
-                            to: progressTrack.width
-                            duration: 900
-                            loops: Animation.Infinite
-                            running: dockProgress.indeterminate
-                        }
-                    }
-                }
             }
 
             Label {

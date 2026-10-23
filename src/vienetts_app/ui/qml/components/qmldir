@@ -27,3 +27,5 @@ QwenSetupDialog 1.0 QwenSetupDialog.qml
 RemoveConfirmDialog 1.0 RemoveConfirmDialog.qml
 SubtitleActionDock 1.0 SubtitleActionDock.qml
 singleton EngineState 1.0 EngineState.qml
+AppProgressBar 1.0 AppProgressBar.qml
+AppTextField 1.0 AppTextField.qml

@@ -52,6 +52,33 @@ Item {
         flick.contentY = Math.max(0, Math.min(y, flick.contentHeight - flick.height));
     }
 
+    // QML has no isAncestorOf(); walk the QObject parents instead.
+    function ownsFocusItem(item) {
+        let cursor = item;
+        while (cursor) {
+            if (cursor === root)
+                return true;
+            cursor = cursor.parent;
+        }
+        return false;
+    }
+
+    // Scroll the smallest amount that brings a focused control fully into view.
+    function ensureFocusVisible(item) {
+        if (!item || !root.ownsFocusItem(item))
+            return;
+        const flick = scrollView.contentItem;
+        if (!flick)
+            return;
+        const y = item.mapToItem(flick, 0, 0).y;
+        const bottom = y + item.height;
+        if (y < flick.contentY)
+            flick.contentY = y;
+        else if (bottom > flick.contentY + flick.height)
+            flick.contentY = Math.min(bottom - flick.height,
+                Math.max(0, flick.contentHeight - flick.height));
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -107,6 +134,19 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: root.pageSpacing
             }
+        }
+    }
+
+    // FR-4.5: tabbing into a control below the fold scrolls it into view.
+    // Active-focus changes arrive on the Window, so the item is mapped into
+    // the scroll content and only moved when it sits outside the viewport.
+    Connections {
+        target: root.Window.window
+
+        function onActiveFocusItemChanged() {
+            const item = root.Window.window ? root.Window.window.activeFocusItem : null;
+            if (item)
+                root.ensureFocusVisible(item);
         }
     }
 }

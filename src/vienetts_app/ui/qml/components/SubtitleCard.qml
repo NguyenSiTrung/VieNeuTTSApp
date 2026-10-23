@@ -28,7 +28,6 @@ AppCard {
 
     objectName: "subtitleCard"
     title: qsTr("Phụ đề (SRT)")
-    subtitle: qsTr("Nhập tệp .srt, chọn cách khớp thời gian, rồi tạo âm thanh và phụ đề đã căn chỉnh.")
 
     readonly property bool available: typeof subtitleController !== "undefined" && subtitleController !== null
     readonly property bool loaded: available && subtitleController.loaded === true
@@ -176,7 +175,7 @@ AppCard {
         objectName: "subtitleImportDialog"
         fileMode: FileDialog.OpenFile
         title: qsTr("Chọn tệp phụ đề")
-        nameFilters: ["Phụ đề SubRip (*.srt)", "Tất cả tệp (*)"]
+        nameFilters: [qsTr("Phụ đề SubRip (*.srt)"), qsTr("Tất cả tệp (*)")]
         onAccepted: {
             if (root.available)
                 subtitleController.importSrt(root.toLocalPath(selectedFile));
@@ -189,7 +188,10 @@ AppCard {
         objectName: "subtitleVideoDialog"
         fileMode: FileDialog.OpenFile
         title: qsTr("Chọn tệp video")
-        nameFilters: ["Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)", "Tất cả tệp (*)"]
+        nameFilters: [
+            qsTr("Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)"),
+            qsTr("Tất cả tệp (*)")
+        ]
         onAccepted: {
             if (root.available)
                 subtitleController.importVideo(root.toLocalPath(selectedFile));
@@ -450,23 +452,21 @@ AppCard {
         }
 
         // ── Video attachment & ASR bar ──────────────────────────────────────
-        Rectangle {
+        AppCard {
             id: videoBar
 
             objectName: "subtitleVideoBar"
             Layout.fillWidth: true
             visible: root.hasVideo && root.stage === "source"
-            implicitHeight: videoBarLayout.implicitHeight + Theme.spacingSm * 2
-            radius: Theme.radiusMd
-            color: Theme.surfaceAlt
-            border.width: 1
-            border.color: Theme.borderSubtle
+            elevation: 0
+            cardColor: Theme.surfaceAlt
+            cardBorderColor: Theme.borderSubtle
+            cardPadding: Theme.spacingSm
 
             ColumnLayout {
                 id: videoBarLayout
 
-                anchors.fill: parent
-                anchors.margins: Theme.spacingSm
+                Layout.fillWidth: true
                 spacing: Theme.spacingXs
 
                 RowLayout {
@@ -504,6 +504,7 @@ AppCard {
                         size: "sm"
                         iconKind: "wave"
                         text: qsTr("Tạo phụ đề (ASR)")
+                        tooltipText: qsTr("Nhận dạng phụ đề từ video bằng mô hình Whisper")
                         enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
                         disabledReason: root.aiActionReason("asr")
                         onClicked: {
@@ -544,6 +545,7 @@ AppCard {
 
                         AppCombo {
                             objectName: "subtitleVideoMixCombo"
+                            accessibleLabel: qsTr("Âm thanh video")
                             textRole: "label"
                             comboWidth: 210
                             enabled: root.available && !root.busy && !root.exporting
@@ -573,6 +575,7 @@ AppCard {
 
                         AppNumberField {
                             objectName: "subtitleVideoBgGainField"
+                            accessibleLabel: qsTr("Âm nền (dB)")
                             enabled: root.available && !root.busy && !root.exporting
                             disabledReason: root.busyReason()
                             decimals: 0
@@ -613,6 +616,7 @@ AppCard {
 
                         AppCombo {
                             objectName: "subtitleEmbedModeCombo"
+                            accessibleLabel: qsTr("Kiểu phụ đề")
                             textRole: "label"
                             comboWidth: 210
                             enabled: root.available && !root.busy && !root.exporting
@@ -810,11 +814,10 @@ AppCard {
                 font.pixelSize: Theme.fontSizeSm
             }
 
-            ProgressBar {
+            AppProgressBar {
                 objectName: "subtitleAiProgressBar"
                 Layout.preferredWidth: 160
-                from: 0.0
-                to: 1.0
+                accessibleLabel: qsTr("Tiến độ tác vụ AI")
                 value: root.available ? subtitleController.aiProgress : 0.0
             }
         }
@@ -840,6 +843,25 @@ AppCard {
                 Layout.minimumHeight: 180
                 visible: root.loaded
                 clip: true
+                // FR-4.5: the list is a Tab stop with an announced role, and
+                // Up/Down move the cue selection *and* seek to it.
+                focus: true
+                activeFocusOnTab: true
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Danh sách phụ đề")
+                Keys.onPressed: (event) => {
+                    if (event.key !== Qt.Key_Up && event.key !== Qt.Key_Down)
+                        return;
+                    const delta = event.key === Qt.Key_Down ? 1 : -1;
+                    const next = Math.max(0, Math.min(cueList.count - 1,
+                        cueList.currentIndex + delta));
+                    if (next !== cueList.currentIndex) {
+                        cueList.currentIndex = next;
+                        if (root.available)
+                            subtitleController.seekToCue(next);
+                    }
+                    event.accepted = true;
+                }
                 // Row-level model: rows keep their delegates across updates.
                 model: root.available ? subtitleController.cueModel : null
                 boundsBehavior: Flickable.StopAtBounds
@@ -918,55 +940,31 @@ AppCard {
                                         font.pixelSize: Theme.fontSizeXs
                                     }
 
-                                    Rectangle {
+                                    StatusBadge {
                                         objectName: "subtitleCueSpeakerBadge"
                                         visible: Boolean(modelData.speaker)
-                                        radius: Theme.radiusSm
-                                        color: Theme.accentSubtle
-                                        implicitWidth: cueSpkLabel.implicitWidth + Theme.spacingXs * 2
-                                        implicitHeight: 18
-
-                                        Label {
-                                            id: cueSpkLabel
-
-                                            anchors.centerIn: parent
-                                            text: modelData.speaker || ""
-                                            color: Theme.accent
-                                            font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            font.weight: Theme.fontWeightMedium
-                                        }
+                                        status: "info"
+                                        dotVisible: false
+                                        text: modelData.speaker || ""
+                                        customPadding: Theme.spacingXs
                                     }
 
-                                    Rectangle {
+                                    StatusBadge {
                                         objectName: "subtitleCueFitBadge"
                                         visible: Boolean(
                                             (modelData.overflowMs && modelData.overflowMs > 0)
                                             || (modelData.fitRate && modelData.fitRate > 1.02)
                                             || modelData.overBudget
                                         )
-                                        radius: Theme.radiusSm
-                                        color: (modelData.overflowMs && modelData.overflowMs > 0) || modelData.overBudget
-                                            ? Theme.surface
-                                            : Theme.accentSubtle
-                                        implicitWidth: cueFitLbl.implicitWidth + Theme.spacingXs * 2
-                                        implicitHeight: 18
-
-                                        Label {
-                                            id: cueFitLbl
-
-                                            anchors.centerIn: parent
-                                            text: (modelData.overflowMs && modelData.overflowMs > 0)
-                                                ? ("+" + modelData.overflowMs + " ms")
-                                                : (modelData.fitRate && modelData.fitRate > 1.02)
-                                                    ? (Number(modelData.fitRate).toFixed(2) + "×")
-                                                    : qsTr("Dài")
-                                            color: (modelData.overflowMs && modelData.overflowMs > 0) || modelData.overBudget
-                                                ? Theme.warning
-                                                : Theme.accent
-                                            font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                        }
+                                        status: ((modelData.overflowMs && modelData.overflowMs > 0)
+                                            || modelData.overBudget) ? "warning" : "info"
+                                        dotVisible: false
+                                        text: (modelData.overflowMs && modelData.overflowMs > 0)
+                                            ? ("+" + modelData.overflowMs + " ms")
+                                            : (modelData.fitRate && modelData.fitRate > 1.02)
+                                                ? (Number(modelData.fitRate).toFixed(2) + "×")
+                                                : qsTr("Dài")
+                                        customPadding: Theme.spacingXs
                                     }
 
                                     Item { Layout.fillWidth: true }
@@ -1003,24 +1001,13 @@ AppCard {
                             visible: cueRowRoot.editing
                             spacing: Theme.spacingXs
 
-                            TextField {
+                            AppTextField {
                                 id: cueEditTextField
 
                                 objectName: "subtitleCueEditField"
                                 Layout.fillWidth: true
-                                implicitHeight: Theme.controlHeightSm
+                                accessibleLabel: qsTr("Lời thoại phụ đề")
                                 text: modelData.text || ""
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                                leftPadding: Theme.spacingSm
-                                rightPadding: Theme.spacingSm
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: Theme.surface
-                                    border.width: 1
-                                    border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
-                                }
                                 onAccepted: {
                                     if (root.available && subtitleController.updateCue(
                                             index, cueEditTextField.text, cueEditSpkField.text))
@@ -1028,31 +1015,19 @@ AppCard {
                                 }
                             }
 
-                            TextField {
+                            AppTextField {
                                 id: cueEditSpkField
 
                                 objectName: "subtitleCueEditSpeakerField"
                                 Layout.preferredWidth: 110
-                                implicitHeight: Theme.controlHeightSm
+                                accessibleLabel: qsTr("Người nói của phụ đề")
                                 text: modelData.speaker || ""
                                 placeholderText: qsTr("Người nói")
-                                placeholderTextColor: Theme.textSubtle
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                leftPadding: Theme.spacingSm
-                                rightPadding: Theme.spacingSm
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: Theme.surface
-                                    border.width: 1
-                                    border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
-                                }
                             }
 
                             AppButton {
                                 objectName: "subtitleCueSaveEditButton"
-                                variant: "primary"
+                                variant: "secondary"
                                 size: "sm"
                                 text: qsTr("Lưu")
                                 onClicked: {
@@ -1080,25 +1055,30 @@ AppCard {
             }
 
             // ── Right column: Fit policy & Voice ───────────────────────────
-            Rectangle {
+            AppCard {
                 objectName: "subtitleTimingPanel"
                 Layout.fillWidth: !root.wideLayout
                 Layout.preferredWidth: root.wideLayout ? 404 : -1
                 Layout.maximumWidth: root.wideLayout ? 424 : -1
                 Layout.alignment: Qt.AlignTop
                 visible: root.stage === "produce"
-                implicitHeight: timingVoiceCol.implicitHeight + Theme.spacingSm * 2
-                radius: Theme.radiusMd
-                color: Theme.surfaceAlt
-                border.width: 1
-                border.color: Theme.borderSubtle
+                elevation: 0
+                cardColor: Theme.surfaceAlt
+                cardBorderColor: Theme.borderSubtle
+                cardPadding: Theme.spacingSm
 
                 ColumnLayout {
                     id: timingVoiceCol
 
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingSm
+                    Layout.fillWidth: true
                     spacing: Theme.spacingXs + 2
+
+                    SectionLabel {
+                        objectName: "subtitleTimingSectionLabel"
+                        Layout.fillWidth: true
+                        text: qsTr("THỜI GIAN & GIỌNG ĐỌC")
+                    }
+
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
@@ -1115,6 +1095,7 @@ AppCard {
                         id: modeCombo
 
                         objectName: "subtitleModeCombo"
+                        accessibleLabel: qsTr("Chế độ phụ đề")
                         Layout.fillWidth: true
                         textRole: "label"
                         comboWidth: 165
@@ -1163,6 +1144,7 @@ AppCard {
                         id: rateSlider
 
                         objectName: "subtitleRateSlider"
+                        accessibleLabel: qsTr("Mức nén tối đa")
                         implicitWidth: 96
                         Layout.fillWidth: true
                         Layout.minimumWidth: 64
@@ -1224,6 +1206,7 @@ AppCard {
                         id: maxGapField
 
                         objectName: "subtitleMaxGapField"
+                        accessibleLabel: qsTr("Giới hạn khoảng lặng (ms)")
                         implicitWidth: 84
                         Layout.preferredWidth: 84
                         visible: root.available && subtitleController.mode === "transcript"
@@ -1253,6 +1236,7 @@ AppCard {
                         id: offsetField
 
                         objectName: "subtitleOffsetField"
+                        accessibleLabel: qsTr("Độ lệch thời gian (ms)")
                         implicitWidth: 84
                         Layout.preferredWidth: 84
                         enabled: root.available && !root.busy && !root.exporting
@@ -1316,26 +1300,21 @@ AppCard {
         }
 
         // ── Speaker Cast Mapping Bar (full width so each speaker fits 1 row) ──
-        Rectangle {
+        AppCard {
             id: speakerBar
 
             objectName: "subtitleSpeakerBar"
             Layout.fillWidth: true
             visible: root.loaded && root.hasSpeakers && root.stage !== "source"
-            implicitHeight: speakerBarCol.implicitHeight + Theme.spacingSm + Theme.spacingXs
-            radius: Theme.radiusMd
-            color: Theme.surfaceAlt
-            border.width: 1
-            border.color: Theme.borderSubtle
+            elevation: 0
+            cardColor: Theme.surfaceAlt
+            cardBorderColor: Theme.borderSubtle
+            cardPadding: Theme.spacingSm
 
             ColumnLayout {
                 id: speakerBarCol
 
-                anchors.fill: parent
-                anchors.leftMargin: Theme.spacingSm + 2
-                anchors.rightMargin: Theme.spacingSm + 2
-                anchors.topMargin: Theme.spacingSm
-                anchors.bottomMargin: Theme.spacingXs
+                Layout.fillWidth: true
                 spacing: Theme.spacingXxs
 
                 RowLayout {

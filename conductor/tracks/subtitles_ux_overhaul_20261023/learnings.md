@@ -126,3 +126,12 @@ Key measured facts to re-verify rather than assume:
   - **Context:** "archive readiness" in this repo means the track is complete and documented; the actual move into `conductor/archive/` happens separately, so the track stays under `tracks/` with an `[x]` marker.
   - **Gotchas:** the audit's "87 tests" line was already stale; re-collect with `pytest -k "subtitle or srt" --collect-only` (119 now) instead of trusting doc counts.
   - **Patterns:** a findings table with a per-row resolution is the cheapest way to close a 33-item audit — each row names the mechanism, not the commit, so it stays useful after the archive move.
+
+## [2026-10-23] - Post-review corrections (focus-follow + property surface)
+
+- **Implemented:** `PageShell` now imports `QtQuick.Window` and exposes `pageWindow` (an Item-scoped alias) because `Window.window` evaluates to null inside `Connections` — the focus follower had never been bound. `ensureFocusVisible` maps into `flick.contentItem` (content coordinates) instead of the Flickable's viewport. The subtitle smoke asserts both: the follower target resolves, and at maximum scroll a fully visible control leaves `contentY` untouched (the old code jumped 678 -> 0). `SubtitleController.API_ONLY_PROPERTIES` documents the 13 properties with no QML binding, `busyOwner` is now read by the dock's progress owner, and a new unit test asserts the undocumented and stale sets are both empty.
+- **Files changed:** `ui/qml/components/{PageShell,SubtitleActionDock}.qml`, `ui/subtitle_controller.py`, `tests/smoke/test_ui_tabs.py`, `tests/unit/test_subtitle_controller.py`, `conductor/patterns.md`.
+- **Learnings:**
+  - **Gotchas:** attached `Window.window` is Item-only, and viewport vs content coordinates must never be compared when scrolling a focused item into view.
+  - **Patterns:** an "API-only" property list is only meaningful with the reverse assertion (a property that QML starts consuming must fail), otherwise it rots into a dumping ground.
+

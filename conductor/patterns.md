@@ -108,6 +108,9 @@ Reusable patterns discovered during development. Read this before starting new w
 
 ## Gotchas
 
+- `Window.window` is an attached property that resolves ONLY on Items: evaluating it inside `Connections` (a `QtObject`) returns null with "Window.window only supports types derived from Item", so focus-follow listeners silently never fire. Put `readonly property Window pageWindow: Window.window` on the Item root and target that from `Connections` (found while closing `subtitles_ux_overhaul_20261023`, 2026-10-23).
+- Focus-scroll math mixes coordinate spaces easily: `mapToItem(flickable, 0, 0)` yields VIEWPORT coordinates, so comparing it with `flickable.contentY` breaks once the page is scrolled (an in-view item jumps the page to its viewport y). Map into `flickable.contentItem` for content coordinates, and regression-test with `contentY > 0` on an already-visible item (must not move the page).
+
 - Subprocess QML drivers built via textwrap.dedent: keep `\n` escapes literal inside nested strings/docstrings, and never let a line hit column 0 — dedent then no-ops into IndentationError in every subprocess (from: phase04_streaming_20260827, 2026-08-27).
 - Subprocess GUI drivers using the REAL worker must call `shutdown()` before quitting — teardown aborts (rc=-6) otherwise (from: phase04_streaming_20260827, 2026-08-27).
 - Hosts exposing ZERO audio output sinks (pipewire-less offscreen) make probe=False the DEFAULT path — playback-flow tests must inject `audio_probe=lambda: True`; assert the export-only posture explicitly rather than assuming device presence (from: phase04_streaming_20260827, 2026-08-27).

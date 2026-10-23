@@ -2,6 +2,43 @@
 
 **Verdict: YES — this tab needs a redesign.** It is the only top-level destination that never received the 2026-10-10 shell redesign treatment, and it is now structurally the weakest page in the app.
 
+> **Status: resolved 2026-10-23** by track `subtitles_ux_overhaul_20261023`
+> (commits `da92163`, `601f981`, `6e22bb1`, `0d3f935` and the phase-5 commits).
+> Every finding below is addressed except 3.6, deliberately deferred; the audit
+> is kept as the historical record of the pre-redesign surface.
+>
+> | Finding | Resolution |
+> |---|---|
+> | 0.1 policy knobs invalidate a render | Staged invalidation gate: setters queue the change, the card names the loss (track/retimed SRT) and only `confirmRenderInvalidation()` applies it; rejection snaps back. |
+> | 0.2 cue edit destroys track + retimed SRT | Same gate for `updateCue`/diarization/LLM; the dialog names both artifacts. |
+> | 0.3 re-ASR overwrites the managed SRT | Same gate before `transcribeVideo`. |
+> | 0.4 no project lifecycle | `Projects` dialog: list/open/delete workspaces, `New project` closes via `clear()`, stale workspaces deletable; project id stays path-safe. |
+> | 0.5 no export cancel / transcript gap cap | New `cancelExport` slot + dock cancel; transcript default `max_gap_ms=1500`. |
+> | 1 root cause (mode promoted, page never designed) | `SubtitlesTab` is a real destination: page header, stage stepper, pinned dock, empty launcher. |
+> | 2.1 primary buried | `SubtitleActionDock` outside the `PageShell`; visible at 640×420 (asserted). |
+> | 2.2 grid breaks 760–1080 | Window-keyed `wideLayout` (≥900), wrapping speaker `Flow`, page max width 960. |
+> | 2.2a speaker field 0 px | Replaced by the catalog `VoicePicker` (≥120 px at 640×420, asserted). |
+> | 2.3 blank empty state | Two explicit entry cards + drag-and-drop, prerequisites stated. |
+> | 2.4 four stacked toolbars | Source/Prepare/Produce stages show one toolbar group each. |
+> | 3.1 implicit pipeline | Ordered AI group labelled "theo thứ tự" with step tooltips. |
+> | 3.2 silent prerequisites | Named prerequisite row with a deep-link to Settings › Models. |
+> | 3.3 duplicate diarization | One affordance per stage (speaker bar), deduplicated and asserted. |
+> | 3.4 raw voice IDs | `VoicePicker` per speaker; "assign current voice" shortcut. |
+> | 3.5 no way to start over | `New project` + projects dialog. |
+> | 3.6 no video preview | Out of scope for this track; filed as `VieNeuTTSApp-t80a`. The video bar carries the file name and dub options. |
+> | 3.7 export has no cancel/progress escape | `cancelExport` + export progress + cancel button in the dock. |
+> | 4.1 five independent booleans | Controller `state` + `busyOwner`; one progress indicator per owner. |
+> | 4.2 invisible behaviour | Hints channel (`hintText`), dismissible tone-aware banner, stale chip. |
+> | 4.3 thin tests | Every listed action clicked with controller-call assertions; real-SRT import asserted; screenshot matrix. |
+> | 4.4 design-system drift | `AppCard`/`AppProgressBar`/`AppTextField`/`StatusBadge`/`SectionLabel`; `Theme.warningText`. |
+> | 4.5 accessibility | Cue list Tab stop + Up/Down seek, accessible names on every control, tooltips on AI/render/export, focus-follow scrolling. |
+> | Suggested extraction | `SubtitleCard` split into Source/Prepare/Cue/Cast panels (Task 5.1). |
+>
+> Fresh evidence: `docs/screenshots/redesign/phase-5/subtitles-{dark,light}-{640x420,760x600,1120x740,1440x900}.png`
+> (populated with six real cues). The old `phase-3/4/create-subtitles-*` grabs
+> were deleted — they predate the tab's promotion and show a layout that no
+> longer exists.
+
 **But the layout is not the most serious problem.** The tab also **silently destroys completed work** — a finished render, an exported SRT, and hand-edited cues can all be lost with no confirmation and no undo. Those findings are in §0 and should be triaged before any visual work.
 
 Evidence base: full source read of `SubtitlesTab.qml` (109 lines) + `SubtitleCard.qml` (1,289 lines) + `subtitle_controller.py` (2,321 lines) + the core layers it drives (`align.py`, `subtitle_project.py`, `video_dub.py`, `asr.py`, `llm_refine.py`, `diarization.py`), rendered screenshots at 1440×900 / 1080×800 / 760×600 / 640×420 in both themes, and comparison against `CreateTab` / `StudioTab` / `AudiobookTab`.
@@ -426,11 +463,13 @@ All captures are offscreen renders via `scripts/generate_screenshots.py`'s fake-
 - `subtitles-loaded-scrolled-dark-1440x900.png` — AI toolbar + cue list dominate; actions scroll away
 - `subtitles-loaded-light-1440x900.png` — light theme (clean, confirms theming is not the problem)
 
-### ⚠️ The committed screenshots for this tab are stale
+### Screenshots (regenerated 2026-10-23)
 
-`docs/screenshots/redesign/phase-{3,4}/create-subtitles-*.png` are the only committed evidence for this surface, and they **predate the tab's promotion to a top-level destination**. The phase-4 shot still renders the old layout: header reads "Tạo giọng đọc", "Phụ đề" is a mode segment beside "Soạn thảo / Tài liệu / Nhiều tệp", and the version stamp says `v0.2.0` (current is `v0.3.0`). The file naming (`create-subtitles-*`, not `subtitles-*`) is itself a leftover of that era.
-
-These should be regenerated as part of any redesign — they cannot be used to review the current tab.
+`docs/screenshots/redesign/phase-5/subtitles-{dark,light}-{640x420,760x600,1120x740,1440x900}.png`
+are the current evidence: a real six-cue project is loaded by the screenshot
+harness, so each size shows the populated Prepare stage (AI group, cue list,
+speaker casting) plus the pinned dock. The pre-promotion
+`phase-3/4/create-subtitles-*` files were removed.
 
 ### How to run the subtitle test suites
 
@@ -439,4 +478,4 @@ cd /home/ubuntu/Documents/project/VieNeuTTSApp
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -k "subtitle or srt" -q
 ```
 
-(87 tests, ~13 s, verified green. Note `pyproject.toml` hardcodes `-n auto --dist worksteal`; override with `-o addopts=""` if you need a serial run.)
+(119 selected tests at 2026-10-23 — the coverage added by the track. Note `pyproject.toml` hardcodes `-n auto --dist worksteal`; override with `-o addopts=""` if you need a serial run.)

@@ -312,7 +312,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Extend the shared driver scenarios; regenerate `docs/screenshots/redesign/` for this destination (the current `create-subtitles-*` files are stale, pre-`aef1d87`, `v0.2.0`).
 
-- [ ] **Task 5.3: Documentation, patterns elevation and archive readiness**
+- [x] **Task 5.3: Documentation, patterns elevation and archive readiness**
   <!-- files: conductor/patterns.md, conductor/workflow.md, docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md, conductor/tracks/subtitles_ux_overhaul_20261023/learnings.md -->
   - Red tests: n/a (documentation) — validated by the i18n/pattern lint if any.
   - Green implementation:

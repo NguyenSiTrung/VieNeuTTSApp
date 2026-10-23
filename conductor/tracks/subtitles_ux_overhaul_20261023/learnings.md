@@ -117,3 +117,12 @@ Key measured facts to re-verify rather than assume:
   - **Gotchas:** `subtitlesTab.findChildren` reaches the source panel's FileDialogs (QObject children) but not Repeater delegates; delegate actions (`speakerSample`, `speakerVoicePicker`, export menu items) need `ifind`/overlay walks.
   - **Patterns:** `click()` invokes the handler unconditionally, so a coverage driver must select an enabled instance (the active project row's "Mở" is disabled) instead of assuming row order.
   - **Context:** export menu items live in the window overlay; each selection closes the menu, so the harness must reopen it per item.
+
+## [2026-10-23] - Phase 5 / Task 5.3: Patterns, docs and archive readiness
+
+- **Implemented:** `conductor/patterns.md` gained five entries — derived `state` + single `busyOwner`, staged render invalidation, staleness over silent removal, the extended dock convention, and extraction-by-stage (including the stale-height rule). `conductor/workflow.md` carries a 2026-10-23 refresh comment with live counts (1596 collected / 1578 selected, i18n 1175/1175, ruff 214 files). The audit doc now opens with a finding→resolution table, its stale `create-subtitles-*` screenshots were deleted in favour of `phase-5/subtitles-*`, and finding 3.6 (video preview) points at the new `VieNeuTTSApp-t80a` bead. Track marked `[x]` in `conductor/tracks.md`, metadata `status: complete`.
+- **Files changed:** `conductor/patterns.md`, `conductor/workflow.md`, `conductor/tracks.md`, `conductor/tracks/subtitles_ux_overhaul_20261023/{plan.md,learnings.md,metadata.json}`, `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`, screenshot deletions.
+- **Learnings:**
+  - **Context:** "archive readiness" in this repo means the track is complete and documented; the actual move into `conductor/archive/` happens separately, so the track stays under `tracks/` with an `[x]` marker.
+  - **Gotchas:** the audit's "87 tests" line was already stale; re-collect with `pytest -k "subtitle or srt" --collect-only` (119 now) instead of trusting doc counts.
+  - **Patterns:** a findings table with a per-row resolution is the cheapest way to close a 33-item audit — each row names the mechanism, not the commit, so it stays useful after the archive move.

@@ -208,6 +208,8 @@ class SubtitleController(QObject):
     pendingInvalidationChanged = Signal()
     staleChanged = Signal()
     projectsChanged = Signal()
+    stateChanged = Signal()
+    busyOwnerChanged = Signal()
 
     def __init__(
         self,
@@ -296,6 +298,22 @@ class SubtitleController(QObject):
         # Row-level mirror of `cues` for the QML cue list (perf 6.4): a
         # re-import diffs by cue index instead of rebuilding every row.
         self._cue_list = DictListModel(CUE_ROLES, key="index", parent=self)
+
+        # FR-2.2: one derived state drives every control's gating. It is
+        # recomputed from the existing axes whenever one of them notifies.
+        self._last_state = ""
+        self._last_busy_owner = ""
+        for signal in (
+            self.loadedChanged,
+            self.renderedChanged,
+            self.staleChanged,
+            self.renderingChanged,
+            self.exportingChanged,
+            self.aiBusyChanged,
+            self.errorTextChanged,
+            self.videoChanged,
+        ):
+            signal.connect(self._refresh_state)
 
         self._wire_player()
 
@@ -549,6 +567,61 @@ class SubtitleController(QObject):
         if not self.rendered:
             return self.tr("Chưa có bản lồng tiếng để xuất. Hãy tạo âm thanh trước.")
         return ""
+
+    # ── derived state (FR-2.2) ───────────────────────────────────────────────
+
+    def _compute_state(self) -> str:
+        if self._exporting:
+            return "exporting"
+        if self._rendering:
+            return "rendering"
+        if self._ai_busy:
+            return "ai_busy"
+        if self._error_text:
+            return "error"
+        if self.renderStale:
+            return "stale"
+        if self.rendered:
+            return "rendered"
+        if self._project is not None:
+            return "cues_ready"
+        if self.videoPath:
+            return "source_only"
+        return "empty"
+
+    def _compute_busy_owner(self) -> str:
+        if self._exporting:
+            return "export"
+        if self._rendering:
+            return "render"
+        if self._ai_busy:
+            return "ai"
+        return ""
+
+    def _refresh_state(self) -> None:
+        """Recompute the derived state; emit only when it actually changed."""
+        state = self._compute_state()
+        if state != self._last_state:
+            self._last_state = state
+            self.stateChanged.emit()
+        owner = self._compute_busy_owner()
+        if owner != self._last_busy_owner:
+            self._last_busy_owner = owner
+            self.busyOwnerChanged.emit()
+
+    @Property(str, notify=stateChanged)
+    def state(self) -> str:
+        """One of ``empty|source_only|cues_ready|ai_busy|rendering|rendered|stale|error``.
+
+        ``exporting`` is its own state on the same busy axis; :attr:`busyOwner`
+        names exactly one of ``ai``/``render``/``export`` at a time (FR-2.2).
+        """
+        return self._compute_state()
+
+    @Property(str, notify=busyOwnerChanged)
+    def busyOwner(self) -> str:
+        """``"" | "ai" | "render" | "export"`` — never two at once."""
+        return self._compute_busy_owner()
 
     # ── properties ───────────────────────────────────────────────────────────
 
@@ -1338,9 +1411,7 @@ class SubtitleController(QObject):
             modified_at = project.created_at
             with contextlib.suppress(OSError):
                 modified_at = (
-                    _dt.datetime.fromtimestamp(
-                        self._store.project_path(project.id).stat().st_mtime
-                    )
+                    _dt.datetime.fromtimestamp(self._store.project_path(project.id).stat().st_mtime)
                     .astimezone()
                     .isoformat(timespec="seconds")
                 )

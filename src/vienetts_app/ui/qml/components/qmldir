@@ -25,4 +25,5 @@ QwenInstallCards 1.0 QwenInstallCards.qml
 QwenDevicePicker 1.0 QwenDevicePicker.qml
 QwenSetupDialog 1.0 QwenSetupDialog.qml
 RemoveConfirmDialog 1.0 RemoveConfirmDialog.qml
+SubtitleActionDock 1.0 SubtitleActionDock.qml
 singleton EngineState 1.0 EngineState.qml

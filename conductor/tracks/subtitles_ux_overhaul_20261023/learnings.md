@@ -63,3 +63,15 @@ Key measured facts to re-verify rather than assume:
   - **Context:** `lupdate` leaves new strings `type="unfinished"` and the `test_i18n` integrity check rejects the same source translated two different ways — translate duplicates identically.
 ---
 
+
+## [2026-10-23] - Phase 2: Page structure (Tasks 2.1–2.5)
+
+- **Implemented:** `state`/`busyOwner` derived axes on the controller (`exporting` folded into the busy axis); `SubtitleActionDock` pinned below the `PageShell` with render/transport/export menu/progress/cancel/stale hint; a three-stage `AppSegmented` (`source`/`prepare`/`produce`) with per-stage disabled reasons and auto-selection on load; a two-card empty launcher with one `handleDroppedUrls` seam; window-keyed `wideLayout`, wrapping speaker rows, a real cue-list scrollbar, and `pageMaxWidth: 960`.
+- **Files changed:** `ui/subtitle_controller.py`, `ui/qml/SubtitlesTab.qml`, `ui/qml/components/SubtitleActionDock.qml` (new), `ui/qml/components/SubtitleCard.qml`, both `qmldir`s, `ui/i18n/vienetts_en.ts/.qm`, `tests/unit/test_subtitle_controller.py`, `tests/unit/test_i18n.py`, `tests/smoke/test_ui_tabs.py`, `conductor/patterns.md`.
+- **Learnings:**
+  - **Patterns:** QML smoke probes must snapshot values **immediately**; holding a `QQuickItem` reference across a `loaded`/stage toggle risks `libshiboken: Internal C++ object already deleted`. This hit `popup_item` (voice-picker popup destroyed on close) and `edit_btns` (cue delegates reflowed) — store scalars, never items.
+  - **Gotchas:** Repeater delegates have no QObject parent, so `findChildren(QObject, name)` cannot see them (`subtitleSpeakerVoiceField`); use the visual-tree `item_walk`/`ifind` helper.
+  - **Gotchas:** `Layout.preferredHeight` on the cue list competed with `fillHeight`; dropping it plus `Layout.minimumHeight: 180` gives three rows at 640×420 and unbounded growth above.
+  - **Gotchas:** `wideLayout` must key off `Window.window.width`: the tab/card width shrinks at 760→820 because the nav rail switches from compact to full at 800 px.
+  - **Context:** moving the export actions into `SubtitleActionDock` moves their catalog entries to the `SubtitleActionDock` context; `test_i18n` must assert against the new context. `update_i18n.sh` re-emits dock strings as unfinished when their source file changed — retranslate before compiling.
+  - **Context:** the full parallel suite reported two loaded-host flakes (`test_worker_thread_safety_smoke`, `test_qwen_host::test_session_lifecycle`); both pass in isolation.

@@ -2076,6 +2076,8 @@ DRIVER = textwrap.dedent(
 
                 def __init__(self):
                     super().__init__()
+                    self._loaded = True
+                    self.imported = []
                     self._rendering = False
                     self._rendered = True
                     self._exporting = False
@@ -2133,7 +2135,13 @@ DRIVER = textwrap.dedent(
 
                 @Property(bool, notify=loadedChanged)
                 def loaded(self):
-                    return True
+                    return self._loaded
+
+                @loaded.setter
+                def loaded(self, value):
+                    if bool(value) != self._loaded:
+                        self._loaded = bool(value)
+                        self.loadedChanged.emit()
 
                 @Property(bool, notify=renderingChanged)
                 def rendering(self):
@@ -2191,6 +2199,10 @@ DRIVER = textwrap.dedent(
                 def renderProgress(self):
                     return 0.0
 
+                @Property(float, notify=exportingChanged)
+                def exportProgress(self):
+                    return 0.0
+
                 @Property(str, notify=playerStateChanged)
                 def playerState(self):
                     return "stopped"
@@ -2234,6 +2246,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, result=bool)
                 def importSrt(self, path):
+                    self.imported.append(("srt", path))
                     return True
 
                 @Slot()
@@ -2418,6 +2431,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, result=bool)
                 def importVideo(self, path):
+                    self.imported.append(("video", path))
                     return True
 
                 @Slot()
@@ -3997,7 +4011,110 @@ DRIVER = textwrap.dedent(
             )
             QMetaObject.invokeMethod(srt_picker, "closePopup")
             app.processEvents()
+            popup_within_window = bool(
+                popup_item is not None
+                and popup_top_left.x() >= 0
+                and popup_top_left.x() + popup_item.width() <= window.width()
+                and popup_top_left.y() >= 0
+                and popup_top_left.y() + popup_item.height() <= window.height()
+            )
+            popup_item = None
+            # FR-2.3: three segmented stages; impossible stages are disabled
+            # with a reason, the cue list stays visible in Prepare/Produce, and
+            # a programmatic load auto-selects the stage.
+            stage_switch = sfind("subtitleStageSwitch")
+            out["stage_values"] = [
+                row["value"] for row in qjs_to_py(stage_switch.property("model"))
+            ]
+            out["stage_default"] = str(stage_switch.property("currentValue"))
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            app.processEvents()
+            out["stage_prepare"] = str(stage_switch.property("currentValue"))
+            out["cue_list_visible_prepare"] = bool(
+                sfind("subtitleCueList").property("visible")
+            )
+            out["ai_bar_visible_prepare"] = bool(
+                sfind("subtitleAiBar").property("visible")
+            )
+            out["timing_panel_visible_prepare"] = bool(
+                sfind("subtitleTimingPanel").property("visible")
+            )
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "produce"))
+            app.processEvents()
+            out["stage_produce"] = str(stage_switch.property("currentValue"))
+            out["cue_list_visible_produce"] = bool(
+                sfind("subtitleCueList").property("visible")
+            )
+            out["timing_panel_visible_produce"] = bool(
+                sfind("subtitleTimingPanel").property("visible")
+            )
+            fake_subtitle.loaded = False
+            app.processEvents()
+            out["stage_disabled_when_empty"] = [
+                bool(row["enabled"]) for row in qjs_to_py(stage_switch.property("model"))
+            ]
+            out["stage_reasons_when_empty"] = [
+                str(row.get("reason", ""))
+                for row in qjs_to_py(stage_switch.property("model"))
+            ]
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            app.processEvents()
+            out["stage_blocked_when_empty"] = str(stage_switch.property("currentValue"))
+            fake_subtitle.loaded = True
+            app.processEvents()
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            app.processEvents()
+
+            # FR-2.4: two-choice launcher + one drop seam that routes .srt to
+            # importSrt and anything else to importVideo.
+            fake_subtitle.loaded = False
+            app.processEvents()
+            out["launcher_visible"] = bool(
+                sfind("subtitleEmptyLauncher").property("visible")
+            )
+            out["launcher_cards_clickable"] = [
+                bool(sfind(name).property("clickable"))
+                for name in ("subtitleEmptyVideoCard", "subtitleEmptySrtCard")
+            ]
+            out["drop_enabled_when_empty"] = bool(
+                sfind("subtitleEmptyDropArea").property("enabled")
+            )
+            subtitle_card = sfind("subtitleCard")
+            out["drop_accepted"] = [
+                bool(
+                    QMetaObject.invokeMethod(
+                        subtitle_card,
+                        "handleDroppedUrls",
+                        Q_RETURN_ARG("QVariant"),
+                        Q_ARG("QVariant", [QUrl.fromLocalFile("/tmp/demo.srt")]),
+                    )
+                ),
+                bool(
+                    QMetaObject.invokeMethod(
+                        subtitle_card,
+                        "handleDroppedUrls",
+                        Q_RETURN_ARG("QVariant"),
+                        Q_ARG("QVariant", [QUrl.fromLocalFile("/tmp/demo.mp4")]),
+                    )
+                ),
+            ]
+            out["dropped_imports"] = list(fake_subtitle.imported)
+            fake_subtitle.loaded = True
+            app.processEvents()
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            app.processEvents()
+            out["launcher_hidden_when_loaded"] = not bool(
+                sfind("subtitleEmptyLauncher").property("visible")
+            )
+
             edit_btns = ifind("subtitleCueEditButton")
+            cue_edit_icon = str(edit_btns[0].property("iconKind")) if edit_btns else ""
+            speaker_bar_visible = bool(sfind("subtitleSpeakerBar").property("visible"))
+            ai_bar_visible = bool(sfind("subtitleAiBar").property("visible"))
+
+            # Video attachment + embed options live in the Source stage.
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "source"))
+            app.processEvents()
 
             def embed_state():
                 combo = ifind("subtitleEmbedModeCombo")
@@ -4030,23 +4147,80 @@ DRIVER = textwrap.dedent(
                 "video_bar_visible": bool(
                     ifind("subtitleVideoBar") and ifind("subtitleVideoBar")[0].property("visible")
                 ),
-                "speaker_bar_visible": bool(
-                    ifind("subtitleSpeakerBar")
-                    and ifind("subtitleSpeakerBar")[0].property("visible")
+                "speaker_bar_visible": speaker_bar_visible,
+                "ai_bar_visible": ai_bar_visible,
+                # Export actions live in the dock's export menu (FR-2.1): their
+                # MenuItems exist as QObject children while the menu is closed,
+                # but are not in the visual tree.
+                "export_video_btn": bool(
+                    subtitles_tab().findChildren(QObject, "subtitleExportVideoButton")
                 ),
-                "ai_bar_visible": bool(
-                    ifind("subtitleAiBar") and ifind("subtitleAiBar")[0].property("visible")
-                ),
-                "export_video_btn": bool(ifind("subtitleExportVideoButton")),
-                "cue_edit_icon": str(edit_btns[0].property("iconKind")) if edit_btns else "",
-                "popup_within_window": bool(
-                    popup_item is not None
-                    and popup_top_left.x() >= 0
-                    and popup_top_left.x() + popup_item.width() <= window.width()
-                    and popup_top_left.y() >= 0
-                    and popup_top_left.y() + popup_item.height() <= window.height()
-                ),
+                "cue_edit_icon": cue_edit_icon,
+                "popup_within_window": popup_within_window,
             }
+
+            # FR-2.1: the action dock is pinned OUTSIDE the PageShell, and its
+            # primary action stays inside the window at the 640×420 minimum.
+            def inside_page_scroll(item):
+                parent = item.parentItem()
+                while parent is not None:
+                    if parent.objectName() == "pageScrollView":
+                        return True
+                    parent = parent.parentItem()
+                return False
+
+            dock = sfind("subtitleActionDock")
+            render_button = sfind("subtitleRenderButton")
+            out["dock_in_scroll"] = inside_page_scroll(dock)
+            out["dock_progress"] = bool(sfind("subtitleProgressBar"))
+            out["dock_cancel"] = bool(sfind("subtitleExportCancelButton"))
+            old_size = (window.width(), window.height())
+            window.setWidth(640)
+            window.setHeight(420)
+            pump(0.1)
+            center = render_button.mapToScene(
+                QPointF(render_button.width() / 2, render_button.height() / 2)
+            )
+            out["render_visible_at_640"] = bool(
+                render_button.property("visible")
+                and 0 <= center.x() <= window.width()
+                and 0 <= center.y() <= window.height()
+            )
+            # FR-2.5: window-keyed breakpoint (monotonic across the rail
+            # switch at 800), wrapping speaker row, growing cue list, page cap.
+            out["page_max_width"] = int(subtitles_tab().property("pageMaxWidth"))
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            pump(0.1)
+            out["wide_by_window_width"] = []
+            for width in (760, 820, 980, 1120):
+                window.setWidth(width)
+                pump(0.1)
+                out["wide_by_window_width"].append(
+                    bool(sfind("subtitleCard").property("wideLayout"))
+                )
+            window.setWidth(1120)
+            window.setHeight(600)
+            pump(0.1)
+            cue_list = sfind("subtitleCueList")
+            out["cue_scrollbar"] = bool(
+                cue_list.findChildren(QObject, "subtitleCueScrollBar")
+            )
+            out["cue_height_short_window"] = float(cue_list.height())
+            window.setWidth(640)
+            window.setHeight(420)
+            pump(0.1)
+            out["speaker_field_width_640"] = float(
+                ifind("subtitleSpeakerVoiceField")[0].width()
+            )
+            window.setWidth(1120)
+            window.setHeight(900)
+            pump(0.1)
+            out["cue_height_tall_window"] = float(
+                sfind("subtitleCueList").height()
+            )
+            window.setWidth(old_size[0])
+            window.setHeight(old_size[1])
+            pump(0.1)
             results["srt_surface"] = out
 
         elif scenario == "clone_group":
@@ -8013,6 +8187,45 @@ class TestTextParagraphTabSmoke:
             "cue_edit_icon": "edit",
             "popup_within_window": True,
         }
+        # FR-2.1: pinned dock outside the scroll area, primary reachable at the
+        # documented 640×420 minimum, with progress + cancel affordances.
+        assert result["dock_in_scroll"] is False
+        assert result["dock_progress"] is True
+        assert result["dock_cancel"] is True
+        assert result["render_visible_at_640"] is True
+        # FR-2.3: segmented Source/Prepare/Produce stages.
+        assert result["stage_values"] == ["source", "prepare", "produce"]
+        assert result["stage_default"] == "produce"
+        assert result["stage_prepare"] == "prepare"
+        assert result["cue_list_visible_prepare"] is True
+        assert result["ai_bar_visible_prepare"] is True
+        assert result["timing_panel_visible_prepare"] is False
+        assert result["stage_produce"] == "produce"
+        assert result["cue_list_visible_produce"] is True
+        assert result["timing_panel_visible_produce"] is True
+        assert result["stage_disabled_when_empty"] == [True, False, False]
+        assert result["stage_reasons_when_empty"] == [
+            "",
+            "Cần nhập tệp phụ đề hoặc video.",
+            "Cần có phụ đề trước khi tạo âm thanh.",
+        ]
+        assert result["stage_blocked_when_empty"] == "source"
+        # FR-2.4: two entry choices, one drop seam.
+        assert result["launcher_visible"] is True
+        assert result["launcher_cards_clickable"] == [True, True]
+        assert result["drop_enabled_when_empty"] is True
+        assert result["drop_accepted"] == [True, True]
+        assert result["dropped_imports"] == [
+            ["srt", "/tmp/demo.srt"],
+            ["video", "/tmp/demo.mp4"],
+        ]
+        assert result["launcher_hidden_when_loaded"] is True
+        # FR-2.5: monotonic window breakpoint + wrapping speaker row.
+        assert result["page_max_width"] == 960
+        assert result["wide_by_window_width"] == [False, False, True, True]
+        assert result["cue_scrollbar"] is True
+        assert result["speaker_field_width_640"] >= 120
+        assert result["cue_height_tall_window"] > result["cue_height_short_window"]
 
 
 class TestCloningStudioTabSmoke:

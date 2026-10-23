@@ -1894,3 +1894,85 @@ def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path):
     # Cancelling while idle is a no-op.
     controller.cancelExport()
     assert events == [("", "Đã hủy xuất.")]
+
+
+# ── derived state model (FR-2.2) ────────────────────────────────────────────
+
+
+def test_derived_state_covers_the_whole_lifecycle(tmp_path):
+    fake = FakeApp()
+    player = FakePlayer()
+    controller = make_controller(tmp_path, fake, player)
+    states: list[str] = []
+    owners: list[str] = []
+    controller.stateChanged.connect(lambda: states.append(controller.state))
+    controller.busyOwnerChanged.connect(lambda: owners.append(controller.busyOwner))
+
+    assert controller.state == "empty"
+    assert controller.busyOwner == ""
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    assert controller.state == "source_only"
+
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.state == "cues_ready"
+
+    controller.render()
+    assert controller.state == "rendering"
+    assert controller.busyOwner == "render"
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.state == "rendered"
+    assert controller.busyOwner == ""
+
+    controller._set_ai_state(True, "Đang chạy AI…", 0.2)  # noqa: SLF001
+    assert controller.state == "ai_busy"
+    assert controller.busyOwner == "ai"
+    controller._set_ai_state(False, "", 0.0)  # noqa: SLF001
+    assert controller.state == "rendered"
+
+    controller._set_error("lỗi thử nghiệm")  # noqa: SLF001
+    assert controller.state == "error"
+    controller._set_error("")  # noqa: SLF001
+    assert controller.state == "rendered"
+
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    assert controller.state == "stale"
+
+    # busyOwner reports one owner (or none) at every transition.
+    assert set(owners) <= {"", "ai", "render", "export"}
+    assert "rendering" in states and "rendered" in states
+
+
+def test_a_cache_hit_render_never_enters_the_rendering_state(tmp_path):
+    controller, _, _ = _rendered_controller(tmp_path)
+    states: list[str] = []
+    controller.stateChanged.connect(lambda: states.append(controller.state))
+    controller.render()  # adopts the cached track
+    assert controller.rendered is True
+    assert "rendering" not in states
+
+
+def test_exporting_is_the_single_busy_owner(tmp_path):
+    fake = FakeApp()
+    player = FakePlayer()
+    runner = _DeferredRunner()
+    controller = SubtitleController(
+        fake,
+        data_dir=tmp_path,
+        player_factory=lambda: player,
+        store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
+        bg_runner=runner,
+        unit_executor=SyncOrderedExecutor(),
+    )
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+    controller.exportTrack(str(tmp_path / "out"))
+    assert controller.state == "exporting"
+    assert controller.busyOwner == "export"
+    controller.cancelExport()
+    assert controller.state == "rendered"
+    assert controller.busyOwner == ""

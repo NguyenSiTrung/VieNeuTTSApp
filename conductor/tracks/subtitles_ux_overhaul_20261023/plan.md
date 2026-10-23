@@ -89,7 +89,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
 > Depends on Phase 1: the dock and the derived `state` must render the stale/confirmation
 > states introduced there. Tasks are chained 2.1 → 2.5 because each edits `SubtitleCard.qml`.
 
-- [ ] **Task 2.1: Derived `state` + `busyOwner` replacing the five booleans**
+- [x] **Task 2.1: Derived `state` + `busyOwner` replacing the five booleans**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `state` returns exactly one of `empty | source_only | cues_ready | ai_busy | rendering | rendered | stale | exporting | error` for each scenario.
@@ -98,7 +98,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add a derived `state` property computed from the existing axes; keep the old booleans as compatibility aliases for one phase, then delete them.
 
-- [ ] **Task 2.2: Pinned action dock (`SubtitleActionDock`)**
+- [x] **Task 2.2: Pinned action dock (`SubtitleActionDock`)**
   <!-- files: src/vienetts_app/ui/qml/SubtitlesTab.qml, src/vienetts_app/ui/qml/components/SubtitleActionDock.qml, src/vienetts_app/ui/qml/components/qmldir, src/vienetts_app/ui/qml/qmldir, conductor/patterns.md, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `subtitleActionDock` exists and is NOT a descendant of `pageScrollView`.
@@ -109,7 +109,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
     - `SubtitlesTab.qml` places it below the `PageShell` inside the page `ColumnLayout`.
     - Update `conductor/patterns.md:96` to record the reversal.
 
-- [ ] **Task 2.3: Source / Prepare / Produce segmented stages**
+- [x] **Task 2.3: Source / Prepare / Produce segmented stages**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `subtitleStageSwitch` (AppSegmented) has 3 segments; selecting a stage swaps the visible panel and calls `PageShell.scrollToTop()`.
@@ -118,7 +118,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Rebuild the body as three panels gated on the stage; keep every existing `objectName` reachable.
 
-- [ ] **Task 2.4: Two-choice empty state with drag-and-drop**
+- [x] **Task 2.4: Two-choice empty state with drag-and-drop**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `subtitleEmptyLauncher` renders two cards; each states its prerequisite.
@@ -127,7 +127,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Replace the single-line hint with the launcher; wire `onDropped` through a `handleDroppedUrls` seam like `CreateTab.qml:160`.
 
-- [ ] **Task 2.5: Responsive correctness — breakpoint, speaker row, cue list, page width**
+- [x] **Task 2.5: Responsive correctness — breakpoint, speaker row, cue list, page width**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/SubtitlesTab.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `wideLayout` tracks window width monotonically across 760/820/980/1120 (no shrink at 820).

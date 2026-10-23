@@ -38,9 +38,55 @@ AppCard {
     readonly property bool hasTrack: available && subtitleController.rendered === true
     readonly property bool hasVideo: available && subtitleController.hasVideo === true
     readonly property bool hasSpeakers: available && subtitleController.hasSpeakers === true
-    readonly property bool wideLayout: width >= 760
+    // FR-2.5: the card is inset by the nav rail + page padding, so the card's
+    // own width shrank non-monotonically when the rail switched between its
+    // compact and full forms at 800 px. Track the window instead.
+    readonly property bool wideLayout: (root.Window.window
+        && root.Window.window.width >= 900) || root.width >= 900
+    // FR-2.3: Source → Prepare → Produce. The card splits its body into these
+    // mutually exclusive stages so a tall column never buries the next step.
+    property string stage: "source"
+    property Item pageShell: null
+    readonly property string stageHint: {
+        if (root.loaded)
+            return "";
+        return qsTr("Nhập tệp .srt hoặc video để mở 'Chuẩn bị' và 'Sản xuất'.");
+    }
+    readonly property var stageModel: [
+        { value: "source", label: qsTr("Nguồn"), enabled: true, reason: "" },
+        {
+            value: "prepare",
+            label: qsTr("Chuẩn bị"),
+            enabled: root.loaded,
+            reason: root.loaded ? "" : qsTr("Cần nhập tệp phụ đề hoặc video.")
+        },
+        {
+            value: "produce",
+            label: qsTr("Sản xuất"),
+            enabled: root.loaded,
+            reason: root.loaded ? "" : qsTr("Cần có phụ đề trước khi tạo âm thanh.")
+        }
+    ]
+
+    function setStage(value) {
+        if (value === root.stage)
+            return;
+        for (let i = 0; i < stageModel.length; ++i) {
+            if (stageModel[i].value === value && !stageModel[i].enabled)
+                return;
+        }
+        root.stage = value;
+        if (root.pageShell && root.pageShell.scrollToTop)
+            root.pageShell.scrollToTop();
+    }
+
     readonly property string exportFormat: (typeof controller !== "undefined" && controller
         && controller.exportFormat === "mp3") ? "mp3" : "wav"
+
+    Component.onCompleted: {
+        if (root.loaded)
+            root.stage = root.hasTrack ? "produce" : "prepare";
+    }
 
     // QUrl → local path string for the controller (Windows file:///C:/… fix).
     function toLocalPath(url) {
@@ -56,6 +102,22 @@ AppCard {
     function exportDir() {
         return (typeof controller !== "undefined" && controller && controller.outputDir)
             ? controller.outputDir : "";
+    }
+
+    // FR-2.4: one drop seam for the empty launcher. `.srt` imports cues;
+    // anything else is treated as the video to transcribe. Returns whether a
+    // URL was accepted so the smoke driver can assert the routing.
+    function handleDroppedUrls(urls) {
+        if (!root.available || !urls || urls.length === 0)
+            return false;
+        const path = root.toLocalPath(urls[0]);
+        if (path === "")
+            return false;
+        if (/\.srt$/i.test(path))
+            subtitleController.importSrt(path);
+        else
+            subtitleController.importVideo(path);
+        return true;
     }
 
     FileDialog {
@@ -202,19 +264,123 @@ AppCard {
     ColumnLayout {
         Layout.fillWidth: true
         spacing: Theme.spacingSm
-        // ── Empty state ────────────────────────────────────────────────────
-        Label {
-            objectName: "subtitleEmptyHint"
+
+        AppSegmented {
+            id: stageSwitch
+
+            objectName: "subtitleStageSwitch"
             Layout.fillWidth: true
-            visible: !root.loaded
-            text: root.hasVideo
-                ? qsTr("Đã chọn video '%1'. Nhấn 'Tạo phụ đề (ASR)' bên dưới hoặc nhập tệp .srt.").arg(
-                    root.available ? subtitleController.videoName : "")
-                : qsTr("Chưa có phụ đề nào. Nhập một tệp .srt hoặc Video để bắt đầu.")
+            visible: root.available
+            accessibleLabel: qsTr("Giai đoạn làm việc")
+            model: root.stageModel
+            currentValue: root.stage
+            onActivated: (value) => root.setStage(value)
+        }
+
+        Label {
+            objectName: "subtitleStageHint"
+            Layout.fillWidth: true
+            visible: text !== ""
+            text: root.stageHint
             color: Theme.textMuted
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
+            font.pixelSize: Theme.fontSizeXs
             wrapMode: Text.WordWrap
+        }
+
+        // ── Empty state: two explicit entry choices (FR-2.4) ───────────────
+        Rectangle {
+            objectName: "subtitleEmptyDropZone"
+            Layout.fillWidth: true
+            visible: !root.loaded && root.stage === "source"
+            implicitHeight: emptyLauncher.implicitHeight + Theme.spacingSm * 2
+            color: "transparent"
+            radius: Theme.radiusMd
+            border.width: emptyDrop.containsDrag ? 2 : 0
+            border.color: Theme.accent
+
+            ColumnLayout {
+                id: emptyLauncher
+
+                objectName: "subtitleEmptyLauncher"
+                anchors.fill: parent
+                anchors.margins: Theme.spacingSm
+                spacing: Theme.spacingSm
+
+                Label {
+                    objectName: "subtitleEmptyHint"
+                    Layout.fillWidth: true
+                    visible: !root.loaded && root.stage === "source"
+                    text: root.hasVideo
+                        ? qsTr("Đã chọn video '%1'. Nhấn 'Tạo phụ đề (ASR)' bên dưới hoặc nhập tệp .srt.").arg(
+                            root.available ? subtitleController.videoName : "")
+                        : qsTr("Chưa có phụ đề nào. Chọn một cách để bắt đầu.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeBase
+                    wrapMode: Text.WordWrap
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    AppCard {
+                        objectName: "subtitleEmptyVideoCard"
+                        width: Math.max(220, (emptyLauncher.width - Theme.spacingSm * 2) / 2)
+                        title: qsTr("Video + tự động nhận dạng")
+                        elevation: 0
+                        clickable: true
+                        onCardClicked: subtitleVideoDialog.open()
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Cần mô hình Whisper trong Cài đặt › Mô hình AI. Hệ thống tự tạo phụ đề từ âm thanh.")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    AppCard {
+                        objectName: "subtitleEmptySrtCard"
+                        width: Math.max(220, (emptyLauncher.width - Theme.spacingSm * 2) / 2)
+                        title: qsTr("Tệp phụ đề .srt")
+                        elevation: 0
+                        clickable: true
+                        onCardClicked: subtitleImportDialog.open()
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Cần tệp .srt có sẵn. Thời gian được giữ nguyên; giọng đọc dùng engine đang chọn.")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                Label {
+                    objectName: "subtitleEmptyDropHint"
+                    Layout.fillWidth: true
+                    text: qsTr("Hoặc kéo thả tệp .srt / video vào đây.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            DropArea {
+                id: emptyDrop
+
+                objectName: "subtitleEmptyDropArea"
+                anchors.fill: parent
+                enabled: !root.loaded && root.stage === "source"
+                onDropped: (drop) => root.handleDroppedUrls(drop.urls)
+            }
         }
 
         // ── Video attachment & ASR bar ──────────────────────────────────────
@@ -223,7 +389,7 @@ AppCard {
 
             objectName: "subtitleVideoBar"
             Layout.fillWidth: true
-            visible: root.hasVideo
+            visible: root.hasVideo && root.stage === "source"
             implicitHeight: videoBarLayout.implicitHeight + Theme.spacingSm * 2
             radius: Theme.radiusMd
             color: Theme.surfaceAlt
@@ -437,7 +603,7 @@ AppCard {
             objectName: "subtitleAiBar"
             Layout.fillWidth: true
             spacing: Theme.spacingXs
-            visible: root.loaded
+            visible: root.loaded && root.stage === "prepare"
 
             AppButton {
                 objectName: "subtitleDiarizeButton"
@@ -503,7 +669,7 @@ AppCard {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: root.aiBusy
+            visible: root.aiBusy && root.stage === "prepare"
             spacing: Theme.spacingSm
 
             Label {
@@ -528,8 +694,8 @@ AppCard {
         GridLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.loaded
-            columns: root.wideLayout ? 2 : 1
+            visible: root.loaded && root.stage !== "source"
+            columns: (root.wideLayout && root.stage === "produce") ? 2 : 1
             columnSpacing: Theme.spacingMd
             rowSpacing: Theme.spacingSm
 
@@ -540,14 +706,20 @@ AppCard {
                 objectName: "subtitleCueList"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.minimumHeight: 140
-                Layout.preferredHeight: (root.hasVideo && root.hasSpeakers) ? 160 : 196
+                // Never collapse below three rows (FR-2.5); the viewport
+                // height above that flows straight into the list.
+                Layout.minimumHeight: 180
                 visible: root.loaded
                 clip: true
                 // Row-level model: rows keep their delegates across updates.
                 model: root.available ? subtitleController.cueModel : null
                 boundsBehavior: Flickable.StopAtBounds
                 spacing: Theme.spacingXs
+
+                ScrollBar.vertical: ScrollBar {
+                    objectName: "subtitleCueScrollBar"
+                    policy: ScrollBar.AsNeeded
+                }
 
                 delegate: Rectangle {
                     id: cueRowRoot
@@ -779,10 +951,12 @@ AppCard {
 
             // ── Right column: Fit policy & Voice ───────────────────────────
             Rectangle {
+                objectName: "subtitleTimingPanel"
                 Layout.fillWidth: !root.wideLayout
                 Layout.preferredWidth: root.wideLayout ? 404 : -1
                 Layout.maximumWidth: root.wideLayout ? 424 : -1
                 Layout.alignment: Qt.AlignTop
+                visible: root.stage === "produce"
                 implicitHeight: timingVoiceCol.implicitHeight + Theme.spacingSm * 2
                 radius: Theme.radiusMd
                 color: Theme.surfaceAlt
@@ -1012,7 +1186,7 @@ AppCard {
 
             objectName: "subtitleSpeakerBar"
             Layout.fillWidth: true
-            visible: root.loaded && root.hasSpeakers
+            visible: root.loaded && root.hasSpeakers && root.stage !== "source"
             implicitHeight: speakerBarCol.implicitHeight + Theme.spacingSm + Theme.spacingXs
             radius: Theme.radiusMd
             color: Theme.surfaceAlt
@@ -1040,7 +1214,9 @@ AppCard {
                 Repeater {
                     model: root.available ? subtitleController.speakers : []
 
-                    delegate: RowLayout {
+                    delegate: Flow {
+                        id: speakerRow
+
                         required property var modelData
                         required property int index
 
@@ -1081,7 +1257,8 @@ AppCard {
 
                         TextField {
                             objectName: "subtitleSpeakerVoiceField"
-                            Layout.fillWidth: true
+                            Layout.minimumWidth: 120
+                            width: Math.max(120, Math.min(240, speakerRow.width * 0.45))
                             implicitHeight: 32
                             leftPadding: Theme.spacingSm
                             rightPadding: Theme.spacingSm
@@ -1138,66 +1315,10 @@ AppCard {
             }
         }
 
-        // ── Progress + actions ─────────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-            visible: root.busy || root.exporting
-
-            ProgressBar {
-                objectName: "subtitleProgressBar"
-                Layout.fillWidth: true
-                from: 0
-                to: 1
-                // Export reuses the same bar: burn-in re-encodes every frame,
-                // so without this the app just looked frozen for minutes.
-                value: root.exporting
-                    ? (root.available ? subtitleController.exportProgress : 0)
-                    : (root.available ? subtitleController.renderProgress : 0)
-                indeterminate: root.exporting
-                    ? (root.available ? subtitleController.exportProgress === 0 : true)
-                    : (root.busy && subtitleController.renderProgress === 0)
-            }
-
-            Label {
-                objectName: "subtitleExportProgressLabel"
-
-                visible: root.exporting
-                text: qsTr("Đang xuất video… %1%").arg(
-                    Math.round((root.available ? subtitleController.exportProgress : 0) * 100))
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeXs
-            }
-
-            AppButton {
-                objectName: "subtitleExportCancelButton"
-                variant: "danger"
-                size: "sm"
-                text: root.exporting ? qsTr("Hủy xuất") : qsTr("Hủy")
-                visible: root.exporting
-                onClicked: {
-                    if (root.available)
-                        subtitleController.cancelExport();
-                }
-            }
-        }
-
-        Label {
-            objectName: "subtitleStaleHint"
-            Layout.fillWidth: true
-            visible: root.available && subtitleController.renderStale
-            text: root.available ? subtitleController.renderStaleReason : ""
-            color: Theme.warningText
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-            wrapMode: Text.WordWrap
-        }
-
         Label {
             objectName: "subtitleStatsLabel"
             Layout.fillWidth: true
-            visible: root.loaded && subtitleStats.text !== ""
+            visible: root.loaded && root.stage === "produce" && text !== ""
             text: root.available ? subtitleController.statsSummary : ""
             color: Theme.textMuted
             font.family: Theme.fontFamily
@@ -1205,200 +1326,11 @@ AppCard {
             wrapMode: Text.WordWrap
         }
 
-        Flow {
-            Layout.fillWidth: true
-            spacing: Theme.spacingSm
-
-            AppButton {
-                id: renderBtn
-
-                objectName: "subtitleRenderButton"
-                variant: "primary"
-                size: "lg"
-                iconKind: "wave"
-                text: qsTr("Tạo âm thanh")
-                visible: root.loaded
-                enabled: root.loaded && !root.busy && !root.exporting
-                         && EngineState.blockerReason === ""
-                disabledReason: EngineState.blockerReason
-                busy: root.busy
-                onClicked: subtitleController.render()
-            }
-
-            AppButton {
-                id: cancelBtn
-
-                objectName: "subtitleCancelButton"
-                variant: "danger"
-                size: "sm"
-                text: qsTr("Hủy")
-                visible: root.busy
-                onClicked: subtitleController.cancelRender()
-            }
-
-            AppButton {
-                id: playBtn
-
-                objectName: "subtitlePlayButton"
-                variant: "secondary"
-                checked: subtitlePlayer.text === "playing"
-                size: "md"
-                // No track yet: play() renders first — label says so.
-                text: !root.hasTrack ? qsTr("Tạo và phát")
-                    : subtitlePlayer.text === "playing" ? qsTr("Tạm dừng") : qsTr("Phát")
-                iconKind: subtitlePlayer.text === "playing" ? "pause" : "play"
-                visible: root.loaded
-                // "Tạo và phát" renders first, so the profile gate applies to
-                // that state too — playback of an existing track does not.
-                enabled: root.available && (root.hasTrack || !root.busy) && !root.exporting
-                         && (root.hasTrack || EngineState.blockerReason === "")
-                disabledReason: root.hasTrack ? "" : EngineState.blockerReason
-                onClicked: {
-                    if (!root.available)
-                        return;
-                    if (subtitlePlayer.text === "playing")
-                        subtitleController.pause();
-                    else if (subtitlePlayer.text === "paused")
-                        subtitleController.resume();
-                    else
-                        subtitleController.play();
-                }
-            }
-
-            AppButton {
-                id: exportVideoBtn
-
-                objectName: "subtitleExportVideoButton"
-                variant: "secondary"
-                size: "md"
-                iconKind: "download"
-                text: qsTr("Xuất Video")
-                visible: root.loaded && root.hasVideo
-                enabled: root.available && subtitleController.canExportTrack && root.hasVideo
-                    && !root.busy && !root.aiBusy && !root.exporting
-                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
-                onClicked: {
-                    if (root.available)
-                        subtitleController.exportVideo(root.exportDir());
-                }
-            }
-
-            AppButton {
-                id: exportWavBtn
-
-                objectName: "subtitleExportWavButton"
-                variant: "secondary"
-                size: "md"
-                iconKind: "download"
-                text: root.exportFormat === "mp3" ? qsTr("Xuất MP3") : qsTr("Xuất WAV")
-                visible: root.loaded
-                enabled: root.available && subtitleController.canExportTrack
-                    && !root.busy && !root.exporting
-                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
-                onClicked: {
-                    if (root.available)
-                        subtitleController.exportTrack(root.exportDir());
-                }
-            }
-
-            AppButton {
-                id: exportSrtBtn
-
-                objectName: "subtitleExportSrtButton"
-                variant: "secondary"
-                size: "md"
-                iconKind: "download"
-                text: qsTr("Xuất SRT")
-                visible: root.loaded
-                // Needs a rendered track: the controller refuses pre-render
-                // export because the retimed cues only exist after a render.
-                enabled: root.available && subtitleController.canExportSrt
-                    && !root.busy && !root.exporting
-                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
-                onClicked: {
-                    if (root.available)
-                        subtitleController.exportSrt(root.exportDir());
-                }
-            }
-
-            AppToggle {
-                objectName: "subtitleExportSpeakersToggle"
-                text: qsTr("Kèm nhãn người nói khi xuất SRT")
-                visible: root.hasSpeakers
-                checked: Boolean(controller && controller.subtitleExportSpeakerLabels)
-                enabled: root.available && !root.busy && !root.exporting
-                onToggled: {
-                    if (controller && typeof controller.subtitleExportSpeakerLabels !== "undefined")
-                        controller.subtitleExportSpeakerLabels = checked;
-                }
-            }
-
-            AppButton {
-                id: studioBtn
-
-                objectName: "subtitleStudioButton"
-                variant: "secondary"
-                size: "md"
-                iconKind: "wave"
-                text: qsTr("Mở trong Studio")
-                visible: root.loaded
-                enabled: root.hasTrack && !root.busy && !root.exporting
-                onClicked: {
-                    if (!root.available)
-                        return;
-                    const pid = typeof subtitleController.projectId !== "undefined"
-                        ? subtitleController.projectId : "";
-                    const cue = subtitleController.activeCue >= 0
-                        ? subtitleController.activeCue : 0;
-                    if (pid !== "" && controller.openSubtitleInStudio(pid, cue)) {
-                        if (typeof bridge !== "undefined" && bridge !== null)
-                            bridge.setCurrentTab("studio");
-                    }
-                }
-            }
-        }
-
-        Label {
-            objectName: "subtitleStatusLabel"
-            Layout.fillWidth: true
-            visible: text !== ""
-            text: subtitleStatus.text
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-            elide: Text.ElideMiddle
-        }
-
-        QtObject {
-            id: subtitleStats
-
-            readonly property string text: root.available ? subtitleController.statsSummary : ""
-        }
-
-        QtObject {
-            id: subtitlePlayer
-
-            readonly property string text: root.available ? subtitleController.playerState : "stopped"
-        }
-
-        QtObject {
-            id: subtitleStatus
-
-            property string text: ""
-
-            function set(path, error) {
-                if (error !== "")
-                    text = qsTr("Xuất thất bại: %1").arg(error);
-                else if (path !== "")
-                    text = qsTr("Đã xuất: %1").arg(path);
-            }
-        }
-
         Connections {
             target: root.available ? subtitleController : null
 
-            function onExportFinished(path, error) {
-                subtitleStatus.set(path, error);
+            function onLoadedChanged() {
+                root.stage = root.loaded ? (root.hasTrack ? "produce" : "prepare") : "source";
             }
 
             function onRenderInvalidationRequested(reason, message) {

@@ -124,11 +124,15 @@ def test_translator_loading() -> None:
         ("Mở trong Studio", "Open in Studio"),
     ):
         assert translator.translate("TransportDock", source) == english
+    # The pinned subtitle dock owns the actions (SubtitlesTab moved them out of
+    # the card in subtitles_ux_overhaul_20261023), so its catalog holds them.
     for source, english in (
         ("Xuất WAV", "Export WAV"),
         ("Xuất MP3", "Export MP3"),
+        ("Xuất SRT", "Export SRT"),
+        ("Hủy xuất", "Cancel export"),
     ):
-        assert translator.translate("SubtitleCard", source) == english
+        assert translator.translate("SubtitleActionDock", source) == english
     assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"
     # Sách nói's player (dock skin, FR-2.4): prev/next icon buttons' names.
     for source, english in (

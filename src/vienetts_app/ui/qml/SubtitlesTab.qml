@@ -25,7 +25,7 @@ Pane {
         && bridge.currentTab === "subtitles"
     readonly property bool subtitleAvailable: typeof subtitleController !== "undefined"
         && subtitleController !== null
-    readonly property int pageMaxWidth: 1080
+    readonly property int pageMaxWidth: 960
     readonly property string subtitleErrorText: (typeof subtitleController !== "undefined"
         && subtitleController !== null) ? (subtitleController.errorText || "") : ""
     readonly property string synthesisErrorText: (typeof controller !== "undefined"
@@ -132,11 +132,28 @@ Pane {
 
                 Layout.fillWidth: true
                 Layout.fillHeight: subtitleCard.loaded
+                pageShell: page
             }
 
             Item {
                 Layout.fillHeight: !subtitleCard.loaded
             }
+        }
+
+        // FR-2.1: the primary action, transport, exports, progress and cancel
+        // live in this pinned dock — OUTSIDE the PageShell — so they never
+        // scroll away (the card used to bury the CTA 702 px below the fold at
+        // 640×420). conductor/patterns.md:96 is reversed accordingly.
+        SubtitleActionDock {
+            id: actionDock
+
+            objectName: "subtitleActionDock"
+            Layout.fillWidth: true
+            Layout.maximumWidth: root.pageMaxWidth
+            Layout.alignment: Qt.AlignHCenter
+            visible: root.subtitleAvailable
+                && (subtitleController.loaded || subtitleController.hasVideo)
+            compact: root.height < 560
         }
     }
 

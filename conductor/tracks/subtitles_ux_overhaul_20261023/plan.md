@@ -18,7 +18,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
 > All six tasks touch `subtitle_controller.py` + `SubtitleCard.qml`, so this phase is
 > sequential. It has no phase dependency — it is the highest-priority work and ships first.
 
-- [ ] **Task 1.1: Destroy-confirmation gate for render-invalidating actions**
+- [x] **Task 1.1: Destroy-confirmation gate for render-invalidating actions**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - With a rendered project, setting `rateCap` to a different value does NOT immediately invalidate `rendered`; it raises a pending-confirmation signal carrying the reason (`"rate_cap"`) and the loss description.
@@ -30,7 +30,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
     - Route the six setters through a shared `_request_rebuild_for_policy(reason)` that stages the change when `rendered` is true.
     - QML: a confirm dialog (`AppNotice`-style or `RemoveConfirmDialog` pattern) bound to the signal.
 
-- [ ] **Task 1.2: Explicit stale-render state and truthful export gating**
+- [x] **Task 1.2: Explicit stale-render state and truthful export gating**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - After a cue edit invalidates a render, `renderStale is True` and `statsSummary` retains the last-known stats instead of returning `""`.
@@ -40,7 +40,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
     - Add `renderStale` (NOTIFY) and `renderStaleReason` properties; retain `lastStats`.
     - Surface in the dock (Phase 2) and in the export buttons' `disabledReason`.
 
-- [ ] **Task 1.3: Cue-mutation confirmations (`updateCue` / `runDiarization` / `refineWithLlm` / re-ASR)**
+- [x] **Task 1.3: Cue-mutation confirmations (`updateCue` / `runDiarization` / `refineWithLlm` / re-ASR)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `updateCue` on a rendered project stages the change and requires confirmation; on an unrendered project it applies immediately.
@@ -50,7 +50,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Extend the Task 1.1 gate to the cue-mutating slots; keep `_update_project_cues` pure and move the invalidation to the confirmed path.
 
-- [ ] **Task 1.4: Project lifecycle — "Dự án mới" and a project picker**
+- [x] **Task 1.4: Project lifecycle — "Dự án mới" and a project picker**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `clear()` is reachable from a slot the QML calls; after it, `loaded is False` and the empty state returns.
@@ -60,7 +60,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
     - Expose `projects`, `openProject`, `removeProject` over `SubtitleProjectStore.list_projects()` / `remove()`.
     - QML: "Dự án mới" in the page header + a picker (reuse the `RemoveConfirmDialog` pattern for delete).
 
-- [ ] **Task 1.5: `cancelExport()` and export-cancel UI**
+- [x] **Task 1.5: `cancelExport()` and export-cancel UI**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `cancelExport()` during an in-flight video export clears `exporting` within one event-loop turn and emits `exportFinished("", <cancelled reason>)`.
@@ -69,7 +69,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add the slot, bump `_export_generation`, and have the export callback treat a stale generation as cancelled.
 
-- [ ] **Task 1.6: Transcript-mode gap cap and non-destructive mix default**
+- [x] **Task 1.6: Transcript-mode gap cap and non-destructive mix default**
   <!-- files: src/vienetts_app/core/align.py, src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/core/subtitle_project.py, tests/unit/test_align.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - A fresh controller in `transcript` mode produces a policy with `max_gap_ms == 1500` (not `0`).

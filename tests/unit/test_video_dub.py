@@ -461,3 +461,37 @@ def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     assert seen, "expected progress callbacks"
     assert seen[-1] == pytest.approx(1.0)
     assert all(0.0 <= value <= 1.0 for value in seen)
+
+
+def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
+    """A hung ffmpeg must not outlive cancelExport (FR-1.4)."""
+    import sys
+    import time
+
+    from vienetts_app.core.video_dub import _run_ffmpeg
+
+    script = (
+        "import time\n"
+        "for i in range(400):\n"
+        "    print(f'out_time_ms={i * 1000}', flush=True)\n"
+        "    print('progress=continue', flush=True)\n"
+        "    time.sleep(0.05)\n"
+    )
+    calls = {"n": 0}
+    progress: list[float] = []
+
+    def cancel_check() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    started = time.monotonic()
+    result = _run_ffmpeg(
+        [sys.executable, "-c", script],
+        cwd=None,
+        progress=progress.append,
+        duration_ms=60_000,
+        cancel_check=cancel_check,
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode != 0
+    assert elapsed < 10

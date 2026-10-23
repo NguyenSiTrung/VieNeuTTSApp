@@ -270,7 +270,7 @@ class SubtitleProject:
     #: Optional source video path and video dubbing configuration.
     video_path: str = ""
     speaker_voices: dict[str, str] = field(default_factory=dict)
-    video_mix_mode: str = "replace"
+    video_mix_mode: str = "duck"
     video_bg_gain_db: float = -16.0
     embed_subtitles: bool = True
     #: How embedded subtitles ship: ``"soft"`` (player-toggleable track) or
@@ -302,7 +302,7 @@ def build_project(
     context: SynthesisContext | None = None,
     video_path: str = "",
     speaker_voices: dict[str, str] | None = None,
-    video_mix_mode: str = "replace",
+    video_mix_mode: str = "duck",
     video_bg_gain_db: float = -16.0,
     embed_subtitles: bool = True,
     subtitle_embed_mode: str = "soft",
@@ -322,7 +322,7 @@ def build_project(
     spk_map = (
         {str(k): str(v) for k, v in speaker_voices.items() if k and v} if speaker_voices else {}
     )
-    mix_mode = "duck" if str(video_mix_mode) == "duck" else "replace"
+    mix_mode = "replace" if str(video_mix_mode) == "replace" else "duck"
     bg_gain = max(-36.0, min(0.0, float(video_bg_gain_db)))
     return SubtitleProject(
         id=str(project_id) if project_id else project_id_for(path, cue_tuple),
@@ -512,7 +512,8 @@ class SubtitleProjectStore:
             for k, v in raw_spk_voices.items():
                 if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
                     speaker_voices[k.strip()] = v.strip()
-        mix_mode = "duck" if str(data.get("videoMixMode") or "") == "duck" else "replace"
+        raw_mix = str(data.get("videoMixMode") or "duck")
+        mix_mode = "replace" if raw_mix == "replace" else "duck"
         try:
             bg_gain_db = max(-36.0, min(0.0, float(data.get("videoBgGainDb", -16.0))))
         except (TypeError, ValueError):

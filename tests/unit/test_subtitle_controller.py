@@ -326,7 +326,12 @@ def test_policy_round_trip_restores_the_cached_render(env, tmp_path):
     adjusted = controller._project.adjusted  # noqa: SLF001
     fake.pending.clear()
 
-    controller.rateCap = 1.2  # away: fingerprint changes
+    controller.rateCap = 1.2  # away: staged behind the destroy confirmation
+    assert controller.rendered is True  # nothing lost until the user agrees
+    assert controller.invalidationPending is True
+    assert controller.invalidationReason == "rate_cap"
+    assert "lồng tiếng" in controller.invalidationMessage
+    controller.confirmRenderInvalidation()
     assert controller.rendered is False
     controller.rateCap = 1.5  # back: the cached render is adopted again
     assert controller.rendered is True
@@ -346,6 +351,8 @@ def test_policy_change_clears_the_stale_timeline(env, tmp_path):
     assert controller._timeline is not None  # noqa: SLF001
 
     controller.rateCap = 1.2  # fingerprint moves away from the stored render
+    assert controller.rendered is True  # staged: the render is still live
+    controller.confirmRenderInvalidation()
     assert controller.rendered is False
     assert controller._timeline is None  # noqa: SLF001
     controller.seekToCue(1)  # a stale timeline must not answer seeks
@@ -764,8 +771,10 @@ def test_policy_knobs_emit_policy_changed_exactly_once(env, tmp_path):
     assert counts == {"policy": 1, "mode": 0, "merge": 0, "rate": 1, "gap": 0, "off": 0, "voice": 0}
 
     # Switching to transcript forces mergeSentences on — once, because it was off.
+    # The effective gap moves 0 → 1500 (transcript's real default), so the
+    # field is notified as well (FR-1.5).
     controller.mode = "transcript"
-    assert counts == {"policy": 2, "mode": 1, "merge": 1, "rate": 1, "gap": 0, "off": 0, "voice": 0}
+    assert counts == {"policy": 2, "mode": 1, "merge": 1, "rate": 1, "gap": 1, "off": 0, "voice": 0}
 
     controller.mode = "transcript"  # no-op
     assert counts["policy"] == 2
@@ -776,13 +785,14 @@ def test_policy_knobs_emit_policy_changed_exactly_once(env, tmp_path):
     assert counts["merge"] == 1
     assert counts["mode"] == 3
     assert counts["policy"] == 4
+    assert counts["gap"] == 3  # each mode switch changes the effective gap
 
     controller.maxGapMs = 500
     controller.offsetMs = 100
     controller.mergeSentences = False
     controller.voice = "voice-b"
     assert counts["policy"] == 8
-    assert counts["gap"] == 1
+    assert counts["gap"] == 4
     assert counts["off"] == 1
     assert counts["merge"] == 2
     assert counts["voice"] == 1
@@ -1340,6 +1350,8 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
         ],
     )
     assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.invalidationPending is True
+    controller.confirmRenderInvalidation()
     assert controller.projectId == orig_project_id
     assert controller.cues[0]["text"] == "Xin chào bạn thân mến!"
     assert controller.cues[1]["text"] == "Chào buổi sáng tốt lành!"
@@ -1348,8 +1360,11 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
     assert "overflowMs" in controller.cues[0]
     assert "overBudget" in controller.cues[0]
 
-    # Inline cue editing via updateCue updates text and speaker in place
+    # Inline cue editing via updateCue updates text and speaker in place.
+    # No live render remains (the LLM step above already confirmed its loss),
+    # so cue edits apply immediately and need no second dialog.
     assert controller.updateCue(0, "Xin chào chỉnh sửa trực tiếp!", "SPEAKER_02") is True
+    assert controller.invalidationPending is False
     assert controller.cues[0]["text"] == "Xin chào chỉnh sửa trực tiếp!"
     assert controller.cues[0]["speaker"] == "SPEAKER_02"
     assert controller.updateCue(0, "Xin chào bạn thân mến!", "SPEAKER_01") is True
@@ -1574,3 +1589,308 @@ def test_managed_srt_disambiguates_same_stem_videos_and_persists_media_cache_and
     srt_b = Path(controller.sourcePath)
     assert srt_b.is_file()
     assert srt_a != srt_b
+
+
+# ── data safety: destroy-confirmation, staleness, lifecycle (FR-1.1…1.6) ────
+
+
+def _rendered_controller(tmp_path: Path) -> tuple[SubtitleController, FakeApp, FakePlayer]:
+    fake = FakeApp()
+    player = FakePlayer()
+    controller = make_controller(tmp_path, fake, player)
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True
+    fake.pending.clear()
+    return controller, fake, player
+
+
+_POLICY_KNOBS = [
+    ("mode", "transcript", "mode"),
+    ("rateCap", 1.2, "rate_cap"),
+    ("maxGapMs", 800, "max_gap_ms"),
+    ("offsetMs", 250, "offset_ms"),
+    ("mergeSentences", True, "merge_sentences"),
+    ("voice", "voice-b", "voice"),
+]
+
+
+@pytest.mark.parametrize(("knob", "value", "reason"), _POLICY_KNOBS)
+def test_policy_knob_stages_a_named_confirmation(tmp_path, knob, value, reason):
+    controller, _, _ = _rendered_controller(tmp_path)
+    events: list[tuple[str, str]] = []
+    controller.renderInvalidationRequested.connect(lambda r, m: events.append((r, m)))
+    duration = controller.durationMs
+    stats = controller.statsSummary
+
+    setattr(controller, knob, value)
+    assert controller.rendered is True  # nothing is lost before the decision
+    assert controller.invalidationPending is True
+    assert controller.invalidationReason == reason
+    assert events == [(reason, controller.invalidationMessage)]
+    assert "lồng tiếng" in controller.invalidationMessage
+    assert "căn chỉnh" in controller.invalidationMessage
+
+    # Reject: the control snaps back to its unchanged value.
+    controller.rejectRenderInvalidation()
+    assert controller.invalidationPending is False
+    assert controller.rendered is True
+    assert controller.durationMs == duration
+    assert controller.renderStale is False
+
+    # Confirm: the change applies and the render is stale, not silently gone.
+    setattr(controller, knob, value)
+    controller.confirmRenderInvalidation()
+    assert controller.rendered is False
+    assert controller.renderStale is True
+    assert controller.statsSummary == stats
+    assert controller.canExportTrack is False
+    assert controller.canExportSrt is False
+    assert controller.exportBlockedReason != ""
+    assert controller.exportTrack(str(tmp_path / "out")) == ""
+
+
+def test_a_second_knob_replaces_the_staged_change(tmp_path):
+    controller, _, _ = _rendered_controller(tmp_path)
+    controller.rateCap = 1.2
+    assert controller.invalidationReason == "rate_cap"
+    controller.offsetMs = 300
+    assert controller.invalidationReason == "offset_ms"
+    controller.rejectRenderInvalidation()
+    # Rejecting the later change leaves both knobs untouched.
+    assert controller.rateCap == 1.5
+    assert controller.offsetMs == 0
+    assert controller.rendered is True
+
+
+def test_rerender_clears_staleness_and_restores_exports(tmp_path):
+    controller, fake, _ = _rendered_controller(tmp_path)
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    assert controller.renderStale is True
+    controller.render()
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+    assert controller.renderStale is False
+    assert controller.renderStaleReason == ""
+    assert controller.canExportTrack is True
+    assert controller.canExportSrt is True
+    assert controller.exportBlockedReason == ""
+
+
+def test_cue_edit_requires_confirmation_only_while_rendered(tmp_path):
+    controller, _, _ = _rendered_controller(tmp_path)
+    original = controller.cues[0]["text"]
+    stats = controller.statsSummary
+    assert controller.updateCue(0, "Sửa lời thoại", "") is True
+    assert controller.rendered is True
+    assert controller.invalidationReason == "cue_edit"
+    assert controller.cues[0]["text"] == original
+    controller.rejectRenderInvalidation()
+    assert controller.cues[0]["text"] == original
+
+    assert controller.updateCue(0, "Sửa lời thoại", "") is True
+    controller.confirmRenderInvalidation()
+    assert controller.cues[0]["text"] == "Sửa lời thoại"
+    assert controller.renderStale is True
+    assert controller.statsSummary == stats
+
+    # A further edit has no live render to protect: it applies immediately.
+    assert controller.updateCue(0, "Sửa lần nữa", "") is True
+    assert controller.invalidationPending is False
+    assert controller.cues[0]["text"] == "Sửa lần nữa"
+
+
+def test_diarization_and_llm_refinement_are_gated(tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = _rendered_controller(tmp_path)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    controller._project = replace(controller._project, video_path=str(video))  # noqa: SLF001
+    controller._pending_video_path = str(video)  # noqa: SLF001
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [replace(cue, speaker="SPEAKER_01") for cue in cues],
+    )
+    assert controller.runDiarization() is True
+    assert controller.invalidationReason == "diarization"
+    assert controller.hasSpeakers is False  # not started before confirmation
+    controller.rejectRenderInvalidation()
+    assert controller.hasSpeakers is False
+
+    assert controller.runDiarization() is True
+    controller.confirmRenderInvalidation()
+    assert controller.hasSpeakers is True
+    assert [s["id"] for s in controller.speakers] == ["SPEAKER_01"]
+
+    # The confirmed diarization invalidated the render, so the LLM step below
+    # applies immediately — the gate protects a LIVE render, not a stale one.
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [Cue(1, 0, 2000, "Đã làm sạch", speaker="SPEAKER_01")],
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.cues[0]["text"] == "Đã làm sạch"
+
+
+def test_llm_refinement_on_a_live_render_is_gated(tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, _, _ = _rendered_controller(tmp_path)
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [Cue(1, 0, 2000, "Đã làm sạch")],
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.invalidationReason == "llm"
+    assert controller.cues[0]["text"] == "Xin chào"
+    controller.confirmRenderInvalidation()
+    assert controller.cues[0]["text"] == "Đã làm sạch"
+
+
+def test_re_asr_is_gated_when_cue_edits_would_be_lost(tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
+    fake = FakeApp()
+    player = FakePlayer()
+    controller = make_controller(tmp_path, fake, player)
+    video = tmp_path / "interview.mp4"
+    video.write_bytes(b"fake_mp4")
+    calls: list[str] = []
+
+    def _transcribe(path, cfg, **kw):
+        calls.append(str(path))
+        return [Cue(1, 0, 1500, "Bản gốc từ ASR")]
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.transcribe_media_to_cues", _transcribe)
+    assert controller.importVideo(str(video)) is True
+    assert controller.transcribeVideo(False) is True
+    assert calls and controller.loaded is True
+
+    assert controller.updateCue(0, "Người dùng đã sửa", "") is True
+    assert controller.cues[0]["text"] == "Người dùng đã sửa"
+    before = len(calls)
+    assert controller.transcribeVideo(False) is True
+    assert controller.invalidationReason == "asr"
+    assert len(calls) == before  # confirmation first
+    controller.rejectRenderInvalidation()
+    assert controller.cues[0]["text"] == "Người dùng đã sửa"
+    assert controller.transcribeVideo(False) is True
+    controller.confirmRenderInvalidation()
+    assert len(calls) == before + 1
+
+
+def test_project_lifecycle_lists_opens_and_removes(tmp_path):
+    controller, fake, _ = _rendered_controller(tmp_path)
+    first_id = controller.projectId
+    second = tmp_path / "other.srt"
+    second.write_text("1\n00:00:01,000 --> 00:00:02,000\nNội dung khác\n", encoding="utf-8")
+    assert controller.importSrt(str(second)) is True
+    assert controller.projectId != first_id
+    assert controller.projectCount == 2
+    rows = controller.projects
+    ids = {row["id"] for row in rows}
+    assert ids == {first_id, controller.projectId}
+    assert {row["title"] for row in rows} == {"movie", "other"}
+    assert all(row["modifiedAt"] for row in rows)
+
+    assert controller.openProject(first_id) is True
+    assert controller.projectId == first_id
+    assert controller.title == "movie"
+    assert controller.rendered is True
+    assert controller.cueCount == 2
+    assert controller.mode == "dub"
+
+    assert controller.removeProject(first_id) is True
+    assert controller.loaded is False
+    assert controller.projectCount == 1
+    assert [row["id"] for row in controller.projects] == [controller.projects[0]["id"]]
+
+
+def test_removing_the_active_project_returns_to_the_empty_state(tmp_path):
+    controller, _, _ = _rendered_controller(tmp_path)
+    pid = controller.projectId
+    assert controller.removeProject(pid) is True
+    assert controller.loaded is False
+    assert controller.cueCount == 0
+    assert controller.projectCount == 0
+
+
+def test_transcript_mode_uses_its_real_gap_cap(tmp_path):
+    controller, _, _ = _rendered_controller(tmp_path)
+    # Dub mode preserves the source pauses exactly (0 == uncapped).
+    assert controller.maxGapMs == 0
+    assert controller._fit_policy().max_gap_ms == 0  # noqa: SLF001
+
+    # The mode change is staged (a live render would be lost); the effective
+    # gap follows only once the change is applied.
+    controller.mode = "transcript"
+    assert controller.maxGapMs == 0
+    controller.confirmRenderInvalidation()
+    assert controller.mode == "transcript"
+    assert controller.maxGapMs == 1500
+    assert controller._fit_policy().max_gap_ms == 1500  # noqa: SLF001
+
+    controller.maxGapMs = 0  # an explicit uncapped choice survives
+    assert controller._fit_policy().max_gap_ms == 0  # noqa: SLF001
+    controller.mode = "dub"
+    assert controller.maxGapMs == 0  # explicit, not the mode default
+    assert controller._fit_policy().max_gap_ms == 0  # noqa: SLF001
+
+
+def test_new_projects_keep_the_original_audio_by_default(tmp_path):
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer())
+    controller.importSrt(load_srt(tmp_path))
+    assert controller.videoMixMode == "duck"
+    assert controller._store.require(controller.projectId).video_mix_mode == "duck"  # noqa: SLF001
+    controller.videoMixMode = "replace"
+    assert controller.videoMixMode == "replace"
+    assert controller._store.require(controller.projectId).video_mix_mode == "replace"  # noqa: SLF001
+
+
+class _DeferredRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any, Any]] = []
+
+    def __call__(self, work, done, owner, on_error=None):
+        self.calls.append((work, done, on_error))
+
+
+def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path):
+    fake = FakeApp()
+    player = FakePlayer()
+    runner = _DeferredRunner()
+    controller = SubtitleController(
+        fake,
+        data_dir=tmp_path,
+        player_factory=lambda: player,
+        store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
+        bg_runner=runner,
+        unit_executor=SyncOrderedExecutor(),
+    )
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+    events: list[tuple[str, str]] = []
+    controller.exportFinished.connect(lambda path, error: events.append((path, error)))
+
+    target = controller.exportTrack(str(tmp_path / "out"))
+    assert target != ""
+    assert controller.exporting is True
+    assert len(runner.calls) == 1
+
+    controller.cancelExport()
+    assert controller.exporting is False
+    assert events == [("", "Đã hủy xuất.")]
+
+    # The worker finishing later must not emit a second result or re-latch.
+    work, done, _on_error = runner.calls[0]
+    done(work())
+    assert events == [("", "Đã hủy xuất.")]
+    assert controller.exporting is False
+
+    # Cancelling while idle is a no-op.
+    controller.cancelExport()
+    assert events == [("", "Đã hủy xuất.")]

@@ -50,3 +50,16 @@ Key measured facts to re-verify rather than assume:
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## [2026-10-23] - Phase 1: Data safety (Tasks 1.1–1.6)
+
+- **Implemented:** A staged `_PendingInvalidation` gate on the controller (`renderInvalidationRequested` + confirm/reject) now protects every live render from the six policy knobs and from cue edits/ASR/diarization/LLM re-runs. `renderStale`/`renderStaleReason`/`canExportTrack`/`canExportSrt`/`exportBlockedReason` make the loss visible and truthful; `lastStats` survives an invalidation. Project lifecycle (`projects`, `openProject`, `removeProject`, header "Dự án mới"/picker) closes and reopens workspaces. `cancelExport()` terminates ffmpeg through a new `cancel_check` in `video_dub._run_ffmpeg`. Transcript mode uses its real 1500 ms gap default (explicit 0 stays uncapped) and new projects default to `video_mix_mode="duck"`.
+- **Files changed:** `ui/subtitle_controller.py`, `core/subtitle_project.py`, `core/video_dub.py`, `ui/qml/SubtitlesTab.qml`, `ui/qml/components/SubtitleCard.qml`, `ui/i18n/vienetts_en.ts/.qm`, `tests/unit/test_subtitle_controller.py`, `tests/unit/test_video_dub.py`, `tests/smoke/test_ui_tabs.py`.
+- **Learnings:**
+  - **Patterns:** A destructive-change gate is a *staged command* (`reason`, `message`, `apply`, `revert_signals`) held on the owner; property getters keep returning the old value until `confirm`, so a rejected change needs only the property's notify signal to snap controls back. Existing tests that mutated a rendered project must call `confirmRenderInvalidation()`.
+  - **Gotchas:** `_update_project_cues` zeroed `stats` *before* `_rebuild_for_policy` could capture them — capture the last stats at the start of every mutating path, not inside the rebuild. `exportBlockedReason` is the single source for both the button gate and its tooltip; do not reintroduce a bare "Hãy tạo trước" message.
+  - **Gotchas:** `Dialog.close()` runs before the confirm action in `RemoveConfirmDialog`, so a generic `onClosed: reject()` would discard the change being confirmed — the subtitle dialog uses an explicit `confirming` flag and its own cancel button.
+  - **Context:** QML smoke `FakeSubtitle` must mirror every new controller property; `canExportTrack`/`canExportSrt` bind to the fake's `rendered` so the existing export-gating assertions stay valid.
+  - **Context:** `lupdate` leaves new strings `type="unfinished"` and the `test_i18n` integrity check rejects the same source translated two different ways — translate duplicates identically.
+---
+

@@ -55,10 +55,11 @@ messages surface verbatim.
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import hashlib
 import logging
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,7 @@ from vienetts_app.core.timeline import (
     word_spans,
 )
 from vienetts_app.core.video_dub import (
+    VideoDubError,
     dub_overrun_ms,
     find_companion_srt,
     find_companion_video,
@@ -149,6 +151,24 @@ CUE_ROLES = (
     "overBudget",
 )
 
+#: Transcript mode's real default: preserve pauses but cap them (FR-1.5).
+TRANSCRIPT_DEFAULT_MAX_GAP_MS = 1500
+
+
+@dataclass
+class _PendingInvalidation:
+    """A render-destroying change awaiting the user's confirmation (FR-1.1).
+
+    The controller's own state is untouched while this is pending: a rejected
+    change needs only the property's notify signal to snap the control back,
+    and an accepted change runs ``apply`` exactly once.
+    """
+
+    reason: str
+    message: str
+    apply: Callable[[], None]
+    revert_signals: tuple[Any, ...] = ()
+
 
 class SubtitleController(QObject):
     """SRT timeline studio exposed to QML; dependencies injectable."""
@@ -183,6 +203,11 @@ class SubtitleController(QObject):
     speakersChanged = Signal()
     aiBusyChanged = Signal()
     aiProgressChanged = Signal()
+    #: A render-destroying change is staged and needs a user decision.
+    renderInvalidationRequested = Signal(str, str)
+    pendingInvalidationChanged = Signal()
+    staleChanged = Signal()
+    projectsChanged = Signal()
 
     def __init__(
         self,
@@ -230,11 +255,14 @@ class SubtitleController(QObject):
         self._mode = MODE_DUB
         self._rate_cap = 1.5
         self._max_gap_ms = 0
+        #: True once the user set the gap explicitly; until then transcript
+        #: mode uses its real default instead of "uncapped" (FR-1.5).
+        self._max_gap_ms_set = False
         self._offset_ms = 0
         self._merge_sentences = False
         self._voice = ""
         self._pending_video_path = ""
-        self._video_mix_mode = "replace"
+        self._video_mix_mode = "duck"
         self._video_bg_gain_db = -16.0
         self._embed_subtitles = True
         self._subtitle_embed_mode = "soft"
@@ -243,6 +271,16 @@ class SubtitleController(QObject):
         self._ai_progress = 0.0
         self._ai_generation = 0
         self._ai_cancel_flag = False
+        # FR-1.1: the staged change (None when nothing awaits confirmation).
+        self._pending_invalidation: _PendingInvalidation | None = None
+        # FR-1.2: why the on-disk render no longer matches the current inputs.
+        self._stale_reason = ""
+        self._last_stats: Any = None
+        self._last_stats_project_id = ""
+        # FR-1.6: cue edits not yet re-rendered (guards a re-ASR overwrite).
+        self._cues_dirty = False
+        # FR-1.4: cancellation flag for the running export's worker.
+        self._export_cancel = False
 
         # Reader / karaoke state (mirrors AudiobookController's sync reader).
         self._timeline: Timeline | None = None
@@ -350,6 +388,168 @@ class SubtitleController(QObject):
             self._error_text = message
             self.errorTextChanged.emit()
 
+    # ── destroy-confirmation gate (FR-1.1) ───────────────────────────────────
+
+    def _can_apply_now(self) -> bool:
+        """True when the change may run without discarding a live render."""
+        return not self.rendered or self._rendering
+
+    def _loss_message(self, action: str) -> str:
+        return self.tr(
+            "{action} sẽ xóa bản lồng tiếng đã tạo và tệp phụ đề đã căn chỉnh. Tiếp tục?"
+        ).format(action=action)
+
+    def _stage_invalidation(
+        self,
+        reason: str,
+        action: str,
+        apply: Callable[[], None],
+        revert_signals: tuple[Any, ...] = (),
+        *,
+        when: bool | None = None,
+    ) -> bool:
+        """Stage ``apply`` behind a confirmation; True when it was staged.
+
+        With nothing to lose the change applies immediately (and returns
+        False), so callers can use one linear code path. ``when`` overrides
+        the default "a matching render exists" test.
+        """
+        should_gate = (not self._can_apply_now()) if when is None else when
+        if not should_gate:
+            apply()
+            return False
+        self._pending_invalidation = _PendingInvalidation(
+            reason=reason,
+            message=self._loss_message(action),
+            apply=apply,
+            revert_signals=revert_signals,
+        )
+        for signal in revert_signals:
+            signal.emit()
+        self.pendingInvalidationChanged.emit()
+        self.renderInvalidationRequested.emit(reason, self._pending_invalidation.message)
+        return True
+
+    @Property(bool, notify=pendingInvalidationChanged)
+    def invalidationPending(self) -> bool:
+        return self._pending_invalidation is not None
+
+    @Property(str, notify=pendingInvalidationChanged)
+    def invalidationReason(self) -> str:
+        pending = self._pending_invalidation
+        return "" if pending is None else pending.reason
+
+    @Property(str, notify=pendingInvalidationChanged)
+    def invalidationMessage(self) -> str:
+        pending = self._pending_invalidation
+        return "" if pending is None else pending.message
+
+    @Slot()
+    def confirmRenderInvalidation(self) -> None:
+        """Apply the staged change (the user accepted the loss)."""
+        pending = self._pending_invalidation
+        if pending is None:
+            return
+        self._pending_invalidation = None
+        self.pendingInvalidationChanged.emit()
+        self._stale_reason = pending.reason
+        pending.apply()
+        self.staleChanged.emit()
+
+    @Slot()
+    def rejectRenderInvalidation(self) -> None:
+        """Drop the staged change; controls re-read their unchanged values."""
+        pending = self._pending_invalidation
+        if pending is None:
+            return
+        self._pending_invalidation = None
+        self.pendingInvalidationChanged.emit()
+        for signal in pending.revert_signals:
+            signal.emit()
+
+    def _discard_pending(self) -> None:
+        if self._pending_invalidation is not None:
+            self._pending_invalidation = None
+            self.pendingInvalidationChanged.emit()
+
+    # ── staleness (FR-1.2) ───────────────────────────────────────────────────
+
+    def _capture_stats(self) -> None:
+        """Retain the last measured stats across an invalidation."""
+        project = self._project
+        if project is None:
+            return
+        if project.stats is not None:
+            self._last_stats = project.stats
+            self._last_stats_project_id = project.id
+        elif project.id != self._last_stats_project_id:
+            self._last_stats = None
+            self._last_stats_project_id = ""
+
+    def _reset_staleness(self) -> None:
+        changed = bool(self._stale_reason) or self._last_stats is not None
+        self._stale_reason = ""
+        self._last_stats = None
+        self._last_stats_project_id = ""
+        if changed:
+            self.staleChanged.emit()
+
+    @Property(bool, notify=staleChanged)
+    def renderStale(self) -> bool:
+        """A rendered track exists on disk but no longer matches the inputs."""
+        project = self._project
+        if project is None:
+            return False
+        return self._store.has_track(project.id) and not self.rendered
+
+    @Property(str, notify=staleChanged)
+    def renderStaleReason(self) -> str:
+        if not self.renderStale:
+            return ""
+        if self._stale_reason:
+            return self.tr(
+                "Bản lồng tiếng và phụ đề đã căn chỉnh không còn khớp với thay đổi "
+                "({reason}). Hãy tạo lại để xuất."
+            ).format(reason=self._stale_action_text(self._stale_reason))
+        return self.tr(
+            "Bản lồng tiếng đã lưu không khớp với cấu hình hiện tại. Hãy tạo lại để xuất."
+        )
+
+    def _stale_action_text(self, reason: str) -> str:
+        labels = {
+            "mode": self.tr("đổi chế độ"),
+            "rate_cap": self.tr("đổi mức nén"),
+            "max_gap_ms": self.tr("đổi giới hạn khoảng lặng"),
+            "offset_ms": self.tr("đổi độ lệch"),
+            "merge_sentences": self.tr("đổi cách gộp câu"),
+            "voice": self.tr("đổi giọng đọc"),
+            "cue_edit": self.tr("sửa phụ đề"),
+            "diarization": self.tr("phân tách người nói"),
+            "llm": self.tr("tinh chỉnh bằng AI"),
+            "asr": self.tr("nhận diện lại phụ đề"),
+        }
+        return labels.get(reason, reason)
+
+    @Property(bool, notify=renderedChanged)
+    def canExportTrack(self) -> bool:
+        return self.rendered
+
+    @Property(bool, notify=renderedChanged)
+    def canExportSrt(self) -> bool:
+        project = self._project
+        return self.rendered and project is not None and bool(project.adjusted or project.cues)
+
+    @Property(str, notify=renderedChanged)
+    def exportBlockedReason(self) -> str:
+        """Why the export actions are unavailable ("" when they are available)."""
+        if self._project is None:
+            return self.tr("Chưa có dự án phụ đề nào. Hãy nhập tệp để bắt đầu.")
+        if self.renderStale:
+            return self.renderStaleReason
+        if not self.rendered:
+            return self.tr("Chưa có bản lồng tiếng để xuất. Hãy tạo âm thanh trước.")
+        return ""
+
     # ── properties ───────────────────────────────────────────────────────────
 
     @Property(bool, notify=loadedChanged)
@@ -413,6 +613,8 @@ class SubtitleController(QObject):
     @Property(str, notify=statsChanged)
     def statsSummary(self) -> str:
         stats = None if self._project is None else self._project.stats
+        if stats is None and self.renderStale:
+            stats = self._last_stats
         if stats is None:
             return ""
         parts = [self.tr("{n} phụ đề").format(n=stats.cues)]
@@ -449,14 +651,21 @@ class SubtitleController(QObject):
         value = value if value in MODES else MODE_DUB
         if value == self._mode:
             return
-        self._mode = value
-        if value == MODE_TRANSCRIPT and not self._merge_sentences:
-            # Transcript mode has no rate knob; keep the effective policy honest.
-            self._merge_sentences = True
-            self.mergeSentencesChanged.emit()
-        self.modeChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._mode = value
+            if value == MODE_TRANSCRIPT and not self._merge_sentences:
+                # Transcript mode has no rate knob; keep the effective policy honest.
+                self._merge_sentences = True
+                self.mergeSentencesChanged.emit()
+            self.modeChanged.emit()
+            self.maxGapMsChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation(
+            "mode", self.tr("Đổi chế độ khớp thời gian"), apply, (self.modeChanged,)
+        )
 
     @Property(float, notify=rateCapChanged)
     def rateCap(self) -> float:
@@ -467,14 +676,22 @@ class SubtitleController(QObject):
         value = clamp_rate_cap(value)
         if value == self._rate_cap:
             return
-        self._rate_cap = value
-        self.rateCapChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._rate_cap = value
+            self.rateCapChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation("rate_cap", self.tr("Đổi mức nén"), apply, (self.rateCapChanged,))
 
     @Property(int, notify=maxGapMsChanged)
     def maxGapMs(self) -> int:
-        return self._max_gap_ms
+        if self._max_gap_ms_set:
+            return self._max_gap_ms
+        # Transcript mode preserves pauses but caps them; dub mode keeps the
+        # original pauses exactly (0 == uncapped, align.py documents it).
+        return TRANSCRIPT_DEFAULT_MAX_GAP_MS if self._mode == MODE_TRANSCRIPT else 0
 
     @maxGapMs.setter
     def maxGapMs(self, value: int) -> None:  # noqa: F811
@@ -482,12 +699,19 @@ class SubtitleController(QObject):
             value = max(0, min(60_000, int(value)))
         except (TypeError, ValueError):
             return
-        if value == self._max_gap_ms:
+        if value == self.maxGapMs and self._max_gap_ms_set:
             return
-        self._max_gap_ms = value
-        self.maxGapMsChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._max_gap_ms = value
+            self._max_gap_ms_set = True
+            self.maxGapMsChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation(
+            "max_gap_ms", self.tr("Đổi giới hạn khoảng lặng"), apply, (self.maxGapMsChanged,)
+        )
 
     @Property(int, notify=offsetMsChanged)
     def offsetMs(self) -> int:
@@ -501,10 +725,16 @@ class SubtitleController(QObject):
             return
         if value == self._offset_ms:
             return
-        self._offset_ms = value
-        self.offsetMsChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._offset_ms = value
+            self.offsetMsChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation(
+            "offset_ms", self.tr("Đổi độ lệch thời gian"), apply, (self.offsetMsChanged,)
+        )
 
     @Property(bool, notify=mergeSentencesChanged)
     def mergeSentences(self) -> bool:
@@ -515,10 +745,16 @@ class SubtitleController(QObject):
         value = bool(value)
         if value == self._merge_sentences:
             return
-        self._merge_sentences = value
-        self.mergeSentencesChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._merge_sentences = value
+            self.mergeSentencesChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation(
+            "merge_sentences", self.tr("Đổi cách gộp câu"), apply, (self.mergeSentencesChanged,)
+        )
 
     @Property(str, notify=voiceChanged)
     def voice(self) -> str:
@@ -529,10 +765,14 @@ class SubtitleController(QObject):
         value = value or ""
         if value == self._voice:
             return
-        self._voice = value
-        self.voiceChanged.emit()
-        self.policyChanged.emit()
-        self._rebuild_for_policy()
+
+        def apply() -> None:
+            self._voice = value
+            self.voiceChanged.emit()
+            self.policyChanged.emit()
+            self._rebuild_for_policy()
+
+        self._stage_invalidation("voice", self.tr("Đổi giọng đọc"), apply, (self.voiceChanged,))
 
     @Property("QVariantMap", notify=policyChanged)
     def policySummary(self) -> dict[str, Any]:
@@ -574,7 +814,7 @@ class SubtitleController(QObject):
 
     @videoMixMode.setter
     def videoMixMode(self, value: str) -> None:  # noqa: F811
-        mode = "duck" if str(value or "") == "duck" else "replace"
+        mode = "replace" if str(value or "") == "replace" else "duck"
         if mode == self.videoMixMode:
             return
         self._video_mix_mode = mode
@@ -712,13 +952,13 @@ class SubtitleController(QObject):
         if self._mode == MODE_TRANSCRIPT:
             return FitPolicy.transcript(
                 offset_ms=self._offset_ms,
-                max_gap_ms=self._max_gap_ms,
+                max_gap_ms=self.maxGapMs,
                 merge_sentences=self._merge_sentences,
             )
         return FitPolicy.dub(
             rate_cap=self._rate_cap,
             offset_ms=self._offset_ms,
-            max_gap_ms=self._max_gap_ms,
+            max_gap_ms=self.maxGapMs,
             merge_sentences=self._merge_sentences,
         )
 
@@ -799,6 +1039,7 @@ class SubtitleController(QObject):
         """
         if self._project is None or self._rendering:
             return
+        self._capture_stats()
         context, refused = self._probe_context()
         candidate = build_project(
             self._project.source_path,
@@ -843,6 +1084,7 @@ class SubtitleController(QObject):
         self.renderedChanged.emit()
         self.durationChanged.emit()
         self.statsChanged.emit()
+        self.staleChanged.emit()
 
     # ── import ───────────────────────────────────────────────────────────────
 
@@ -947,6 +1189,9 @@ class SubtitleController(QObject):
             return False
         self._pending_video_path = project.video_path
         self._project = project
+        self._discard_pending()
+        self._reset_staleness()
+        self._cues_dirty = False
         self._load_reader()
         self._reset_active_span()
         self._position_ms = 0
@@ -1067,12 +1312,127 @@ class SubtitleController(QObject):
         self._stop_playback()
         self._project = loaded
         self._load_reader()
-        self._reset_active_span()
+        self._reset_stale_span_after_reload()
         self._emit_cues()
         self.renderedChanged.emit()
         self.durationChanged.emit()
         self.statsChanged.emit()
         return True
+
+    def _reset_stale_span_after_reload(self) -> None:
+        """Bookkeeping for a project reloaded from disk (shared with openProject)."""
+        self._discard_pending()
+        self._reset_staleness()
+        self._cues_dirty = False
+        self._reset_active_span()
+        self._position_ms = 0
+        self.positionMsChanged.emit()
+
+    # ── project lifecycle (FR-1.3) ───────────────────────────────────────────
+
+    @Property("QVariantList", notify=projectsChanged)
+    def projects(self) -> list[dict[str, Any]]:
+        """Every stored workspace, newest first (FR-1.3 picker)."""
+        rows: list[dict[str, Any]] = []
+        for project in self._store.list_projects():
+            modified_at = project.created_at
+            with contextlib.suppress(OSError):
+                modified_at = (
+                    _dt.datetime.fromtimestamp(
+                        self._store.project_path(project.id).stat().st_mtime
+                    )
+                    .astimezone()
+                    .isoformat(timespec="seconds")
+                )
+            rows.append(
+                {
+                    "id": project.id,
+                    "title": project.title,
+                    "cueCount": project.cue_count,
+                    "durationMs": project.total_ms,
+                    "rendered": project.rendered,
+                    "hasVideo": bool(project.video_path),
+                    "createdAt": project.created_at,
+                    "modifiedAt": modified_at,
+                    "active": self._project is not None and self._project.id == project.id,
+                }
+            )
+        return rows
+
+    @Property(int, notify=projectsChanged)
+    def projectCount(self) -> int:
+        return len(self._store.list_projects())
+
+    @Slot(str, result=bool)
+    def openProject(self, project_id: str) -> bool:
+        """Reopen a stored workspace, restoring its knobs and measured timeline."""
+        pid = str(project_id or "")
+        loaded = self._store.load(pid)
+        if loaded is None:
+            self._set_error(self.tr("Không mở được dự án phụ đề đã chọn."))
+            return False
+        self._stop_render()
+        self._stop_playback()
+        self.cancelAiTask()
+        # Invalidated like clear(): a stale export callback must not touch it.
+        self._export_generation += 1
+        policy = loaded.policy
+        self._mode = policy.mode
+        self._rate_cap = policy.rate_cap
+        self._max_gap_ms = policy.max_gap_ms
+        self._max_gap_ms_set = True
+        self._offset_ms = policy.offset_ms
+        self._merge_sentences = policy.merge_sentences
+        self._voice = loaded.voice_key
+        self._video_mix_mode = loaded.video_mix_mode
+        self._video_bg_gain_db = loaded.video_bg_gain_db
+        self._embed_subtitles = loaded.embed_subtitles
+        self._subtitle_embed_mode = loaded.subtitle_embed_mode
+        self._project = loaded
+        self._pending_video_path = loaded.video_path
+        self._set_error("")
+        self._load_reader()
+        self._reset_stale_span_after_reload()
+        for signal in (
+            self.modeChanged,
+            self.rateCapChanged,
+            self.maxGapMsChanged,
+            self.offsetMsChanged,
+            self.mergeSentencesChanged,
+            self.voiceChanged,
+            self.videoChanged,
+            self.policyChanged,
+            self.loadedChanged,
+            self.titleChanged,
+            self.sourcePathChanged,
+        ):
+            signal.emit()
+        self.speakersChanged.emit()
+        self._emit_cues()
+        self.renderedChanged.emit()
+        self.durationChanged.emit()
+        self.statsChanged.emit()
+        self.renderProgressChanged.emit()
+        self.projectsChanged.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def removeProject(self, project_id: str) -> bool:
+        """Delete a stored workspace; removing the active one returns to empty."""
+        pid = str(project_id or "")
+        try:
+            self._store.remove(pid)
+        except SubtitleProjectError as exc:
+            self._set_error(str(exc))
+            return False
+        if self._project is not None and self._project.id == pid:
+            self.clear()
+        self.projectsChanged.emit()
+        return True
+
+    @Slot()
+    def refreshProjects(self) -> None:
+        self.projectsChanged.emit()
 
     # ── rendering ────────────────────────────────────────────────────────────
 
@@ -1120,6 +1480,8 @@ class SubtitleController(QObject):
             # A matching track exists: adopt the stored project (stats,
             # adjusted cues, measured timeline), never re-synthesize.
             self._project = cached
+            self._reset_staleness()
+            self._cues_dirty = False
             self._load_reader()
             self._emit_cues()
             self.renderedChanged.emit()
@@ -1131,12 +1493,16 @@ class SubtitleController(QObject):
             # The stored track belongs to another identity: its measured
             # alignment is stale, so the surface reports unrendered until the
             # new track lands (the same posture as a policy change).
+            self._capture_stats()
+            if not self._stale_reason:
+                self._stale_reason = "voice"
             project = replace(project, total_ms=0, stats=None, adjusted=())
             self._project = project
             self._load_reader()  # drops the previous track's timeline
             self.renderedChanged.emit()
             self.durationChanged.emit()
             self.statsChanged.emit()
+            self.staleChanged.emit()
         self._units = speech_units(project.cues, merge=project.policy.merge_sentences)
         self._unit_index = 0
         self._unit_progress = 0.0
@@ -1167,6 +1533,24 @@ class SubtitleController(QObject):
             return
         if self._rendering:
             self._fail_render("")
+
+    @Slot()
+    def cancelExport(self) -> None:
+        """Cancel the running export (FR-1.4): unlatch the tab immediately.
+
+        The generation bump makes the worker's eventual callback a no-op, and
+        ``_export_cancel`` terminates a running ffmpeg. Cancelling while idle
+        is a no-op.
+        """
+        if not self._exporting:
+            return
+        self._export_cancel = True
+        self._export_generation += 1
+        self._exporting = False
+        self._export_progress = 0.0
+        self.exportingChanged.emit()
+        self.exportProgressChanged.emit()
+        self.exportFinished.emit("", self.tr("Đã hủy xuất."))
 
     def _stop_render(self) -> None:
         self._play_after_render = False
@@ -1370,6 +1754,8 @@ class SubtitleController(QObject):
             # The renderer is done: the promoted track is live.
             self._renderer = None
             self._project = loaded
+            self._reset_staleness()
+            self._cues_dirty = False
             self._load_reader()
             self._rendering = False
             self._render_progress = 1.0
@@ -1579,10 +1965,11 @@ class SubtitleController(QObject):
         if project is None or self._rendering or self._exporting:
             return ""
         if not self.rendered:
-            self._set_error(self.tr("Chưa có tệp âm thanh để xuất. Hãy tạo trước."))
+            self._set_error(self.exportBlockedReason or self.tr("Chưa có tệp âm thanh để xuất."))
             return ""
         target = self._export_target(dest_dir, project.title, self._export_extension())
         source = self._store.wav_path(project.id)
+        self._export_cancel = False
         self._export_generation += 1
         generation = self._export_generation
         self._exporting = True
@@ -1621,11 +2008,12 @@ class SubtitleController(QObject):
         if project is None or self._rendering or self._exporting:
             return ""
         if not self.rendered:
-            self._set_error(self.tr("Chưa có phụ đề đã chỉnh để xuất. Hãy tạo trước."))
+            self._set_error(self.exportBlockedReason or self.tr("Chưa có phụ đề đã chỉnh để xuất."))
             return ""
         cues = project.adjusted
         include_speakers = bool(getattr(self._app, "subtitleExportSpeakerLabels", False))
         target = self._export_target(dest_dir, project.title, ".srt")
+        self._export_cancel = False
         self._export_generation += 1
         generation = self._export_generation
         self._exporting = True
@@ -1660,7 +2048,9 @@ class SubtitleController(QObject):
         if project is None or self._rendering or self._exporting:
             return ""
         if not self.rendered:
-            self._set_error(self.tr("Chưa có tệp âm thanh để ghép video. Hãy tạo trước."))
+            self._set_error(
+                self.exportBlockedReason or self.tr("Chưa có tệp âm thanh để ghép video.")
+            )
             return ""
         vpath_str = self.videoPath
         if not vpath_str or not Path(vpath_str).is_file():
@@ -1679,6 +2069,7 @@ class SubtitleController(QObject):
         include_speakers = bool(getattr(self._app, "subtitleExportSpeakerLabels", False))
         proj_dir = self._store.project_dir(project.id)
 
+        self._export_cancel = False
         self._export_generation += 1
         generation = self._export_generation
         self._exporting = True
@@ -1698,6 +2089,8 @@ class SubtitleController(QObject):
         def work() -> str:
             srt_temp: Path | None = None
             try:
+                if self._export_cancel:
+                    raise VideoDubError(self.tr("Đã hủy xuất."))
                 if embed_subs and adjusted_cues:
                     srt_temp = proj_dir / ".retimed_mux.srt"
                     export_srt_file(srt_temp, adjusted_cues, include_speakers=include_speakers)
@@ -1713,6 +2106,7 @@ class SubtitleController(QObject):
                     subtitle_language=subtitle_language,
                     progress=report,
                     data_dir=self._data_dir,
+                    cancel_check=lambda: self._export_cancel,
                 )
                 return str(target)
             finally:
@@ -1842,7 +2236,21 @@ class SubtitleController(QObject):
             return False
         if self._rendering or self._ai_busy:
             return False
+        # FR-1.6: a re-run overwrites the managed SRT — never silently discard
+        # a live render or cue edits the user made on top of it.
+        self._stage_invalidation(
+            "asr",
+            self.tr("Nhận diện lại phụ đề"),
+            lambda: self._transcribe_video_now(with_diarization),
+            when=self.rendered or self._cues_dirty,
+        )
+        return True
 
+    def _transcribe_video_now(self, with_diarization: bool) -> None:
+        vpath_str = self.videoPath
+        if not vpath_str or not Path(vpath_str).is_file():
+            self._set_error(self.tr("Chưa có tệp video để nhận diện phụ đề."))
+            return
         vpath = Path(vpath_str)
         asr_cfg = self._asr_config()
         diar_cfg = self._diarization_config()
@@ -1934,8 +2342,6 @@ class SubtitleController(QObject):
             self._run_bg(work, done, self, on_error=failed)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
-            return False
-        return True
 
     @Slot(result=bool)
     def runDiarization(self) -> bool:  # type: ignore[override]
@@ -1947,6 +2353,19 @@ class SubtitleController(QObject):
         if not media or not Path(media).is_file():
             self._set_error(self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói."))
             return False
+        self._stage_invalidation(
+            "diarization", self.tr("Phân tách người nói"), self._run_diarization_now
+        )
+        return True
+
+    def _run_diarization_now(self) -> None:
+        project = self._project
+        if project is None:
+            return
+        media = self.videoPath
+        if not media or not Path(media).is_file():
+            self._set_error(self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói."))
+            return
 
         diar_cfg = self._diarization_config()
         cues_in = project.cues
@@ -1996,8 +2415,6 @@ class SubtitleController(QObject):
             self._run_bg(work, done, self, on_error=failed)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
-            return False
-        return True
 
     @Slot(str, str, result=bool)
     def setSpeakerVoice(self, speaker: str, voice_key: str) -> bool:  # type: ignore[override]
@@ -2038,8 +2455,12 @@ class SubtitleController(QObject):
         new_spk = orig.speaker if speaker is None else str(speaker).strip()
         cues_list = list(project.cues)
         cues_list[idx] = replace(orig, text=cleaned, speaker=new_spk)
-        self._set_error("")
-        self._update_project_cues(cues_list)
+
+        def apply() -> None:
+            self._set_error("")
+            self._update_project_cues(cues_list)
+
+        self._stage_invalidation("cue_edit", self.tr("Sửa phụ đề"), apply)
         return True
 
     @Slot(str, result=bool)
@@ -2177,6 +2598,17 @@ class SubtitleController(QObject):
         project = self._project
         if project is None or self._rendering or self._ai_busy:
             return False
+        self._stage_invalidation(
+            "llm",
+            self.tr("Tinh chỉnh phụ đề bằng AI"),
+            lambda: self._refine_with_llm_now(task, target_language),
+        )
+        return True
+
+    def _refine_with_llm_now(self, task: str, target_language: str) -> None:
+        project = self._project
+        if project is None:
+            return
         llm_cfg = self._llm_config()
         cues_in = project.cues
         raw_lang = (target_language or "").strip() or str(
@@ -2224,12 +2656,12 @@ class SubtitleController(QObject):
             self._run_bg(work, done, self, on_error=failed)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
-            return False
-        return True
 
     def _update_project_cues(self, new_cues: list[Cue] | tuple[Cue, ...]) -> None:
         if self._project is None or not new_cues:
             return
+        self._capture_stats()
+        self._cues_dirty = True
         self._project = replace(
             self._project,
             cues=tuple(new_cues),
@@ -2258,6 +2690,7 @@ class SubtitleController(QObject):
                 self.exportingChanged.emit()
                 self.exportProgressChanged.emit()
             return False
+        self._export_cancel = False
         self._exporting = False
         self._export_progress = 0.0
         self.exportingChanged.emit()
@@ -2288,9 +2721,13 @@ class SubtitleController(QObject):
         self._stop_render()
         self._stop_playback()
         self.cancelAiTask()
+        self._discard_pending()
+        self._reset_staleness()
+        self._cues_dirty = False
         # Invalidate any in-flight export's callbacks; the latch itself stays
         # held until that stale callback lands, so a new export cannot race
-        # the old one's target.
+        # the old one's target. A running ffmpeg is also stopped.
+        self._export_cancel = True
         self._export_generation += 1
         self._pending_video_path = ""
         self._project = None

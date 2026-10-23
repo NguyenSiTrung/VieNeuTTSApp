@@ -35,5 +35,5 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Overhaul the Lồng tiếng & Phụ đề (Dubbing & Subtitles) tab — data safety, pinned dock, derived state, workflow clarity and design-system conformance (from the 2026-10-23 UI/UX audit)
+## [~] Track: Overhaul the Lồng tiếng & Phụ đề (Dubbing & Subtitles) tab — data safety, pinned dock, derived state, workflow clarity and design-system conformance (from the 2026-10-23 UI/UX audit)
 *Link: [./tracks/subtitles_ux_overhaul_20261023/](./tracks/subtitles_ux_overhaul_20261023/)*

@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import queue
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -427,26 +429,63 @@ def _run_ffmpeg(
     cwd: str | None,
     progress: Callable[[float], None] | None,
     duration_ms: int,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ffmpeg, optionally streaming ``-progress`` into ``progress``.
 
     Burn-in can run for minutes on a long clip, so the caller gets a real
-    fraction rather than a silent wait. Without a ``progress`` callback this is
-    a plain capture run.
+    fraction rather than a silent wait. Without a ``progress`` callback and
+    without ``cancel_check`` this is a plain capture run. With a
+    ``cancel_check`` the process is terminated when it returns True — a hung
+    ffmpeg must never permanently disable the caller.
     """
-    if progress is None:
+    if progress is None and cancel_check is None:
         return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd)
 
     stderr_chunks: list[str] = []
-    with subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
-    ) as proc:
-        assert proc.stdout is not None  # noqa: S101 - guaranteed by PIPE
-        for line in proc.stdout:
+    )
+    assert proc.stdout is not None  # noqa: S101 - guaranteed by PIPE
+
+    def drain_stderr() -> None:
+        # A separate reader keeps a chatty ffmpeg from filling the pipe and
+        # deadlocking the stdout loop below.
+        if proc.stderr is not None:
+            stderr_chunks.append(proc.stderr.read())
+
+    stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_reader.start()
+
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def read_stdout() -> None:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            lines.put(line)
+        lines.put(None)
+
+    stdout_reader = threading.Thread(target=read_stdout, daemon=True)
+    stdout_reader.start()
+
+    while True:
+        if cancel_check is not None and cancel_check():
+            proc.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
+            if proc.poll() is None:
+                proc.kill()
+            break
+        try:
+            line = lines.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if line is None:
+            break
+        if progress is not None:
             key, _, value = line.strip().partition("=")
             if key == "out_time_ms":
                 with contextlib.suppress(ValueError):
@@ -457,9 +496,8 @@ def _run_ffmpeg(
             elif key == "progress" and value == "end":
                 with contextlib.suppress(Exception):
                     progress(1.0)
-        stderr_text = proc.stderr.read() if proc.stderr is not None else ""
-        stderr_chunks.append(stderr_text)
-        proc.wait()
+    proc.wait()
+    stderr_reader.join(timeout=5)
     return subprocess.CompletedProcess(cmd, proc.returncode, "", "".join(stderr_chunks))
 
 
@@ -651,6 +689,7 @@ def mux_dubbed_video(
     clamp_to_video: bool = False,
     progress: Callable[[float], None] | None = None,
     data_dir: Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     """Mux ``dub_wav_path`` onto ``video_path``.
 
@@ -666,7 +705,9 @@ def mux_dubbed_video(
     OFF by default on purpose: a dub that outran the video must never lose its
     last words, so the caller decides between a frozen tail and truncated
     speech (see :func:`dub_overrun_ms`). ``progress`` is called with 0.0–1.0
-    while ffmpeg runs (burn-in can take minutes).
+    while ffmpeg runs (burn-in can take minutes). ``cancel_check`` is polled
+    while ffmpeg runs; returning True terminates it and raises
+    :class:`VideoDubError` (the partial file is discarded).
     """
     vpath = Path(video_path).absolute()
     apath = Path(dub_wav_path).absolute()
@@ -799,7 +840,10 @@ def mux_dubbed_video(
             cwd=str(burn_dir) if burn_dir is not None else None,
             progress=progress,
             duration_ms=info.duration_ms,
+            cancel_check=cancel_check,
         )
+        if cancel_check is not None and cancel_check():
+            raise VideoDubError("Đã hủy xuất video.")
         if res.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
             stderr = res.stderr or ""
             if burn and "No such filter: 'ass'" in stderr:

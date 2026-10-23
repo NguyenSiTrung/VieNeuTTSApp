@@ -84,6 +84,93 @@ AppCard {
         }
     }
 
+    // FR-1.1: every render-invalidating action (policy knob, cue edit, AI
+    // re-run, re-ASR) is staged in the controller; this is the one gate that
+    // turns it into an explicit, loss-naming decision.
+    Dialog {
+        id: invalidationDialog
+
+        objectName: "subtitleInvalidationDialog"
+        property bool confirming: false
+
+        modal: true
+        focus: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min((Overlay.overlay ? Overlay.overlay.width : 420) - Theme.spacingXl * 2, 440)
+        padding: Theme.spacingLg
+        closePolicy: Popup.CloseOnEscape
+
+        header: Label {
+            text: qsTr("Bỏ bản đã tạo?")
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeMd
+            font.weight: Theme.fontWeightHeading
+            wrapMode: Text.Wrap
+            leftPadding: Theme.spacingLg
+            rightPadding: Theme.spacingLg
+            topPadding: Theme.spacingLg
+        }
+
+        background: Rectangle {
+            radius: Theme.radiusLg
+            color: Theme.surfaceCard
+            border.color: Theme.border
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+
+            Label {
+                objectName: "subtitleInvalidationMessage"
+                Layout.fillWidth: true
+                text: root.available ? subtitleController.invalidationMessage : ""
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    objectName: "subtitleInvalidationCancelButton"
+                    variant: "quiet"
+                    text: qsTr("Giữ nguyên")
+                    onClicked: {
+                        invalidationDialog.close();
+                        if (root.available)
+                            subtitleController.rejectRenderInvalidation();
+                    }
+                }
+
+                AppButton {
+                    objectName: "subtitleInvalidationConfirmButton"
+                    variant: "danger"
+                    text: qsTr("Vẫn thay đổi")
+                    onClicked: {
+                        invalidationDialog.confirming = true;
+                        invalidationDialog.close();
+                        if (root.available)
+                            subtitleController.confirmRenderInvalidation();
+                    }
+                }
+            }
+        }
+
+        onClosed: {
+            // Escape / outside click means "keep my render".
+            if (!confirming && root.available && subtitleController.invalidationPending)
+                subtitleController.rejectRenderInvalidation();
+            confirming = false;
+        }
+    }
+
     headerAction: RowLayout {
         spacing: Theme.spacingXs
 
@@ -1082,6 +1169,29 @@ AppCard {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeXs
             }
+
+            AppButton {
+                objectName: "subtitleExportCancelButton"
+                variant: "danger"
+                size: "sm"
+                text: root.exporting ? qsTr("Hủy xuất") : qsTr("Hủy")
+                visible: root.exporting
+                onClicked: {
+                    if (root.available)
+                        subtitleController.cancelExport();
+                }
+            }
+        }
+
+        Label {
+            objectName: "subtitleStaleHint"
+            Layout.fillWidth: true
+            visible: root.available && subtitleController.renderStale
+            text: root.available ? subtitleController.renderStaleReason : ""
+            color: Theme.warningText
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSm
+            wrapMode: Text.WordWrap
         }
 
         Label {
@@ -1164,7 +1274,9 @@ AppCard {
                 iconKind: "download"
                 text: qsTr("Xuất Video")
                 visible: root.loaded && root.hasVideo
-                enabled: root.hasTrack && root.hasVideo && !root.busy && !root.aiBusy && !root.exporting
+                enabled: root.available && subtitleController.canExportTrack && root.hasVideo
+                    && !root.busy && !root.aiBusy && !root.exporting
+                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
                 onClicked: {
                     if (root.available)
                         subtitleController.exportVideo(root.exportDir());
@@ -1180,7 +1292,9 @@ AppCard {
                 iconKind: "download"
                 text: root.exportFormat === "mp3" ? qsTr("Xuất MP3") : qsTr("Xuất WAV")
                 visible: root.loaded
-                enabled: root.hasTrack && !root.busy && !root.exporting
+                enabled: root.available && subtitleController.canExportTrack
+                    && !root.busy && !root.exporting
+                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
                 onClicked: {
                     if (root.available)
                         subtitleController.exportTrack(root.exportDir());
@@ -1198,7 +1312,9 @@ AppCard {
                 visible: root.loaded
                 // Needs a rendered track: the controller refuses pre-render
                 // export because the retimed cues only exist after a render.
-                enabled: root.hasTrack && !root.busy && !root.exporting
+                enabled: root.available && subtitleController.canExportSrt
+                    && !root.busy && !root.exporting
+                disabledReason: root.available ? subtitleController.exportBlockedReason : ""
                 onClicked: {
                     if (root.available)
                         subtitleController.exportSrt(root.exportDir());
@@ -1283,6 +1399,17 @@ AppCard {
 
             function onExportFinished(path, error) {
                 subtitleStatus.set(path, error);
+            }
+
+            function onRenderInvalidationRequested(reason, message) {
+                if (root.available)
+                    invalidationDialog.open();
+            }
+
+            function onInvalidationPendingChanged() {
+                if (root.available && !subtitleController.invalidationPending
+                        && invalidationDialog.visible)
+                    invalidationDialog.close();
             }
         }
     }

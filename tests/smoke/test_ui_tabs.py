@@ -2069,6 +2069,10 @@ DRIVER = textwrap.dedent(
                 speakersChanged = Signal()
                 aiBusyChanged = Signal()
                 aiProgressChanged = Signal()
+                staleChanged = Signal()
+                projectsChanged = Signal()
+                pendingInvalidationChanged = Signal()
+                renderInvalidationRequested = Signal(str, str)
 
                 def __init__(self):
                     super().__init__()
@@ -2105,6 +2109,7 @@ DRIVER = textwrap.dedent(
                     self._ai_progress = 0.0
                     self.rate_cap_sets = []
                     self.cancel_render_calls = 0
+                    self.cancel_export_calls = 0
                     # 50 rows so follow-scroll has somewhere to scroll to.
                     self._cues = [
                         {
@@ -2346,6 +2351,70 @@ DRIVER = textwrap.dedent(
                 @Property(float, notify=aiProgressChanged)
                 def aiProgress(self):
                     return self._ai_progress
+
+                @Property(bool, notify=renderedChanged)
+                def canExportTrack(self):
+                    return self._rendered
+
+                @Property(bool, notify=renderedChanged)
+                def canExportSrt(self):
+                    return self._rendered
+
+                @Property(str, notify=renderedChanged)
+                def exportBlockedReason(self):
+                    return "" if self._rendered else "Chưa có bản lồng tiếng để xuất."
+
+                @Property(bool, notify=staleChanged)
+                def renderStale(self):
+                    return False
+
+                @Property(str, notify=staleChanged)
+                def renderStaleReason(self):
+                    return ""
+
+                @Property(int, notify=projectsChanged)
+                def projectCount(self):
+                    return 0
+
+                @Property("QVariantList", notify=projectsChanged)
+                def projects(self):
+                    return []
+
+                @Property(bool, notify=pendingInvalidationChanged)
+                def invalidationPending(self):
+                    return False
+
+                @Property(str, notify=pendingInvalidationChanged)
+                def invalidationMessage(self):
+                    return ""
+
+                @Slot(str, result=bool)
+                def openProject(self, project_id):
+                    return True
+
+                @Slot(str, result=bool)
+                def removeProject(self, project_id):
+                    return True
+
+                @Slot()
+                def clear(self):
+                    pass
+
+                @Slot()
+                def cancelExport(self):
+                    self.cancel_export_calls += 1
+
+                @Slot()
+                def confirmRenderInvalidation(self):
+                    pass
+
+                @Slot()
+                def rejectRenderInvalidation(self):
+                    pass
+
+                @Slot()
+                def refreshProjects(self):
+                    pass
 
                 @Slot(str, result=bool)
                 def importVideo(self, path):

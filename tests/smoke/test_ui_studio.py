@@ -507,6 +507,47 @@ DRIVER = textwrap.dedent(
             from vienetts_app.core.synthesis_context import SynthesisContext
 
             sub_ctrl = engine._subtitle
+
+            # Task 5.2: a real .srt into the REAL controller, then assert the
+            # UI state (not the empty launcher) from the tab root.
+            srt_file = tmp / "sample.srt"
+            srt_file.write_text(
+                "1\\n00:00:00,500 --> 00:00:01,500\\nXin chào thế giới\\n\\n"
+                "2\\n00:00:02,000 --> 00:00:03,000\\nCâu phụ đề thứ hai\\n\\n",
+                encoding="utf-8",
+            )
+            imported_ok = bool(sub_ctrl.importSrt(str(srt_file)))
+            bridge.setCurrentTab("subtitles")
+            settle()
+            sub_tab = window.findChildren(QObject, "subtitlesTab")[0]
+            sub_walk = walk(sub_tab)
+            sub_card = window.findChildren(QObject, "subtitleCard")[0]
+            cue_list = window.findChildren(QObject, "subtitleCueList")[0]
+            cue_rows = [i for i in sub_walk if i.objectName() == "subtitleCueRow"]
+            cue_texts = [
+                str(i.property("text"))
+                for row in cue_rows
+                for i in walk(row)
+                if i.objectName() == ""
+                and str(i.property("text") or "").startswith(("Xin chào", "Câu phụ đề"))
+            ]
+            out["srt_import"] = {
+                "ok": imported_ok,
+                "loaded": bool(sub_card.property("loaded")),
+                "stage": str(sub_card.property("stage")),
+                "cue_count": int(cue_list.property("count")),
+                "rows": len(cue_rows),
+                "cue_texts": cue_texts,
+                "stats": str(
+                    window.findChildren(QObject, "subtitleStatsLabel")[0].property("text")
+                ),
+                "stats_visible": bool(
+                    window.findChildren(QObject, "subtitleStatsLabel")[0].property("visible")
+                ),
+                "launcher_visible": bool(
+                    window.findChildren(QObject, "subtitleEmptyLauncher")[0].property("visible")
+                ),
+            }
             store = SubtitleProjectStore(tmp / "subtitles")
             video_file = tmp / "movie.mp4"
             video_file.write_bytes(b"fake-mp4")
@@ -768,6 +809,16 @@ class TestStudioSmoke:
 
     def _check_subtitle(self, results: dict[str, dict]) -> None:
         r = results["subtitle"]
+        srt = r["srt_import"]
+        assert srt["ok"] is True
+        assert srt["loaded"] is True
+        assert srt["stage"] == "prepare"
+        assert srt["cue_count"] == 2 and srt["rows"] == 2
+        assert srt["launcher_visible"] is False
+        assert sorted(srt["cue_texts"]) == ["Câu phụ đề thứ hai", "Xin chào thế giới"]
+        # No render yet: no stats line, and the label stays hidden in prepare.
+        assert srt["stats"] == ""
+        assert srt["stats_visible"] is False
         assert r["sub_btn_visible"] is True
         assert r["sub_btn_enabled"] is True
         assert r["tab_after_open"] == "studio"

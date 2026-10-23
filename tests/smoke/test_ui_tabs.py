@@ -2118,6 +2118,13 @@ DRIVER = textwrap.dedent(
                     self.clear_notice_calls = 0
                     self._ai_stage_text = ""
                     self._ai_progress = 0.0
+                    # Task 5.2: every dock/panel action must be clicked once and
+                    # observed here.
+                    self.action_calls = {}
+                    self._projects = [
+                        {"id": "proj_a", "title": "Dự án A", "active": False, "cueCount": 3},
+                        {"id": "proj_b", "title": "Dự án B", "active": True, "cueCount": 5},
+                    ]
                     self.rate_cap_sets = []
                     self.cancel_render_calls = 0
                     self.cancel_export_calls = 0
@@ -2275,6 +2282,9 @@ DRIVER = textwrap.dedent(
                 def voice(self, value):
                     self._voice = str(value or "")
 
+                def _record(self, name):
+                    self.action_calls[name] = self.action_calls.get(name, 0) + 1
+
                 @Slot(str, result=bool)
                 def importSrt(self, path):
                     self.imported.append(("srt", path))
@@ -2282,14 +2292,17 @@ DRIVER = textwrap.dedent(
 
                 @Slot()
                 def render(self):
+                    self._record("render")
                     pass
 
                 @Slot()
                 def cancelRender(self):
                     self.cancel_render_calls += 1
+                    self._record("cancelRender")
 
                 @Slot()
                 def play(self):
+                    self._record("play")
                     pass
 
                 @Slot()
@@ -2314,14 +2327,17 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, result=str)
                 def exportTrack(self, dest_dir):
+                    self._record("exportTrack")
                     return ""
 
                 @Slot(str, result=str)
                 def exportSrt(self, dest_dir):
+                    self._record("exportSrt")
                     return ""
 
                 @Slot(str, result=str)
                 def exportVideo(self, dest_dir):
+                    self._record("exportVideo")
                     return ""
 
                 @Property(bool, notify=videoChanged)
@@ -2425,11 +2441,11 @@ DRIVER = textwrap.dedent(
 
                 @Property(int, notify=projectsChanged)
                 def projectCount(self):
-                    return 0
+                    return len(self._projects)
 
                 @Property("QVariantList", notify=projectsChanged)
                 def projects(self):
-                    return []
+                    return self._projects
 
                 @Property(bool, notify=pendingInvalidationChanged)
                 def invalidationPending(self):
@@ -2441,19 +2457,24 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, result=bool)
                 def openProject(self, project_id):
+                    self._record("openProject")
+                    self.opened_project = project_id
                     return True
 
                 @Slot(str, result=bool)
                 def removeProject(self, project_id):
+                    self._record("removeProject")
+                    self.removed_project = project_id
                     return True
 
                 @Slot()
                 def clear(self):
-                    pass
+                    self._record("clear")
 
                 @Slot()
                 def cancelExport(self):
                     self.cancel_export_calls += 1
+                    self._record("cancelExport")
 
                 @Slot()
                 def confirmRenderInvalidation(self):
@@ -2474,15 +2495,18 @@ DRIVER = textwrap.dedent(
 
                 @Slot()
                 def clearVideo(self):
+                    self._record("clearVideo")
                     self._has_video = False
                     self.videoChanged.emit()
 
                 @Slot(bool, result=bool)
                 def transcribeVideo(self, with_diarization=True):
+                    self._record("transcribeVideo")
                     return True
 
                 @Slot(result=bool)
                 def runDiarization(self):
+                    self._record("runDiarization")
                     return True
 
                 @Slot(str, str, result=bool)
@@ -2493,14 +2517,17 @@ DRIVER = textwrap.dedent(
                 @Slot(int, str, str, result=bool)
                 @Slot(int, str, result=bool)
                 def updateCue(self, index, text, speaker=""):
+                    self._record("updateCue")
                     return True
 
                 @Slot(str, result=bool)
                 def playSpeakerSample(self, speaker):
+                    self._record("playSpeakerSample")
                     return True
 
                 @Slot(str, result=bool)
                 def cloneSpeakerFromVideo(self, speaker):
+                    self._record("cloneSpeakerFromVideo")
                     return True
 
                 @Slot(str, str, result=bool)
@@ -2510,7 +2537,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot()
                 def cancelAiTask(self):
-                    pass
+                    self._record("cancelAiTask")
 
             fake_subtitle = FakeSubtitle()
             subtitle_factory = lambda _controller: fake_subtitle
@@ -4504,6 +4531,145 @@ DRIVER = textwrap.dedent(
             window.setWidth(old_size[0])
             window.setHeight(old_size[1])
             pump(0.1)
+
+            # ── Task 5.2: click EVERY action once and observe the controller
+            # call. FakeSubtitle records action_calls; the click() signal
+            # invocation is the same path a user press takes. ──
+            fake_subtitle._rendered = True
+            fake_subtitle.renderedChanged.emit()
+            fake_subtitle._rendering = False
+            fake_subtitle.renderingChanged.emit()
+            fake_subtitle._exporting = False
+            fake_subtitle.exportingChanged.emit()
+            fake_subtitle._has_video = True
+            fake_subtitle.videoChanged.emit()
+            fake_subtitle.action_calls.clear()
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            app.processEvents()
+
+            # Inline cue edit: open the row editor, type, save.
+            click_item(ifind("subtitleCueEditButton")[0])
+            app.processEvents()
+            cue_field = ifind("subtitleCueEditField")[0]
+            cue_field.setProperty("text", "Câu phụ đề đã sửa")
+            click_item(ifind("subtitleCueSaveEditButton")[0])
+            app.processEvents()
+
+            # Ordered AI actions.
+            click_item(sfind("subtitleRefineAsrButton"))
+            click_item(sfind("subtitleTranslateDubButton"))
+            click_item(sfind("subtitleFitTimingButton"))
+            app.processEvents()
+            # Cancel AI while a task is running (the only enabled state).
+            fake_subtitle._ai_busy = True
+            fake_subtitle.aiBusyChanged.emit()
+            app.processEvents()
+            click_item(sfind("subtitleCancelAiButton"))
+            app.processEvents()
+            fake_subtitle._ai_busy = False
+            fake_subtitle.aiBusyChanged.emit()
+            app.processEvents()
+
+            # Speaker bar actions.
+            click_item(sfind("subtitleDiarizeButton"))
+            click_item(ifind("subtitleSpeakerSampleButton")[0])
+            click_item(ifind("subtitleCloneSpeakerButton")[0])
+            QMetaObject.invokeMethod(
+                ifind("subtitleSpeakerVoicePicker")[0],
+                "voiceActivated",
+                Q_ARG(str, "voice_en_02"),
+            )
+            app.processEvents()
+
+            # Source stage: ASR + clear attachment.
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "source"))
+            app.processEvents()
+            click_item(sfind("subtitleTranscribeButton"))
+            click_item(sfind("subtitleClearVideoButton"))
+            app.processEvents()
+            fake_subtitle._has_video = True
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+
+            # Dock: render, cancel render, play, three exports, cancel export,
+            # and "new project" (clear).
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "produce"))
+            app.processEvents()
+            click_item(sfind("subtitleRenderButton"))
+            app.processEvents()
+            fake_subtitle._rendering = True
+            fake_subtitle.renderingChanged.emit()
+            app.processEvents()
+            click_item(sfind("subtitleCancelButton"))
+            app.processEvents()
+            fake_subtitle._rendering = False
+            fake_subtitle.renderingChanged.emit()
+            app.processEvents()
+            click_item(sfind("subtitlePlayButton"))
+            app.processEvents()
+
+            def overlay_named(name):
+                return [
+                    item
+                    for item in item_walk(window.contentItem())
+                    if item.objectName() == name and item.isVisible()
+                ]
+
+            export_calls = []
+            for name in (
+                "subtitleExportWavButton",
+                "subtitleExportSrtButton",
+                "subtitleExportVideoButton",
+            ):
+                click_item(sfind("subtitleExportMenuButton"))
+                pump(0.1)
+                items = overlay_named(name)
+                export_calls.append(bool(items))
+                if items:
+                    click_item(items[0])
+                pump(0.1)
+            out["export_menu_clicks"] = export_calls
+
+            fake_subtitle._exporting = True
+            fake_subtitle.exportingChanged.emit()
+            app.processEvents()
+            click_item(sfind("subtitleExportCancelButton"))
+            app.processEvents()
+            fake_subtitle._exporting = False
+            fake_subtitle.exportingChanged.emit()
+            app.processEvents()
+
+            click_item(sfind("subtitleNewProjectButton"))
+            app.processEvents()
+
+            # Projects: open one saved project, delete another through the
+            # confirm dialog.
+            click_item(sfind("subtitleProjectsButton"))
+            pump(0.1)
+            open_btns = overlay_named("subtitleOpenProjectButton")
+            out["project_rows_visible"] = len(open_btns)
+            openable = [btn for btn in open_btns if bool(btn.property("enabled"))]
+            if openable:
+                click_item(openable[0])
+                pump(0.1)
+            click_item(sfind("subtitleProjectsButton"))
+            pump(0.1)
+            delete_btns = [
+                item
+                for item in item_walk(window.contentItem())
+                if item.objectName() == "subtitleDeleteProjectButton" and item.isVisible()
+            ]
+            if delete_btns:
+                click_item(delete_btns[-1])
+                pump(0.1)
+                confirm = sfind("subtitleDeleteProjectConfirmButton")
+                click_item(confirm)
+                pump(0.1)
+
+            out["action_calls"] = dict(fake_subtitle.action_calls)
+            out["opened_project"] = getattr(fake_subtitle, "opened_project", "")
+            out["removed_project"] = getattr(fake_subtitle, "removed_project", "")
+
             results["srt_surface"] = out
 
         elif scenario == "clone_group":
@@ -8581,6 +8747,29 @@ class TestTextParagraphTabSmoke:
         assert result["wide_by_window_width"] == [False, False, True, True]
         assert result["cue_scrollbar"] is True
         assert result["speaker_picker_width_640"] > 0
+        assert result["export_menu_clicks"] == [True, True, True]
+        assert result["project_rows_visible"] == 2
+        assert result["opened_project"] == "proj_a"
+        assert result["removed_project"] in {"proj_a", "proj_b"}
+        assert result["action_calls"] == {
+            "updateCue": 1,
+            "cancelAiTask": 1,
+            "runDiarization": 1,
+            "playSpeakerSample": 1,
+            "cloneSpeakerFromVideo": 1,
+            "transcribeVideo": 1,
+            "clearVideo": 1,
+            "render": 1,
+            "cancelRender": 1,
+            "play": 1,
+            "exportTrack": 1,
+            "exportSrt": 1,
+            "exportVideo": 1,
+            "cancelExport": 1,
+            "clear": 1,
+            "openProject": 1,
+            "removeProject": 1,
+        }
         assert result["cue_height_tall_window"] > result["cue_height_short_window"]
         # FR-3.1–3.4: ordered, labelled AI actions; explicit translate target;
         # one diarization control per stage; catalog-backed speaker casting.

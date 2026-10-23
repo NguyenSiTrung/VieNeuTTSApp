@@ -107,3 +107,13 @@ Key measured facts to re-verify rather than assume:
   - **Gotchas:** `findChildren(QObject)` from the tab root reaches dialogs owned by a component (FileDialog is not an Item) but still misses Repeater delegates; the NFR-1 contract check must union `findChildren` with `item_walk`.
   - **Patterns:** Standalone instantiation is a cheap real test when the components read context globals: a stub controller with the exact Q_PROPERTY/Slot surface plus a `QQmlEngine` in a subprocess catches borrowed ids and missing imports without loading the app.
   - **Gotchas:** `Layout.fillHeight` on a composite instance applies to its root item normally; the earlier "not filling" symptom was the stale-height sibling, not the attached property.
+
+## [2026-10-23] - Phase 5 / Task 5.2: Coverage gap closed
+
+- **Implemented:** `FakeSubtitle` now records every action (`action_calls`) and exposes two projects; the para_group driver clicks all 17 listed actions once and the test asserts the exact call map, including render/cancelRender, play, the three exports through the dock's opened menu (overlay walk), export cancel, clear, and project open/delete through the real dialogs. A real `.srt` is imported into the real `SubtitleController` in the Studio smoke and the populated tab asserts loaded/stage/cue rows/text/launcher-hidden/stats-hidden. `generate_screenshots.py` seeds a six-cue project so the `subtitles` destination is shot populated; `docs/screenshots/redesign/phase-5/` holds both themes at 640×420, 760×600, 1120×740 and 1440×900, pinned by a new matrix test.
+- **Files changed:** `tests/smoke/test_ui_tabs.py`, `tests/smoke/test_ui_studio.py`, `tests/smoke/test_screenshots.py`, `scripts/generate_screenshots.py`, `docs/screenshots/redesign/phase-5/*.png`.
+- **Learnings:**
+  - **Gotchas:** a driver template is a normal (non-raw) Python string — `\n` inside inserted driver code is expanded when the template is built; escape it as `\\n` or the generated file loses all indentation after that literal.
+  - **Gotchas:** `subtitlesTab.findChildren` reaches the source panel's FileDialogs (QObject children) but not Repeater delegates; delegate actions (`speakerSample`, `speakerVoicePicker`, export menu items) need `ifind`/overlay walks.
+  - **Patterns:** `click()` invokes the handler unconditionally, so a coverage driver must select an enabled instance (the active project row's "Mở" is disabled) instead of assuming row order.
+  - **Context:** export menu items live in the window overlay; each selection closes the menu, so the harness must reopen it per item.

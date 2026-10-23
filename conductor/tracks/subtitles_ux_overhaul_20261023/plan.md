@@ -303,7 +303,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Split `SubtitleCard.qml` (1,289 L) into the five components; keep the `subtitleCard` root.
 
-- [ ] **Task 5.2: Close the test-coverage gap**
+- [x] **Task 5.2: Close the test-coverage gap**
   <!-- files: tests/smoke/test_ui_tabs.py, tests/smoke/test_ui_shell.py, tests/smoke/test_screenshots.py -->
   - Red tests:
     - Every action button (`render`, `play`, `exportWav`, `exportSrt`, `exportVideo`, `transcribeVideo`, `runDiarization`, `updateCue`, `setSpeakerVoice`, `playSpeakerSample`, `cloneSpeakerFromVideo`, `refineWithLlm`, `cancelAiTask`, `cancelExport`, `clear`, `openProject`, `removeProject`) is clicked at least once and its controller call asserted.

@@ -88,3 +88,42 @@ def test_matrix_writes_every_destination_theme_and_size(tmp_path, theme) -> None
         assert png_size(tmp_path / name) == size, name
     saved = {Path(ln.removeprefix("saved: ")).name for ln in proc.stdout.splitlines()}
     assert expected <= saved, proc.stdout
+
+
+SUBTITLE_SIZES = ((640, 420), (760, 600), (1120, 740), (1440, 900))
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_subtitles_matrix_populated_at_four_sizes(tmp_path, theme) -> None:
+    """Task 5.2: the populated studio (real cues, six rows) at every review size."""
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--matrix",
+            str(tmp_path),
+            "--tabs",
+            "subtitles",
+            "--themes",
+            theme,
+            "--sizes",
+            ",".join(f"{w}x{h}" for w, h in SUBTITLE_SIZES),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    expected = {f"subtitles-{theme}-{width}x{height}.png" for width, height in SUBTITLE_SIZES}
+    assert {p.name for p in tmp_path.iterdir()} == expected
+    for name, size in zip(
+        (f"subtitles-{theme}-{w}x{h}.png" for w, h in SUBTITLE_SIZES),
+        SUBTITLE_SIZES,
+        strict=True,
+    ):
+        assert png_size(tmp_path / name) == size, name
+    # A populated page reflows: no two sizes may share the exact same frame.
+    assert len({(tmp_path / name).read_bytes() for name in expected}) == len(expected)

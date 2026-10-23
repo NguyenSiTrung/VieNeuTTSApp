@@ -419,6 +419,56 @@ def _set_settings_state(window: Any, sub: str) -> None:
                 QMetaObject.invokeMethod(header, "click")
 
 
+def _seed_subtitle_project(subtitle: Any, data_dir: Path) -> None:
+    """Load a small real project so the subtitles screen is POPULATED.
+
+    The audit shots must show the cue list, speaker casting and timing panels,
+    not the empty launcher; the controller is the real one, only the audio is
+    absent (stage stays ``prepare`` until a render).
+    """
+    from vienetts_app.core.align import FitPolicy
+    from vienetts_app.core.subtitle_project import SubtitleProjectStore, build_project
+    from vienetts_app.core.subtitles import Cue
+    from vienetts_app.core.synthesis_context import SynthesisContext
+
+    if subtitle.loaded:
+        return
+    source = data_dir / "demo.srt"
+    source.write_text("", encoding="utf-8")
+    cues = tuple(
+        Cue(
+            index=i + 1,
+            start_ms=i * 1800 + 200,
+            end_ms=i * 1800 + 1500,
+            text=(
+                "Khi ánh đèn thành phố lên, câu chuyện bắt đầu.",
+                "Cô ấy mở cửa và bước ra ngoài.",
+                "Mọi thứ thay đổi từ đêm hôm đó.",
+                "Chúng ta không thể quay lại được nữa.",
+                "Hãy nhớ lấy lời hứa này.",
+                "Và rồi màn đêm buông xuống.",
+            )[i],
+            speaker="SPEAKER_01" if i % 2 == 0 else "SPEAKER_02",
+        )
+        for i in range(6)
+    )
+    context = SynthesisContext(profile="vieneu", model_revision="r1", voice_id="Binh")
+    store = SubtitleProjectStore(data_dir / "subtitles")
+    project = build_project(
+        source,
+        cues,
+        FitPolicy.dub(rate_cap=1.5),
+        voice_key="Binh",
+        context=context,
+        speaker_voices={"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"},
+    )
+    store.save(project)
+    subtitle._project = store.require(project.id)  # noqa: SLF001
+    subtitle._load_reader()  # noqa: SLF001
+    subtitle.loadedChanged.emit()
+    subtitle._emit_cues()  # noqa: SLF001
+
+
 def _set_audiobook_state(app: Any, audiobook: Any, sub: str) -> None:
     """Empty shelf for ``audiobook``; the fixture book open for ``audiobook-book``."""
     if sub == "book":
@@ -578,6 +628,7 @@ def capture_matrix(
             controller.refreshModelState()
             if not wait_for(app, lambda: controller.modelReady, 10, "model ready"):
                 raise RuntimeError("model state never reported ready")
+            _seed_subtitle_project(engine._subtitle, data_dir)  # noqa: SLF001
 
             # The footer engine readout resolves on a worker thread (the
             # detector is the fixed stub above); run_gui kicks it post-paint.

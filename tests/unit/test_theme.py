@@ -285,39 +285,34 @@ class TestStatusBarLogic:
 
 def test_subtitle_card_never_paints_text_with_the_warning_fill() -> None:
     """Theme.warning is a 3:1 fill; text on it fails AA in light mode (4.1)."""
-    card = (
-        Path(__file__).parent.parent.parent
-        / "src"
-        / "vienetts_app"
-        / "ui"
-        / "qml"
-        / "components"
-        / "SubtitleCard.qml"
-    ).read_text(encoding="utf-8")
+    card = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(
+            (
+                Path(__file__).parent.parent.parent
+                / "src"
+                / "vienetts_app"
+                / "ui"
+                / "qml"
+                / "components"
+            ).glob("Subtitle*.qml")
+        )
+    )
     assert "color: Theme.warning\n" not in card
     assert "Theme.warningText" in card
 
 
 def test_subtitle_surfaces_use_the_shared_design_system() -> None:
     """4.2: panels/badges/progress come from components, not hand-rolled skins."""
-    card = (
-        Path(__file__).parent.parent.parent
-        / "src"
-        / "vienetts_app"
-        / "ui"
-        / "qml"
-        / "components"
-        / "SubtitleCard.qml"
-    ).read_text(encoding="utf-8")
-    dock = (
-        Path(__file__).parent.parent.parent
-        / "src"
-        / "vienetts_app"
-        / "ui"
-        / "qml"
-        / "components"
-        / "SubtitleActionDock.qml"
-    ).read_text(encoding="utf-8")
+    # Task 5.1 split the studio into Subtitle* components: the guard follows
+    # the code instead of pinning one file name.
+    components = (
+        Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml" / "components"
+    )
+    card = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(components.glob("Subtitle*.qml"))
+    )
+    dock = (components / "SubtitleActionDock.qml").read_text(encoding="utf-8")
     assert not re.search(r"(?<!App)ProgressBar \{", card)
     assert not re.search(r"(?<!App)ProgressBar \{", dock)
     assert "AppProgressBar {" in card and "AppProgressBar {" in dock
@@ -329,15 +324,12 @@ def test_subtitle_surfaces_use_the_shared_design_system() -> None:
 
 def test_subtitle_fields_use_the_shared_text_field() -> None:
     """4.3: no inline TextField skin or literal field height remains in the card."""
-    card = (
-        Path(__file__).parent.parent.parent
-        / "src"
-        / "vienetts_app"
-        / "ui"
-        / "qml"
-        / "components"
-        / "SubtitleCard.qml"
-    ).read_text(encoding="utf-8")
+    components = (
+        Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml" / "components"
+    )
+    card = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(components.glob("Subtitle*.qml"))
+    )
     assert not re.search(r"(?<!App)TextField \{", card)
     assert "AppTextField {" in card
     field = (
@@ -355,13 +347,17 @@ def test_subtitle_fields_use_the_shared_text_field() -> None:
 
 def test_subtitle_card_does_not_set_the_deprecated_header_subtitle() -> None:
     """4.8: AppCard.subtitle is deprecated and never rendered."""
-    card = (
-        Path(__file__).parent.parent.parent
-        / "src"
-        / "vienetts_app"
-        / "ui"
-        / "qml"
-        / "components"
-        / "SubtitleCard.qml"
-    ).read_text(encoding="utf-8")
+    card = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(
+            (
+                Path(__file__).parent.parent.parent
+                / "src"
+                / "vienetts_app"
+                / "ui"
+                / "qml"
+                / "components"
+            ).glob("Subtitle*.qml")
+        )
+    )
     assert "\n    subtitle:" not in card

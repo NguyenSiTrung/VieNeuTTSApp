@@ -134,7 +134,7 @@ def test_translator_loading() -> None:
     ):
         assert translator.translate("SubtitleActionDock", source) == english
     # FR-4.7: dialog filters and the two copy strings that used to slip out
-    # of the catalog.
+    # of the catalog. Task 5.1 moved the dialogs into SubtitleSourcePanel.
     for source, english in (
         ("Phụ đề SubRip (*.srt)", "SubRip subtitles (*.srt)"),
         ("Tất cả tệp (*)", "All files (*)"),
@@ -142,9 +142,9 @@ def test_translator_loading() -> None:
             "Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)",
             "Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)",
         ),
-        ("THỜI GIAN & GIỌNG ĐỌC", "TIMING & VOICE"),
     ):
-        assert translator.translate("SubtitleCard", source) == english
+        assert translator.translate("SubtitleSourcePanel", source) == english
+    assert translator.translate("SubtitleCard", "THỜI GIAN & GIỌNG ĐỌC") == "TIMING & VOICE"
     assert (
         translator.translate("SubtitleActionDock", "Tiến độ tạo âm thanh")
         == "Audio generation progress"

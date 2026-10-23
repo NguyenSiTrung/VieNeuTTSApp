@@ -295,7 +295,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
 <!-- execution: sequential -->
 <!-- depends: phase3, phase4 -->
 
-- [ ] **Task 5.1: Extract the monolithic card into focused components**
+- [x] **Task 5.1: Extract the monolithic card into focused components**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/components/SubtitleSourcePanel.qml, src/vienetts_app/ui/qml/components/SubtitleCueEditor.qml, src/vienetts_app/ui/qml/components/SubtitlePreparePanel.qml, src/vienetts_app/ui/qml/components/SubtitleCastPanel.qml, src/vienetts_app/ui/qml/components/qmldir, src/vienetts_app/ui/qml/qmldir -->
   - Red tests:
     - Every pre-existing `objectName` still resolves from the tab root after extraction.

@@ -44,3 +44,7 @@ SubtitleActionDock 1.0 components/SubtitleActionDock.qml
 singleton EngineState 1.0 components/EngineState.qml
 AppProgressBar 1.0 components/AppProgressBar.qml
 AppTextField 1.0 components/AppTextField.qml
+SubtitleCastPanel 1.0 components/SubtitleCastPanel.qml
+SubtitlePreparePanel 1.0 components/SubtitlePreparePanel.qml
+SubtitleCueEditor 1.0 components/SubtitleCueEditor.qml
+SubtitleSourcePanel 1.0 components/SubtitleSourcePanel.qml

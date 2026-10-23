@@ -4088,6 +4088,12 @@ DRIVER = textwrap.dedent(
             out["timing_panel_visible_produce"] = bool(
                 sfind("subtitleTimingPanel").property("visible")
             )
+            # Task 5.1: the extraction into Subtitle* components must not drop
+            # or rename a single objectName (NFR-1); collect from the tab root,
+            # including Repeater delegates that findChildren cannot reach.
+            _tab_names = {o.objectName() for o in subtitles_tab().findChildren(QObject)}
+            _tab_names.update(i.objectName() for i in item_walk(subtitles_tab()))
+            out["subtitle_names"] = sorted(name for name in _tab_names if name)
             fake_subtitle.loaded = False
             app.processEvents()
             out["stage_disabled_when_empty"] = [
@@ -8480,6 +8486,79 @@ class TestTextParagraphTabSmoke:
         assert result["stage_produce"] == "produce"
         assert result["cue_list_visible_produce"] is True
         assert result["timing_panel_visible_produce"] is True
+        # Task 5.1: every objectName that the extracted panels own still
+        # resolves from the tab root after SubtitleCard lost its monolith.
+        required_names = {
+            "subtitleCard",
+            "subtitleImportButton",
+            "subtitleImportVideoButton",
+            "subtitleImportDialog",
+            "subtitleVideoDialog",
+            "subtitleEmptyDropZone",
+            "subtitleEmptyLauncher",
+            "subtitleEmptyHint",
+            "subtitleEmptyDropArea",
+            "subtitleEmptyVideoCard",
+            "subtitleEmptySrtCard",
+            "subtitleEmptyDropHint",
+            "subtitleVideoBar",
+            "subtitleVideoLabel",
+            "subtitleDiarizeToggle",
+            "subtitleTranscribeButton",
+            "subtitleClearVideoButton",
+            "subtitleVideoMixCombo",
+            "subtitleVideoBgGainField",
+            "subtitleEmbedSrtToggle",
+            "subtitleEmbedModeCombo",
+            "subtitleEmbedHint",
+            "subtitleOverrunHint",
+            "subtitleAiBar",
+            "subtitleAiGroupLabel",
+            "subtitleCancelAiButton",
+            "subtitleRefineAsrButton",
+            "subtitleTranslateDubButton",
+            "subtitleTranslateLanguageCombo",
+            "subtitleFitTimingButton",
+            "subtitleAiPrereqRow",
+            "subtitleAiSettingsButton",
+            "subtitleAiStageLabel",
+            "subtitleAiProgressBar",
+            "subtitleCueList",
+            "subtitleCueScrollBar",
+            "subtitleCueRow",
+            "subtitleCueFitBadge",
+            "subtitleCueSpeakerBadge",
+            "subtitleCueEditButton",
+            "subtitleCueSaveEditButton",
+            "subtitleCueEditField",
+            "subtitleCueEditSpeakerField",
+            "subtitleSpeakerBar",
+            "subtitleDiarizeButton",
+            "subtitleSpeakerRow",
+            "subtitleSpeakerSampleButton",
+            "subtitleSpeakerVoicePicker",
+            "subtitleUseCurrentVoiceForSpeakerButton",
+            "subtitleCloneSpeakerButton",
+            "subtitleTimingPanel",
+            "subtitleStatsLabel",
+            "subtitleHintLabel",
+            "subtitleStatusLabel",
+            "subtitleProgressBar",
+            "subtitleRenderButton",
+            "subtitleCancelButton",
+            "subtitlePlayButton",
+            "subtitleActionDock",
+            "subtitleModeCombo",
+            "subtitleRateSlider",
+            "subtitleOffsetField",
+            "subtitleMaxGapField",
+            "subtitleMergeToggle",
+            "subtitleVoicePicker",
+            "subtitleLanguagePicker",
+        }
+        assert not (required_names - set(result["subtitle_names"])), sorted(
+            required_names - set(result["subtitle_names"])
+        )
         assert result["stage_disabled_when_empty"] == [True, False, False]
         assert result["stage_reasons_when_empty"] == [
             "",
@@ -8525,9 +8604,10 @@ class TestTextParagraphTabSmoke:
         assert result["speaker_calls"] == [[result["speaker_calls"][0][0], "voice_en_01"]]
         assert result["speaker_calls"][0][0] in ("SPEAKER_01", "SPEAKER_02")
         assert result["speaker_no_raw_field"] is True
-        assert all(cls.startswith("AppCard") for cls in result["panel_classes"].values()), result[
-            "panel_classes"
-        ]
+        assert all(
+            cls.startswith(("AppCard", "SubtitleCastPanel"))
+            for cls in result["panel_classes"].values()
+        ), result["panel_classes"]
         assert all(result["progress_labels"].values()), result["progress_labels"]
         assert all(result["busy_reasons"].values()), result["busy_reasons"]
         assert result["hint"] == {

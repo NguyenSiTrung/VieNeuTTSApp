@@ -4706,498 +4706,230 @@
 <context>
     <name>SubtitleCard</name>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="30"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="29"/>
         <source>Phụ đề (SRT)</source>
         <translation>Subtitles (SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="31"/>
-        <source>Nhập tệp .srt, chọn cách khớp thời gian, rồi tạo âm thanh và phụ đề đã căn chỉnh.</source>
-        <translation>Import an .srt file, pick how the timing is matched, then render audio and realigned subtitles.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="53"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="51"/>
         <source>Nhập tệp .srt hoặc video để mở &apos;Chuẩn bị&apos; và &apos;Sản xuất&apos;.</source>
         <translation>Import an .srt file or a video to unlock &apos;Prepare&apos; and &apos;Produce&apos;.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="56"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="54"/>
         <source>Nguồn</source>
         <translation>Source</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="59"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="57"/>
         <source>Chuẩn bị</source>
         <translation>Prepare</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="61"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="59"/>
         <source>Cần nhập tệp phụ đề hoặc video.</source>
         <translation>Import a subtitle file or video first.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="65"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="63"/>
         <source>Sản xuất</source>
         <translation>Produce</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="67"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="65"/>
         <source>Cần có phụ đề trước khi tạo âm thanh.</source>
         <translation>Add subtitles before generating audio.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="75"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="73"/>
         <source>Theo ngôn ngữ tổng hợp</source>
         <translation>Use the synthesis language</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="93"/>
-        <location filename="../qml/components/SubtitleCard.qml" line="105"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="91"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="103"/>
         <source>Không có bộ điều khiển phụ đề.</source>
         <translation>Subtitle controls are unavailable.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="95"/>
-        <location filename="../qml/components/SubtitleCard.qml" line="107"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="93"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="105"/>
         <source>Đang xuất tệp — chờ hoàn tất.</source>
         <translation>Exporting — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="97"/>
-        <location filename="../qml/components/SubtitleCard.qml" line="109"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="95"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="107"/>
         <source>Đang tạo âm thanh — chờ hoàn tất.</source>
         <translation>Generating audio — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="99"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="97"/>
         <source>Đang chạy tác vụ AI — chờ hoàn tất.</source>
         <translation>An AI task is running — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="111"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="109"/>
         <source>Một tác vụ AI khác đang chạy.</source>
         <translation>Another AI task is running.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="113"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="111"/>
         <source>Cần nhập phụ đề trước.</source>
         <translation>Import subtitles first.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="115"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="113"/>
         <source>Cần video để phân tách người nói.</source>
         <translation>A video is required to separate speakers.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="117"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="115"/>
         <source>Cần đính kèm video để nhận dạng phụ đề.</source>
         <translation>Attach a video to transcribe subtitles.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="178"/>
-        <source>Chọn tệp phụ đề</source>
-        <translation>Choose a subtitle file</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="179"/>
-        <source>Phụ đề SubRip (*.srt)</source>
-        <translation>SubRip subtitles (*.srt)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="179"/>
-        <location filename="../qml/components/SubtitleCard.qml" line="194"/>
-        <source>Tất cả tệp (*)</source>
-        <translation>All files (*)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="191"/>
-        <source>Chọn tệp video</source>
-        <translation>Choose a video file</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="193"/>
-        <source>Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)</source>
-        <translation>Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="219"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="167"/>
         <source>Bỏ bản đã tạo?</source>
         <translation>Discard the existing render?</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="259"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="207"/>
         <source>Giữ nguyên</source>
         <translation>Keep it</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="270"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="218"/>
         <source>Vẫn thay đổi</source>
         <translation>Change anyway</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="299"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="247"/>
         <source>Nhập Video…</source>
         <translation>Import video…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="312"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="260"/>
         <source>Nhập .srt…</source>
         <translation>Import .srt…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="329"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="277"/>
         <source>Giai đoạn làm việc</source>
         <translation>Workflow stage</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="384"/>
-        <source>Đã chọn video &apos;%1&apos;. Nhấn &apos;Tạo phụ đề (ASR)&apos; bên dưới hoặc nhập tệp .srt.</source>
-        <translation>Selected video &apos;%1&apos;. Click &apos;Transcribe (ASR)&apos; below or import an .srt file.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="480"/>
-        <source>Video: %1</source>
-        <translation>Video: %1</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="508"/>
-        <source>Nhận dạng phụ đề từ video bằng mô hình Whisper</source>
-        <translation>Transcribe subtitles from the video with a Whisper model</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="549"/>
-        <source>Âm thanh video</source>
-        <translation>Video audio</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="579"/>
-        <source>Âm nền (dB)</source>
-        <translation>Background level (dB)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="620"/>
-        <source>Kiểu phụ đề</source>
-        <translation>Subtitle mode</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="821"/>
-        <source>Tiến độ tác vụ AI</source>
-        <translation>AI task progress</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="852"/>
-        <source>Danh sách phụ đề</source>
-        <translation>Subtitle cue list</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1010"/>
-        <source>Lời thoại phụ đề</source>
-        <translation>Subtitle cue text</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1024"/>
-        <source>Người nói của phụ đề</source>
-        <translation>Subtitle cue speaker</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1080"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="380"/>
         <source>THỜI GIAN &amp; GIỌNG ĐỌC</source>
         <translation>TIMING &amp; VOICE</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1099"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="399"/>
         <source>Chế độ phụ đề</source>
         <translation>Subtitle mode</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1148"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="448"/>
         <source>Mức nén tối đa</source>
         <translation>Maximum rate cap</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1210"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="510"/>
         <source>Giới hạn khoảng lặng (ms)</source>
         <translation>Silence gap limit (ms)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1240"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="540"/>
         <source>Độ lệch thời gian (ms)</source>
         <translation>Time offset (ms)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1398"/>
-        <source>Giọng cho %1</source>
-        <translation>Voice for %1</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1433"/>
-        <source>Engine hiện tại không hỗ trợ nhân bản giọng.</source>
-        <translation>The current engine does not support voice cloning.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="507"/>
-        <source>Tạo phụ đề (ASR)</source>
-        <translation>Transcribe (ASR)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="521"/>
-        <source>Bỏ đính kèm video</source>
-        <translation>Detach video</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="541"/>
-        <source>Âm thanh video:</source>
-        <translation>Video audio:</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="555"/>
-        <source>Thay thế âm gốc</source>
-        <translation>Replace original audio</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="556"/>
-        <source>Giữ nhạc nền (Ducking)</source>
-        <translation>Keep background audio (Ducking)</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="571"/>
-        <source>Âm nền (dB):</source>
-        <translation>Background gain (dB):</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="597"/>
-        <source>Nhúng phụ đề vào video</source>
-        <translation>Embed subtitles in video</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="612"/>
-        <source>Kiểu phụ đề:</source>
-        <translation>Subtitle style:</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="626"/>
-        <source>Bật/tắt trong trình phát</source>
-        <translation>Toggle in player</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="627"/>
-        <source>In cố định lên hình</source>
-        <translation>Burn into picture</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="651"/>
-        <source>Định dạng AVI không hỗ trợ phụ đề bật/tắt. Chọn &quot;In cố định lên hình&quot; để video có phụ đề.</source>
-        <translation>AVI does not support toggleable subtitles. Choose &quot;Burn into picture&quot; so the video has subtitles.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="652"/>
-        <source>Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn nhiều lần so với kiểu bật/tắt.</source>
-        <translation>Subtitles are drawn into the frames so they always show, but the video must be re-encoded — many times slower than the toggleable style.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="668"/>
-        <source>Âm thanh lồng tiếng dài hơn video %1 giây — phần cuối video sẽ đứng hình để giữ đủ lời thoại.</source>
-        <translation>The dub audio runs %1 seconds past the video — the end of the video will freeze to keep every spoken word.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="694"/>
-        <source>CÔNG CỤ AI · THEO THỨ TỰ</source>
-        <translation>AI TOOLS · IN ORDER</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="703"/>
-        <source>Không có tác vụ AI nào đang chạy.</source>
-        <translation>No AI task is running.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="719"/>
-        <source>AI Làm sạch phụ đề</source>
-        <translation>AI Clean subtitles</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="720"/>
-        <source>Bước 1 · Sửa chính tả và nhãn người nói trên toàn bộ phụ đề.</source>
-        <translation>Step 1 · Fix spelling and speaker labels across every cue.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="734"/>
-        <source>Bước 2 · Dịch phụ đề sang ngôn ngữ đích đã chọn.</source>
-        <translation>Step 2 · Translate subtitles into the chosen target language.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="747"/>
-        <source>Ngôn ngữ đích khi dịch</source>
-        <translation>Translation target language</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="763"/>
-        <source>AI Rút gọn khớp thời gian</source>
-        <translation>AI Shorten to fit timing</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="733"/>
-        <source>AI Dịch lồng tiếng</source>
-        <translation>AI Translate for dubbing</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="701"/>
-        <source>Hủy AI</source>
-        <translation>Cancel AI</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="967"/>
-        <source>Dài</source>
-        <translation>Long</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="992"/>
-        <source>Chỉnh sửa lời thoại phụ đề</source>
-        <translation>Edit subtitle line</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1026"/>
-        <source>Người nói</source>
-        <translation>Speaker</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1033"/>
-        <source>Lưu</source>
-        <translation>Save</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1338"/>
-        <source>Phân tách lại người nói</source>
-        <translation>Re-separate speakers</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1339"/>
-        <source>Chạy lại phân tách trên bản phụ đề hiện tại.</source>
-        <translation>Run speaker separation again on the current cues.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1386"/>
-        <source>Nghe mẫu</source>
-        <translation>Play sample</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1327"/>
-        <source>Phân vai giọng đọc theo người nói:</source>
-        <translation>Speaker voice cast:</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1411"/>
-        <source>Gán giọng đang chọn</source>
-        <translation>Assign selected voice</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1415"/>
-        <source>Chọn một giọng đọc trước khi gán.</source>
-        <translation>Choose a voice before assigning.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1428"/>
-        <source>Lấy mẫu giọng từ video</source>
-        <translation>Clone voice from video</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1088"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="388"/>
         <source>Chế độ:</source>
         <translation>Mode:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="386"/>
-        <source>Chưa có phụ đề nào. Chọn một cách để bắt đầu.</source>
-        <translation>No subtitles yet. Choose how to start.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="400"/>
-        <source>Video + tự động nhận dạng</source>
-        <translation>Video + automatic transcription</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="407"/>
-        <source>Cần mô hình Whisper trong Cài đặt › Mô hình AI. Hệ thống tự tạo phụ đề từ âm thanh.</source>
-        <translation>Requires a Whisper model in Settings › AI models. Subtitles are generated from the audio.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="418"/>
-        <source>Tệp phụ đề .srt</source>
-        <translation>.srt subtitle file</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="425"/>
-        <source>Cần tệp .srt có sẵn. Thời gian được giữ nguyên; giọng đọc dùng engine đang chọn.</source>
-        <translation>Requires an existing .srt file. Timing is preserved; narration uses the selected engine.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="437"/>
-        <source>Hoặc kéo thả tệp .srt / video vào đây.</source>
-        <translation>Or drag and drop an .srt / video file here.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="492"/>
-        <source>Tự tách người nói khi nhận dạng</source>
-        <translation>Separate speakers during transcription</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="494"/>
-        <source>Cần video để nhận dạng phụ đề.</source>
-        <translation>A video is required to transcribe subtitles.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="764"/>
-        <source>Bước 3 · Rút ngắn câu cho vừa tốc độ đọc tối đa.</source>
-        <translation>Step 3 · Shorten sentences to fit the maximum reading rate.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="783"/>
-        <source>ASR cần mô hình Whisper; AI cần máy chủ LLM tương thích OpenAI.</source>
-        <translation>ASR needs a Whisper model; AI needs an OpenAI-compatible LLM server.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="794"/>
-        <source>Mở Cài đặt › Mô hình</source>
-        <translation>Open Settings › Models</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="795"/>
-        <source>Mở phần cài đặt mô hình AI và nhận dạng giọng nói</source>
-        <translation>Open the AI model and speech-recognition settings</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1106"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="406"/>
         <source>Lồng tiếng (theo SRT)</source>
         <translation>Dub (follow SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1107"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="407"/>
         <source>Bản thoại tự nhiên</source>
         <translation>Natural dialogue</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1137"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="437"/>
         <source>Nén tối đa:</source>
         <translation>Max squeeze:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1199"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="499"/>
         <source>Giới hạn khoảng lặng (ms):</source>
         <translation>Silence cap (ms):</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1229"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="529"/>
         <source>Lệch (ms):</source>
         <translation>Offset (ms):</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1263"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="563"/>
         <source>Giọng đọc:</source>
         <translation>Voice:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="1120"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="420"/>
         <source>Gộp câu</source>
         <translation>Merge sentences</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitleCastPanel</name>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="45"/>
+        <source>Phân vai giọng đọc theo người nói:</source>
+        <translation>Speaker voice cast:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="56"/>
+        <source>Phân tách lại người nói</source>
+        <translation>Re-separate speakers</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="57"/>
+        <source>Chạy lại phân tách trên bản phụ đề hiện tại.</source>
+        <translation>Run speaker separation again on the current cues.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="104"/>
+        <source>Nghe mẫu</source>
+        <translation>Play sample</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="116"/>
+        <source>Giọng cho %1</source>
+        <translation>Voice for %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="129"/>
+        <source>Gán giọng đang chọn</source>
+        <translation>Assign selected voice</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="133"/>
+        <source>Chọn một giọng đọc trước khi gán.</source>
+        <translation>Choose a voice before assigning.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="146"/>
+        <source>Lấy mẫu giọng từ video</source>
+        <translation>Clone voice from video</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCastPanel.qml" line="151"/>
+        <source>Engine hiện tại không hỗ trợ nhân bản giọng.</source>
+        <translation>The current engine does not support voice cloning.</translation>
     </message>
 </context>
 <context>
@@ -5585,6 +5317,286 @@
         <location filename="../subtitle_controller.py" line="2776"/>
         <source>Đang dịch phụ đề khớp thời gian (LLM)…</source>
         <translation>Translating subtitles to fit timing (LLM)…</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitleCueEditor</name>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="25"/>
+        <source>Danh sách phụ đề</source>
+        <translation>Subtitle cue list</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="136"/>
+        <source>Dài</source>
+        <translation>Long</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="161"/>
+        <source>Chỉnh sửa lời thoại phụ đề</source>
+        <translation>Edit subtitle line</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="179"/>
+        <source>Lời thoại phụ đề</source>
+        <translation>Subtitle cue text</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="193"/>
+        <source>Người nói của phụ đề</source>
+        <translation>Subtitle cue speaker</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="195"/>
+        <source>Người nói</source>
+        <translation>Speaker</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="202"/>
+        <source>Lưu</source>
+        <translation>Save</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitlePreparePanel</name>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="30"/>
+        <source>Theo ngôn ngữ tổng hợp</source>
+        <translation>Use the synthesis language</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="55"/>
+        <source>CÔNG CỤ AI · THEO THỨ TỰ</source>
+        <translation>AI TOOLS · IN ORDER</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="62"/>
+        <source>Hủy AI</source>
+        <translation>Cancel AI</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="64"/>
+        <source>Không có tác vụ AI nào đang chạy.</source>
+        <translation>No AI task is running.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="80"/>
+        <source>AI Làm sạch phụ đề</source>
+        <translation>AI Clean subtitles</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="81"/>
+        <source>Bước 1 · Sửa chính tả và nhãn người nói trên toàn bộ phụ đề.</source>
+        <translation>Step 1 · Fix spelling and speaker labels across every cue.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="94"/>
+        <source>AI Dịch lồng tiếng</source>
+        <translation>AI Translate for dubbing</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="95"/>
+        <source>Bước 2 · Dịch phụ đề sang ngôn ngữ đích đã chọn.</source>
+        <translation>Step 2 · Translate subtitles into the chosen target language.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="108"/>
+        <source>Ngôn ngữ đích khi dịch</source>
+        <translation>Translation target language</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="124"/>
+        <source>AI Rút gọn khớp thời gian</source>
+        <translation>AI Shorten to fit timing</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="125"/>
+        <source>Bước 3 · Rút ngắn câu cho vừa tốc độ đọc tối đa.</source>
+        <translation>Step 3 · Shorten sentences to fit the maximum reading rate.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="144"/>
+        <source>ASR cần mô hình Whisper; AI cần máy chủ LLM tương thích OpenAI.</source>
+        <translation>ASR needs a Whisper model; AI needs an OpenAI-compatible LLM server.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="155"/>
+        <source>Mở Cài đặt › Mô hình</source>
+        <translation>Open Settings › Models</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="156"/>
+        <source>Mở phần cài đặt mô hình AI và nhận dạng giọng nói</source>
+        <translation>Open the AI model and speech-recognition settings</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="182"/>
+        <source>Tiến độ tác vụ AI</source>
+        <translation>AI task progress</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitleSourcePanel</name>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="67"/>
+        <source>Chọn tệp phụ đề</source>
+        <translation>Choose a subtitle file</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="68"/>
+        <source>Phụ đề SubRip (*.srt)</source>
+        <translation>SubRip subtitles (*.srt)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="68"/>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="83"/>
+        <source>Tất cả tệp (*)</source>
+        <translation>All files (*)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="80"/>
+        <source>Chọn tệp video</source>
+        <translation>Choose a video file</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="82"/>
+        <source>Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)</source>
+        <translation>Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="115"/>
+        <source>Đã chọn video &apos;%1&apos;. Nhấn &apos;Tạo phụ đề (ASR)&apos; bên dưới hoặc nhập tệp .srt.</source>
+        <translation>Selected video &apos;%1&apos;. Click &apos;Transcribe (ASR)&apos; below or import an .srt file.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="116"/>
+        <source>Chưa có phụ đề nào. Chọn một cách để bắt đầu.</source>
+        <translation>No subtitles yet. Choose how to start.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="130"/>
+        <source>Video + tự động nhận dạng</source>
+        <translation>Video + automatic transcription</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="137"/>
+        <source>Cần mô hình Whisper trong Cài đặt › Mô hình AI. Hệ thống tự tạo phụ đề từ âm thanh.</source>
+        <translation>Requires a Whisper model in Settings › AI models. Subtitles are generated from the audio.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="148"/>
+        <source>Tệp phụ đề .srt</source>
+        <translation>.srt subtitle file</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="155"/>
+        <source>Cần tệp .srt có sẵn. Thời gian được giữ nguyên; giọng đọc dùng engine đang chọn.</source>
+        <translation>Requires an existing .srt file. Timing is preserved; narration uses the selected engine.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="167"/>
+        <source>Hoặc kéo thả tệp .srt / video vào đây.</source>
+        <translation>Or drag and drop an .srt / video file here.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="210"/>
+        <source>Video: %1</source>
+        <translation>Video: %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="222"/>
+        <source>Tự tách người nói khi nhận dạng</source>
+        <translation>Separate speakers during transcription</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="224"/>
+        <source>Cần video để nhận dạng phụ đề.</source>
+        <translation>A video is required to transcribe subtitles.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="237"/>
+        <source>Tạo phụ đề (ASR)</source>
+        <translation>Transcribe (ASR)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="238"/>
+        <source>Nhận dạng phụ đề từ video bằng mô hình Whisper</source>
+        <translation>Transcribe subtitles from the video with a Whisper model</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="251"/>
+        <source>Bỏ đính kèm video</source>
+        <translation>Detach video</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="271"/>
+        <source>Âm thanh video:</source>
+        <translation>Video audio:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="279"/>
+        <source>Âm thanh video</source>
+        <translation>Video audio</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="285"/>
+        <source>Thay thế âm gốc</source>
+        <translation>Replace original audio</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="286"/>
+        <source>Giữ nhạc nền (Ducking)</source>
+        <translation>Keep background audio (Ducking)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="301"/>
+        <source>Âm nền (dB):</source>
+        <translation>Background gain (dB):</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="309"/>
+        <source>Âm nền (dB)</source>
+        <translation>Background level (dB)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="327"/>
+        <source>Nhúng phụ đề vào video</source>
+        <translation>Embed subtitles in video</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="342"/>
+        <source>Kiểu phụ đề:</source>
+        <translation>Subtitle style:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="350"/>
+        <source>Kiểu phụ đề</source>
+        <translation>Subtitle mode</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="356"/>
+        <source>Bật/tắt trong trình phát</source>
+        <translation>Toggle in player</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="357"/>
+        <source>In cố định lên hình</source>
+        <translation>Burn into picture</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="381"/>
+        <source>Định dạng AVI không hỗ trợ phụ đề bật/tắt. Chọn &quot;In cố định lên hình&quot; để video có phụ đề.</source>
+        <translation>AVI does not support toggleable subtitles. Choose &quot;Burn into picture&quot; so the video has subtitles.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="382"/>
+        <source>Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn nhiều lần so với kiểu bật/tắt.</source>
+        <translation>Subtitles are drawn into the frames so they always show, but the video must be re-encoded — many times slower than the toggleable style.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleSourcePanel.qml" line="398"/>
+        <source>Âm thanh lồng tiếng dài hơn video %1 giây — phần cuối video sẽ đứng hình để giữ đủ lời thoại.</source>
+        <translation>The dub audio runs %1 seconds past the video — the end of the video will freeze to keep every spoken word.</translation>
     </message>
 </context>
 <context>

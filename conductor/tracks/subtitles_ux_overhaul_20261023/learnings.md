@@ -97,3 +97,13 @@ Key measured facts to re-verify rather than assume:
   - **Gotchas:** Offscreen Qt does not deliver `forceActiveFocus` to the window's `activeFocusItem`, so a keyboard test must `app.sendEvent(item, QKeyEvent(...))`; `QTest.keyClick` only accepts a QWidget/QWindow.
   - **Gotchas:** `findChildren` cannot see Repeater delegates; `save_variant`/speaker pickers need `ifind`. Counting "visible primaries" must (a) obey the visual-parent visibility chain and (b) be scoped to the tab — `Main.qml`'s global `modelDownloadButton` is also primary.
   - **Context:** The plan's "three inline TextFields" had become two after Task 3.4 replaced the speaker field with a picker; the guard test asserts the absence of the pattern, not the count.
+
+## [2026-10-23] - Phase 5 / Task 5.1: Component extraction
+
+- **Implemented:** `SubtitleCard.qml` (1,473 → 646 lines) now composes four extracted components: `SubtitleSourcePanel` (empty launcher, file dialogs, video/ASR bar), `SubtitlePreparePanel` (ordered AI group, prerequisites link, progress), `SubtitleCueEditor` (cue list, keyboard seek, inline editing), `SubtitleCastPanel` (speaker → voice mapping). Each takes its gate state through properties (`available`/`busy`/`aiBusy`/`exporting`/reasons) and keeps its `objectName`s. The card keeps the public drop seam, which forwards to the panel.
+- **Files changed:** four new components, both `qmldir`s, `SubtitleCard.qml`, `tests/smoke/test_ui_tabs.py`, `tests/unit/test_theme.py`, new `tests/unit/test_subtitle_components.py`.
+- **Learnings:**
+  - **Gotchas:** A `ColumnLayout` child that keeps a non-zero height after its own children turn invisible does not always shrink on a stage switch; the stale height eats the slack that used to flow into the cue list. Bind the panel's own `visible` to "this stage owns me" so the parent layout drops the whole subtree.
+  - **Gotchas:** `findChildren(QObject)` from the tab root reaches dialogs owned by a component (FileDialog is not an Item) but still misses Repeater delegates; the NFR-1 contract check must union `findChildren` with `item_walk`.
+  - **Patterns:** Standalone instantiation is a cheap real test when the components read context globals: a stub controller with the exact Q_PROPERTY/Slot surface plus a `QQmlEngine` in a subprocess catches borrowed ids and missing imports without loading the app.
+  - **Gotchas:** `Layout.fillHeight` on a composite instance applies to its root item normally; the earlier "not filling" symptom was the stale-height sibling, not the attached property.

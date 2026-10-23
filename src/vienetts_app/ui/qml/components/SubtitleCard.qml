@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import ".."
 import "."
@@ -137,65 +136,15 @@ AppCard {
             root.stage = root.hasTrack ? "produce" : "prepare";
     }
 
-    // QUrl → local path string for the controller (Windows file:///C:/… fix).
-    function toLocalPath(url) {
-        const s = url.toString();
-        if (!s.startsWith("file://"))
-            return s;
-        let path = decodeURIComponent(s.substring(7));
-        if (/^\/[A-Za-z]:\//.test(path))
-            path = path.substring(1);
-        return path;
+    // FR-2.4: the source panel owns drop routing; this keeps the tab-level
+    // seam that the smoke driver and future hosts call.
+    function handleDroppedUrls(urls) {
+        return sourcePanel.handleDroppedUrls(urls);
     }
 
     function exportDir() {
         return (typeof controller !== "undefined" && controller && controller.outputDir)
             ? controller.outputDir : "";
-    }
-
-    // FR-2.4: one drop seam for the empty launcher. `.srt` imports cues;
-    // anything else is treated as the video to transcribe. Returns whether a
-    // URL was accepted so the smoke driver can assert the routing.
-    function handleDroppedUrls(urls) {
-        if (!root.available || !urls || urls.length === 0)
-            return false;
-        const path = root.toLocalPath(urls[0]);
-        if (path === "")
-            return false;
-        if (/\.srt$/i.test(path))
-            subtitleController.importSrt(path);
-        else
-            subtitleController.importVideo(path);
-        return true;
-    }
-
-    FileDialog {
-        id: subtitleImportDialog
-
-        objectName: "subtitleImportDialog"
-        fileMode: FileDialog.OpenFile
-        title: qsTr("Chọn tệp phụ đề")
-        nameFilters: [qsTr("Phụ đề SubRip (*.srt)"), qsTr("Tất cả tệp (*)")]
-        onAccepted: {
-            if (root.available)
-                subtitleController.importSrt(root.toLocalPath(selectedFile));
-        }
-    }
-
-    FileDialog {
-        id: subtitleVideoDialog
-
-        objectName: "subtitleVideoDialog"
-        fileMode: FileDialog.OpenFile
-        title: qsTr("Chọn tệp video")
-        nameFilters: [
-            qsTr("Video (*.mp4 *.mkv *.mov *.webm *.avi *.m4v)"),
-            qsTr("Tất cả tệp (*)")
-        ]
-        onAccepted: {
-            if (root.available)
-                subtitleController.importVideo(root.toLocalPath(selectedFile));
-        }
     }
 
     // FR-1.1: every render-invalidating action (policy knob, cue edit, AI
@@ -298,7 +247,7 @@ AppCard {
             text: qsTr("Nhập Video…")
             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
             disabledReason: root.busyReason()
-            onClicked: subtitleVideoDialog.open()
+            onClicked: sourcePanel.openImportVideo()
         }
 
         AppButton {
@@ -311,7 +260,7 @@ AppCard {
             text: qsTr("Nhập .srt…")
             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
             disabledReason: root.busyReason()
-            onClicked: subtitleImportDialog.open()
+            onClicked: sourcePanel.openImportSrt()
         }
     }
 
@@ -356,470 +305,32 @@ AppCard {
             wrapMode: Text.WordWrap
         }
 
-        // ── Empty state: two explicit entry choices (FR-2.4) ───────────────
-        Rectangle {
-            objectName: "subtitleEmptyDropZone"
+        SubtitleSourcePanel {
+            id: sourcePanel
+
+            available: root.available
+            loaded: root.loaded
+            stageName: root.stage
+            hasVideo: root.hasVideo
+            busy: root.busy
+            aiBusy: root.aiBusy
+            exporting: root.exporting
+            videoName: root.available ? subtitleController.videoName : ""
+            busyReason: root.busyReason()
+            asrReason: root.aiActionReason("asr")
             Layout.fillWidth: true
-            visible: !root.loaded && root.stage === "source"
-            implicitHeight: emptyLauncher.implicitHeight + Theme.spacingSm * 2
-            color: "transparent"
-            radius: Theme.radiusMd
-            border.width: emptyDrop.containsDrag ? 2 : 0
-            border.color: Theme.accent
-
-            ColumnLayout {
-                id: emptyLauncher
-
-                objectName: "subtitleEmptyLauncher"
-                anchors.fill: parent
-                anchors.margins: Theme.spacingSm
-                spacing: Theme.spacingSm
-
-                Label {
-                    objectName: "subtitleEmptyHint"
-                    Layout.fillWidth: true
-                    visible: !root.loaded && root.stage === "source"
-                    text: root.hasVideo
-                        ? qsTr("Đã chọn video '%1'. Nhấn 'Tạo phụ đề (ASR)' bên dưới hoặc nhập tệp .srt.").arg(
-                            root.available ? subtitleController.videoName : "")
-                        : qsTr("Chưa có phụ đề nào. Chọn một cách để bắt đầu.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                    wrapMode: Text.WordWrap
-                }
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    AppCard {
-                        objectName: "subtitleEmptyVideoCard"
-                        width: Math.max(220, (emptyLauncher.width - Theme.spacingSm * 2) / 2)
-                        title: qsTr("Video + tự động nhận dạng")
-                        elevation: 0
-                        clickable: true
-                        onCardClicked: subtitleVideoDialog.open()
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Cần mô hình Whisper trong Cài đặt › Mô hình AI. Hệ thống tự tạo phụ đề từ âm thanh.")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    AppCard {
-                        objectName: "subtitleEmptySrtCard"
-                        width: Math.max(220, (emptyLauncher.width - Theme.spacingSm * 2) / 2)
-                        title: qsTr("Tệp phụ đề .srt")
-                        elevation: 0
-                        clickable: true
-                        onCardClicked: subtitleImportDialog.open()
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Cần tệp .srt có sẵn. Thời gian được giữ nguyên; giọng đọc dùng engine đang chọn.")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-
-                Label {
-                    objectName: "subtitleEmptyDropHint"
-                    Layout.fillWidth: true
-                    text: qsTr("Hoặc kéo thả tệp .srt / video vào đây.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.WordWrap
-                }
-            }
-
-            DropArea {
-                id: emptyDrop
-
-                objectName: "subtitleEmptyDropArea"
-                anchors.fill: parent
-                enabled: !root.loaded && root.stage === "source"
-                onDropped: (drop) => root.handleDroppedUrls(drop.urls)
-            }
         }
 
-        // ── Video attachment & ASR bar ──────────────────────────────────────
-        AppCard {
-            id: videoBar
-
-            objectName: "subtitleVideoBar"
+        SubtitlePreparePanel {
+            shown: root.loaded && root.stage === "prepare"
+            available: root.available
+            busy: root.busy
+            aiBusy: root.aiBusy
+            exporting: root.exporting
+            llmReason: root.aiActionReason("llm")
+            targetLanguage: root.translateTargetLanguage
+            onLanguageSelected: (code) => { root.translateTargetLanguage = code; }
             Layout.fillWidth: true
-            visible: root.hasVideo && root.stage === "source"
-            elevation: 0
-            cardColor: Theme.surfaceAlt
-            cardBorderColor: Theme.borderSubtle
-            cardPadding: Theme.spacingSm
-
-            ColumnLayout {
-                id: videoBarLayout
-
-                Layout.fillWidth: true
-                spacing: Theme.spacingXs
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    Label {
-                        objectName: "subtitleVideoLabel"
-                        Layout.fillWidth: true
-                        text: qsTr("Video: %1").arg(root.available ? subtitleController.videoName : "")
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        font.weight: Theme.fontWeightMedium
-                        elide: Text.ElideMiddle
-                    }
-
-                    AppToggle {
-                        id: diarizeToggle
-
-                        objectName: "subtitleDiarizeToggle"
-                        text: qsTr("Tự tách người nói khi nhận dạng")
-                        disabledReason: root.hasVideo
-                            ? root.busyReason() : qsTr("Cần video để nhận dạng phụ đề.")
-                        // Opt-in: diarization adds tens of seconds on CPU and,
-                        // without the Nemotron GGUF installed, falls back to the
-                        // acoustic heuristic. The warning now explains that.
-                        checked: false
-                        enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    }
-
-                    AppButton {
-                        objectName: "subtitleTranscribeButton"
-                        variant: root.loaded ? "secondary" : "primary"
-                        size: "sm"
-                        iconKind: "wave"
-                        text: qsTr("Tạo phụ đề (ASR)")
-                        tooltipText: qsTr("Nhận dạng phụ đề từ video bằng mô hình Whisper")
-                        enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                        disabledReason: root.aiActionReason("asr")
-                        onClicked: {
-                            if (root.available)
-                                subtitleController.transcribeVideo(diarizeToggle.checked);
-                        }
-                    }
-
-                    AppIconButton {
-                        objectName: "subtitleClearVideoButton"
-                        size: "sm"
-                        iconKind: "close"
-                        tooltipText: qsTr("Bỏ đính kèm video")
-                        accessibleLabel: tooltipText
-                        enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                        disabledReason: root.busyReason()
-                        onClicked: {
-                            if (root.available)
-                                subtitleController.clearVideo();
-                        }
-                    }
-                }
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-                    visible: root.loaded
-
-                    RowLayout {
-                        spacing: Theme.spacingXs
-
-                        Label {
-                            text: qsTr("Âm thanh video:")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-
-                        AppCombo {
-                            objectName: "subtitleVideoMixCombo"
-                            accessibleLabel: qsTr("Âm thanh video")
-                            textRole: "label"
-                            comboWidth: 210
-                            enabled: root.available && !root.busy && !root.exporting
-                            disabledReason: root.busyReason()
-                            model: [
-                                { label: qsTr("Thay thế âm gốc"), value: "replace" },
-                                { label: qsTr("Giữ nhạc nền (Ducking)"), value: "duck" }
-                            ]
-                            currentIndex: root.available && subtitleController.videoMixMode === "duck" ? 1 : 0
-                            onActivated: function (index) {
-                                if (root.available)
-                                    subtitleController.videoMixMode = model[index].value;
-                            }
-                        }
-                    }
-
-                    RowLayout {
-                        spacing: Theme.spacingXs
-                        visible: root.available && subtitleController.videoMixMode === "duck"
-
-                        Label {
-                            text: qsTr("Âm nền (dB):")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-
-                        AppNumberField {
-                            objectName: "subtitleVideoBgGainField"
-                            accessibleLabel: qsTr("Âm nền (dB)")
-                            enabled: root.available && !root.busy && !root.exporting
-                            disabledReason: root.busyReason()
-                            decimals: 0
-                            scaleFactor: 1
-                            from: -36
-                            to: 0
-                            stepSize: 2
-                            value: root.available ? subtitleController.videoBgGainDb : -16
-                            onValueModified: {
-                                if (root.available)
-                                    subtitleController.videoBgGainDb = value;
-                            }
-                        }
-                    }
-
-                    AppToggle {
-                        objectName: "subtitleEmbedSrtToggle"
-                        text: qsTr("Nhúng phụ đề vào video")
-                        enabled: root.available && !root.busy && !root.exporting
-                        disabledReason: root.busyReason()
-                        checked: root.available ? subtitleController.embedSubtitles : true
-                        onToggled: {
-                            if (root.available)
-                                subtitleController.embedSubtitles = checked;
-                        }
-                    }
-
-                    RowLayout {
-                        spacing: Theme.spacingXs
-                        visible: root.available && subtitleController.embedSubtitles
-
-                        Label {
-                            text: qsTr("Kiểu phụ đề:")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-
-                        AppCombo {
-                            objectName: "subtitleEmbedModeCombo"
-                            accessibleLabel: qsTr("Kiểu phụ đề")
-                            textRole: "label"
-                            comboWidth: 210
-                            enabled: root.available && !root.busy && !root.exporting
-                            disabledReason: root.busyReason()
-                            model: [
-                                { label: qsTr("Bật/tắt trong trình phát"), value: "soft" },
-                                { label: qsTr("In cố định lên hình"), value: "burn" }
-                            ]
-                            currentIndex: root.available && subtitleController.subtitleEmbedMode === "burn" ? 1 : 0
-                            onActivated: function (index) {
-                                if (root.available)
-                                    subtitleController.subtitleEmbedMode = model[index].value;
-                            }
-                        }
-                    }
-                }
-
-                Label {
-                    id: embedHint
-
-                    // Burn-in re-encodes (slow); an AVI cannot carry a soft
-                    // track, so its soft mode would export no subtitles at all.
-                    readonly property bool burn: root.available && subtitleController.subtitleEmbedMode === "burn"
-                    readonly property bool softUnsupported: root.available && !burn
-                        && subtitleController.softSubtitlesSupported === false
-
-                    objectName: "subtitleEmbedHint"
-                    Layout.fillWidth: true
-                    visible: root.loaded && subtitleController.embedSubtitles && (burn || softUnsupported)
-                    text: softUnsupported
-                        ? qsTr("Định dạng AVI không hỗ trợ phụ đề bật/tắt. Chọn \"In cố định lên hình\" để video có phụ đề.")
-                        : qsTr("Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn nhiều lần so với kiểu bật/tắt.")
-                    color: softUnsupported ? Theme.warningText : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.WordWrap
-                }
-
-                Label {
-                    id: overrunHint
-
-                    // The exported file keeps every spoken word, so a dub that
-                    // ran past the picture leaves a frozen tail. Say so up front.
-                    objectName: "subtitleOverrunHint"
-                    Layout.fillWidth: true
-                    visible: root.loaded && root.hasVideo
-                        && root.available && subtitleController.videoOverrunMs > 0
-                    text: qsTr("Âm thanh lồng tiếng dài hơn video %1 giây — phần cuối video sẽ đứng hình để giữ đủ lời thoại.")
-                        .arg(((root.available ? subtitleController.videoOverrunMs : 0) / 1000).toFixed(1))
-                    color: Theme.warningText
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.WordWrap
-                }
-            }
-        }
-
-        // ── AI refinement group: clean → translate → fit (FR-3.1/3.2) ─────
-        ColumnLayout {
-            id: aiBar
-
-            objectName: "subtitleAiBar"
-            Layout.fillWidth: true
-            spacing: Theme.spacingXs
-            visible: root.loaded && root.stage === "prepare"
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
-
-                SectionLabel {
-                    objectName: "subtitleAiGroupLabel"
-                    Layout.fillWidth: true
-                    text: qsTr("CÔNG CỤ AI · THEO THỨ TỰ")
-                }
-
-                AppButton {
-                    objectName: "subtitleCancelAiButton"
-                    variant: "danger"
-                    size: "sm"
-                    text: qsTr("Hủy AI")
-                    enabled: root.aiBusy
-                    disabledReason: root.aiBusy ? "" : qsTr("Không có tác vụ AI nào đang chạy.")
-                    onClicked: {
-                        if (root.available)
-                            subtitleController.cancelAiTask();
-                    }
-                }
-            }
-
-            Flow {
-                Layout.fillWidth: true
-                spacing: Theme.spacingXs
-
-                AppButton {
-                    objectName: "subtitleRefineAsrButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("AI Làm sạch phụ đề")
-                    tooltipText: qsTr("Bước 1 · Sửa chính tả và nhãn người nói trên toàn bộ phụ đề.")
-                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    disabledReason: root.aiActionReason("llm")
-                    onClicked: {
-                        if (root.available)
-                            subtitleController.refineWithLlm("refine_asr", "");
-                    }
-                }
-
-                AppButton {
-                    objectName: "subtitleTranslateDubButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("AI Dịch lồng tiếng")
-                    tooltipText: qsTr("Bước 2 · Dịch phụ đề sang ngôn ngữ đích đã chọn.")
-                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    disabledReason: root.aiActionReason("llm")
-                    onClicked: {
-                        if (root.available)
-                            subtitleController.refineWithLlm(
-                                "translate_dub", root.translateTargetLanguage);
-                    }
-                }
-
-                AppCombo {
-                    objectName: "subtitleTranslateLanguageCombo"
-                    comboWidth: 200
-                    accessibleLabel: qsTr("Ngôn ngữ đích khi dịch")
-                    textRole: "label"
-                    model: root.translateLanguageOptions
-                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    currentIndex: root.translateLanguageIndex
-                    onActivated: function (index) {
-                        const rows = root.translateLanguageOptions;
-                        if (index >= 0 && index < rows.length)
-                            root.translateTargetLanguage = rows[index].code;
-                    }
-                }
-
-                AppButton {
-                    objectName: "subtitleFitTimingButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("AI Rút gọn khớp thời gian")
-                    tooltipText: qsTr("Bước 3 · Rút ngắn câu cho vừa tốc độ đọc tối đa.")
-                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    disabledReason: root.aiActionReason("llm")
-                    onClicked: {
-                        if (root.available)
-                            subtitleController.refineWithLlm("fit_timing", "");
-                    }
-                }
-            }
-
-            // FR-3.5: the AI prerequisites live in one named place with a
-            // deep-link, instead of being discovered only when a run fails.
-            RowLayout {
-                objectName: "subtitleAiPrereqRow"
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
-
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("ASR cần mô hình Whisper; AI cần máy chủ LLM tương thích OpenAI.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.WordWrap
-                }
-
-                AppButton {
-                    objectName: "subtitleAiSettingsButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("Mở Cài đặt › Mô hình")
-                    tooltipText: qsTr("Mở phần cài đặt mô hình AI và nhận dạng giọng nói")
-                    onClicked: {
-                        if (typeof bridge !== "undefined" && bridge !== null)
-                            bridge.setCurrentTab("settings");
-                    }
-                }
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            visible: root.aiBusy && root.stage === "prepare"
-            spacing: Theme.spacingSm
-
-            Label {
-                objectName: "subtitleAiStageLabel"
-                Layout.fillWidth: true
-                text: root.available ? subtitleController.aiStageText : ""
-                color: Theme.accent
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-            }
-
-            AppProgressBar {
-                objectName: "subtitleAiProgressBar"
-                Layout.preferredWidth: 160
-                accessibleLabel: qsTr("Tiến độ tác vụ AI")
-                value: root.available ? subtitleController.aiProgress : 0.0
-            }
         }
 
         // ── Main Workspace: 2 columns on wide windows (Cue list | Timing & Voice) ──
@@ -832,226 +343,16 @@ AppCard {
             rowSpacing: Theme.spacingSm
 
             // ── Left column: Cue list ──────────────────────────────────────
-            ListView {
-                id: cueList
-
-                objectName: "subtitleCueList"
+            SubtitleCueEditor {
+                shown: root.loaded
+                available: root.available
+                busy: root.busy
+                aiBusy: root.aiBusy
+                exporting: root.exporting
+                disabledReason: root.busyReason()
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                // Never collapse below three rows (FR-2.5); the viewport
-                // height above that flows straight into the list.
                 Layout.minimumHeight: 180
-                visible: root.loaded
-                clip: true
-                // FR-4.5: the list is a Tab stop with an announced role, and
-                // Up/Down move the cue selection *and* seek to it.
-                focus: true
-                activeFocusOnTab: true
-                Accessible.role: Accessible.List
-                Accessible.name: qsTr("Danh sách phụ đề")
-                Keys.onPressed: (event) => {
-                    if (event.key !== Qt.Key_Up && event.key !== Qt.Key_Down)
-                        return;
-                    const delta = event.key === Qt.Key_Down ? 1 : -1;
-                    const next = Math.max(0, Math.min(cueList.count - 1,
-                        cueList.currentIndex + delta));
-                    if (next !== cueList.currentIndex) {
-                        cueList.currentIndex = next;
-                        if (root.available)
-                            subtitleController.seekToCue(next);
-                    }
-                    event.accepted = true;
-                }
-                // Row-level model: rows keep their delegates across updates.
-                model: root.available ? subtitleController.cueModel : null
-                boundsBehavior: Flickable.StopAtBounds
-                spacing: Theme.spacingXs
-
-                ScrollBar.vertical: ScrollBar {
-                    objectName: "subtitleCueScrollBar"
-                    policy: ScrollBar.AsNeeded
-                }
-
-                delegate: Rectangle {
-                    id: cueRowRoot
-
-                    required property var modelData
-                    required property int index
-                    property bool editing: false
-
-                    // The highlight follows subtitleController.activeCue — the
-                    // row payload stays stable (no per-row `active` flag), so a
-                    // cue transition never rebuilds the list.
-                    readonly property bool active: root.available
-                        && index === subtitleController.activeCue
-
-                    objectName: "subtitleCueRow"
-                    width: cueList.width - (cueList.ScrollBar.vertical && cueList.ScrollBar.vertical.visible ? 8 : 0)
-                    implicitHeight: rowLayout.implicitHeight + 6
-                    radius: Theme.radiusSm
-                    color: active ? Theme.accentSubtle : "transparent"
-                    border.width: 1
-                    border.color: active ? Theme.accent : Theme.borderSubtle
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (root.available)
-                                subtitleController.seekToCue(index);
-                        }
-                    }
-
-                    ColumnLayout {
-                        id: rowLayout
-
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.spacingSm + 2
-                        anchors.rightMargin: Theme.spacingXs
-                        anchors.topMargin: 3
-                        anchors.bottomMargin: 3
-                        spacing: Theme.spacingXs
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXs
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignVCenter
-                                spacing: 2
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingXs
-
-                                    Label {
-                                        text: (modelData.index !== undefined ? modelData.index : (index + 1)) + "."
-                                        color: Theme.textMuted
-                                        font.family: Theme.fontFamily
-                                        font.pixelSize: Theme.fontSizeXs
-                                        font.weight: Theme.fontWeightMedium
-                                    }
-
-                                    Label {
-                                        text: modelData.startLabel + " → " + modelData.endLabel
-                                        color: active ? Theme.accent : Theme.textMuted
-                                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                        font.pixelSize: Theme.fontSizeXs
-                                    }
-
-                                    StatusBadge {
-                                        objectName: "subtitleCueSpeakerBadge"
-                                        visible: Boolean(modelData.speaker)
-                                        status: "info"
-                                        dotVisible: false
-                                        text: modelData.speaker || ""
-                                        customPadding: Theme.spacingXs
-                                    }
-
-                                    StatusBadge {
-                                        objectName: "subtitleCueFitBadge"
-                                        visible: Boolean(
-                                            (modelData.overflowMs && modelData.overflowMs > 0)
-                                            || (modelData.fitRate && modelData.fitRate > 1.02)
-                                            || modelData.overBudget
-                                        )
-                                        status: ((modelData.overflowMs && modelData.overflowMs > 0)
-                                            || modelData.overBudget) ? "warning" : "info"
-                                        dotVisible: false
-                                        text: (modelData.overflowMs && modelData.overflowMs > 0)
-                                            ? ("+" + modelData.overflowMs + " ms")
-                                            : (modelData.fitRate && modelData.fitRate > 1.02)
-                                                ? (Number(modelData.fitRate).toFixed(2) + "×")
-                                                : qsTr("Dài")
-                                        customPadding: Theme.spacingXs
-                                    }
-
-                                    Item { Layout.fillWidth: true }
-                                }
-
-                                Label {
-                                    Layout.fillWidth: true
-                                    visible: !cueRowRoot.editing
-                                    text: modelData.text
-                                    color: Theme.text
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeSm
-                                    wrapMode: Text.WordWrap
-                                }
-                            }
-
-                            AppIconButton {
-                                objectName: "subtitleCueEditButton"
-                                Layout.alignment: Qt.AlignVCenter
-                                size: "sm"
-                                iconKind: cueRowRoot.editing ? "close" : "edit"
-                                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                                disabledReason: root.busyReason()
-                                tooltipText: qsTr("Chỉnh sửa lời thoại phụ đề")
-                                accessibleLabel: tooltipText
-                                onClicked: {
-                                    cueRowRoot.editing = !cueRowRoot.editing;
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: cueRowRoot.editing
-                            spacing: Theme.spacingXs
-
-                            AppTextField {
-                                id: cueEditTextField
-
-                                objectName: "subtitleCueEditField"
-                                Layout.fillWidth: true
-                                accessibleLabel: qsTr("Lời thoại phụ đề")
-                                text: modelData.text || ""
-                                onAccepted: {
-                                    if (root.available && subtitleController.updateCue(
-                                            index, cueEditTextField.text, cueEditSpkField.text))
-                                        cueRowRoot.editing = false;
-                                }
-                            }
-
-                            AppTextField {
-                                id: cueEditSpkField
-
-                                objectName: "subtitleCueEditSpeakerField"
-                                Layout.preferredWidth: 110
-                                accessibleLabel: qsTr("Người nói của phụ đề")
-                                text: modelData.speaker || ""
-                                placeholderText: qsTr("Người nói")
-                            }
-
-                            AppButton {
-                                objectName: "subtitleCueSaveEditButton"
-                                variant: "secondary"
-                                size: "sm"
-                                text: qsTr("Lưu")
-                                onClicked: {
-                                    if (root.available && subtitleController.updateCue(
-                                            index, cueEditTextField.text, cueEditSpkField.text))
-                                        cueRowRoot.editing = false;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Follow the active cue during playback; activeCueChanged fires
-                // only on transitions, so the user's scroll is never reset by
-                // word-level updates and the model is never rebuilt.
-                Connections {
-                    target: root.available ? subtitleController : null
-
-                    function onActiveCueChanged() {
-                        if (root.available && subtitleController.activeCue >= 0)
-                            cueList.positionViewAtIndex(
-                                subtitleController.activeCue, ListView.Contain);
-                    }
-                }
             }
 
             // ── Right column: Fit policy & Voice ───────────────────────────
@@ -1299,145 +600,17 @@ AppCard {
             }
         }
 
-        // ── Speaker Cast Mapping Bar (full width so each speaker fits 1 row) ──
-        AppCard {
-            id: speakerBar
-
-            objectName: "subtitleSpeakerBar"
+        SubtitleCastPanel {
+            shown: root.loaded && root.hasSpeakers && root.stage !== "source"
+            available: root.available
+            busy: root.busy
+            aiBusy: root.aiBusy
+            exporting: root.exporting
+            hasVideo: root.hasVideo
+            busyReason: root.busyReason()
+            diarizeReason: root.aiActionReason("diarize")
+            currentVoice: voicePicker.effectiveVoice
             Layout.fillWidth: true
-            visible: root.loaded && root.hasSpeakers && root.stage !== "source"
-            elevation: 0
-            cardColor: Theme.surfaceAlt
-            cardBorderColor: Theme.borderSubtle
-            cardPadding: Theme.spacingSm
-
-            ColumnLayout {
-                id: speakerBarCol
-
-                Layout.fillWidth: true
-                spacing: Theme.spacingXxs
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Phân vai giọng đọc theo người nói:")
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    AppButton {
-                        objectName: "subtitleDiarizeButton"
-                        variant: "secondary"
-                        size: "sm"
-                        text: qsTr("Phân tách lại người nói")
-                        tooltipText: qsTr("Chạy lại phân tách trên bản phụ đề hiện tại.")
-                        enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                            && root.hasVideo
-                        disabledReason: root.aiActionReason("diarize")
-                        onClicked: {
-                            if (root.available)
-                                subtitleController.runDiarization();
-                        }
-                    }
-                }
-
-                Repeater {
-                    model: root.available ? subtitleController.speakers : []
-
-                    delegate: Flow {
-                        id: speakerRow
-
-                        required property var modelData
-                        required property int index
-
-                        objectName: "subtitleSpeakerRow"
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        Rectangle {
-                            radius: Theme.radiusSm
-                            color: Theme.accentSubtle
-                            implicitWidth: spkBadgeLbl.implicitWidth + Theme.spacingSm * 2
-                            implicitHeight: Theme.controlHeightSm
-
-                            Label {
-                                id: spkBadgeLbl
-
-                                anchors.centerIn: parent
-                                text: modelData.label + " (" + modelData.cueCount + ")"
-                                color: Theme.accent
-                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightMedium
-                            }
-                        }
-
-                        AppButton {
-                            objectName: "subtitleSpeakerSampleButton"
-                            variant: "secondary"
-                            size: "sm"
-                            visible: root.hasVideo
-                            text: qsTr("Nghe mẫu")
-                            enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                            disabledReason: root.busyReason()
-                            onClicked: {
-                                if (root.available)
-                                    subtitleController.playSpeakerSample(modelData.id);
-                            }
-                        }
-
-                        VoicePicker {
-                            objectName: "subtitleSpeakerVoicePicker"
-                            compact: true
-                            fieldLabel: qsTr("Giọng cho %1").arg(modelData.label)
-                            selectedVoice: modelData.voice || ""
-                            enabled: root.available && !root.busy && !root.exporting
-                            onVoiceActivated: (id) => {
-                                if (root.available && id !== "")
-                                    subtitleController.setSpeakerVoice(modelData.id, id);
-                            }
-                        }
-
-                        AppButton {
-                            objectName: "subtitleUseCurrentVoiceForSpeakerButton"
-                            variant: "secondary"
-                            size: "sm"
-                            text: qsTr("Gán giọng đang chọn")
-                            enabled: root.available && !root.busy && !root.exporting
-                                && voicePicker.effectiveVoice !== ""
-                            disabledReason: root.busyReason() !== ""
-                                ? root.busyReason() : qsTr("Chọn một giọng đọc trước khi gán.")
-                            onClicked: {
-                                if (root.available)
-                                    subtitleController.setSpeakerVoice(
-                                        modelData.id, voicePicker.effectiveVoice);
-                            }
-                        }
-
-                        AppButton {
-                            objectName: "subtitleCloneSpeakerButton"
-                            variant: "secondary"
-                            size: "sm"
-                            visible: root.hasVideo
-                            text: qsTr("Lấy mẫu giọng từ video")
-                            enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                                && EngineState.supportsCloning
-                            disabledReason: root.aiActionReason("diarize") !== ""
-                                ? root.aiActionReason("diarize")
-                                : qsTr("Engine hiện tại không hỗ trợ nhân bản giọng.")
-                            onClicked: {
-                                if (root.available)
-                                    subtitleController.cloneSpeakerFromVideo(modelData.id);
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         Label {

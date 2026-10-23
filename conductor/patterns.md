@@ -108,6 +108,11 @@ Reusable patterns discovered during development. Read this before starting new w
 
 ## Gotchas
 
+- Non-speech ASR tokens share ONE vocabulary: `NON_SPEECH_LABELS` lives in `core/subtitles.py` and is reused by `core/asr.py`, so `[MUSIC]`/`[BLANK_AUDIO]` can never be parsed as a speaker from either a user `.srt` or raw ASR segments. User cancellation gets its own exception subclass (`AsrCancelled`, `DiarizationCancelled`) that the `auto` fallback re-raises immediately instead of swallowing it and trying the next backend (from: asr_hardening_20261021, archived 2026-10-23).
+- Separate download PROGRESS from install STATE: throttle the progress signal (`aiDownloadProgressChanged`, >= 0.01 deltas) while the install signal (`aiModelsInstallChanged`) fires only at start/finish/error, so QML never re-runs `stat()`/`rglob()` per 256 KB network chunk (from: asr_hardening_20261021, archived 2026-10-23).
+- Managed sidecar files carry an 8-hex digest of the resolved source path (`<stem>_<hash8>.srt`) while the user-facing title keeps the clean stem; the same digest keys the media cache so repeat transcriptions/diarizations reuse the 16 kHz WAV, ASR segments and diarization turns (from: asr_hardening_20261021, archived 2026-10-23).
+- In QML drivers, `click()` invokes the handler unconditionally (it bypasses `enabled`); select an enabled instance from the visual tree (the active project row's "Mở" is disabled) instead of assuming row order (from: subtitles_ux_overhaul_20261023, archived 2026-10-23).
+
 - `Window.window` is an attached property that resolves ONLY on Items: evaluating it inside `Connections` (a `QtObject`) returns null with "Window.window only supports types derived from Item", so focus-follow listeners silently never fire. Put `readonly property Window pageWindow: Window.window` on the Item root and target that from `Connections` (found while closing `subtitles_ux_overhaul_20261023`, 2026-10-23).
 - Focus-scroll math mixes coordinate spaces easily: `mapToItem(flickable, 0, 0)` yields VIEWPORT coordinates, so comparing it with `flickable.contentY` breaks once the page is scrolled (an in-view item jumps the page to its viewport y). Map into `flickable.contentItem` for content coordinates, and regression-test with `contentY > 0` on an already-visible item (must not move the page).
 

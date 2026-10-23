@@ -190,28 +190,67 @@ short snippet to a full document, fully offline.
       instead of `und`, and ffmpeg progress streams to the UI with a
       dub-overrun warning (speech is never truncated; `clamp_to_video` is
       opt-in).
-    - **On-device & OpenAI-compatible Whisper ASR (`core/asr.py`)**: generate
+    - **On-device & OpenAI-compatible Whisper ASR (`core/asr.py`, track
+      `asr_hardening_20261021`, epic `VieNeuTTSApp-7u58`)**: generate
       timestamped `Cue`s directly from video/audio via `faster-whisper` (with
-      VAD), `whisper.cpp` CLI (`whisper-cli` + local GGUF/bin weights),
-      `openai-whisper`, or an OpenAI-compatible `/audio/transcriptions`
-      endpoint, with clause-aware segment splitting/merging.
-    - **Speaker diarization & multi-speaker cast (`core/diarization.py`)**:
-      label cues by speaker (`SPEAKER_01`, `SPEAKER_02`, …) via
-      `audio-cpp/Nemotron-3-Diarization-GGUF` (`Q8_0` / `BF16` through
-      `audiocpp_cli --mode diarize` on CPU/GPU with `--no-gpu` fallback,
-      `ab1aad1`), NVIDIA NeMo RTTM alignment, or the built-in zero-dependency
-      NumPy acoustic speaker-embedding clustering; map each speaker to a TTS
-      voice (`subtitleSpeakerBar`) or extract the best 3.5–8.0 s reference clip
-      from the video (`cloneSpeakerFromVideo`) for 1-click voice cloning.
+      VAD and 1-entry model cache), `whisper.cpp` CLI (`whisper-cli` + local
+      GGUF/bin weights, preferred by `auto` when installed), `openai-whisper`,
+      or an OpenAI-compatible `/audio/transcriptions` endpoint. Hardened on
+      2026-10-21 with in-process `soundfile`+`numpy` 16 kHz mono WAV
+      normalization (`_ensure_16k_wav`), shared per-video media caching
+      (`subtitles/_media_cache/<stem>_<hash8>/` storing `source_16k.wav`,
+      `asr_segments_cache.json`, and `diar_turns_cache.json`), collision-safe
+      `<stem>_<hash8>.srt` managed filenames with clean project titles, shared
+      `NON_SPEECH_LABELS` filtering (`[BLANK_AUDIO]`, `[MUSIC]`, etc.),
+      duration-aware segment splitting + bidirectional micro-fragment merging,
+      `AsrCancelled` semantics that `auto` re-raises immediately, and
+      `asr_device` / `asr_threads` settings.
+    - **Speaker diarization & multi-speaker cast (`core/diarization.py`, epic
+      `VieNeuTTSApp-2ifr`)**: label cues by speaker (`SPEAKER_01`, `SPEAKER_02`,
+      …) via `audio-cpp/Nemotron-3-Diarization-GGUF` (`Q8_0` / `BF16` through
+      `audiocpp_cli --mode diarize` on CPU/GPU with `--no-gpu` fallback and
+      `weight_type=f32` on CPU-only runtimes, `ab1aad1` + `5794aca`) or the
+      built-in zero-dependency NumPy acoustic speaker-embedding clustering
+      (the unimplemented NeMo UI option was removed and migrated to `auto` in
+      `cb0c1e9`); `max_speakers` ceiling (clamped 1–8) merges surplus clusters,
+      re-runs remap labels to existing `speaker_voices`, `DiarizationCancelled`
+      prevents silent fallback on cancel, and `subtitle_export_speaker_labels`
+      controls `[SPEAKER_XX]` prefixes on `.srt` export. Map each speaker to a
+      TTS voice via `VoicePicker` (`SubtitleCastPanel`) or extract the best
+      3.5–8.0 s reference clip (`cloneSpeakerFromVideo`) for 1-click voice
+      cloning and off-thread sample audition.
     - **Configurable LLM subtitle & timing refinement (`core/llm_refine.py`)**:
       stdlib-urllib OpenAI-compatible `/chat/completions` client (local Ollama /
       LM Studio / vLLM / llama.cpp or cloud APIs) for batched `refine_asr`,
-      duration-budgeted `fit_timing` condensation, and `translate_dub`.
+      duration-budgeted `fit_timing` condensation, and `translate_dub` (with
+      explicit target-language selection).
     - **Managed AI model & runtime downloads (`core/ai_models.py`,
       `SettingsModels.qml`)**: in-app `settingsAiDubbingCard` download/remove
-      controls for Whisper GGUF models, Nemotron-3 Diarization GGUF models
-      (`Q8_0` 102 MB / `BF16` 190 MB), and the `audiocpp_cli` (`v0.9.2`) native
-      runtime.
+      controls with size+SHA-256 verification, guarded path-traversal-safe
+      removal, and throttled progress (`aiDownloadProgressChanged`) for all 5
+      Whisper GGUF models (`tiny`..`large-v3-turbo`), Nemotron-3 Diarization
+      GGUF models (`Q8_0` 102 MB / `BF16` 190 MB), and staged native runtime
+      installers (`--help` probe + atomic swap) for both `whisper.cpp` (`b5454`,
+      `whisper-cli`) and `audiocpp_cli` (`v0.9.2`).
+    - **Subtitles workstation UX overhaul (track `subtitles_ux_overhaul_20261023`,
+      epic `VieNeuTTSApp-weit`, archived 2026-10-23)**: remediated the 33-finding
+      Subtitles UI/UX audit (`docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`): a
+      staged render-invalidation confirmation gate (`renderInvalidationRequested`
+      + confirm/reject) protects live renders from policy-knob/cue/AI mutations;
+      `renderStale` preserves `lastStats` and surfaces `exportBlockedReason`;
+      project lifecycle switcher/create/delete (`projects`, `openProject`,
+      `removeProject`) manages workspaces; `cancelExport()` terminates `ffmpeg`
+      mid-mux; a single derived `state` + `busyOwner` (`""|ai|render|export`)
+      gates the UI; a pinned `SubtitleActionDock` outside `PageShell` keeps
+      render, transport, export menu, progress, and cancel always on screen; a
+      three-stage segmented flow (`source` / `prepare` / `produce`) with a
+      two-card drop launcher and ordered AI pipeline (`clean → translate → fit`)
+      replaces the 731 px single-column stack; `SubtitleCard.qml` (1,473 → 646
+      lines) composes `SubtitleSourcePanel`, `SubtitlePreparePanel`,
+      `SubtitleCueEditor`, and `SubtitleCastPanel` with `AppProgressBar`,
+      `AppTextField`, `Theme.warningText` AA contrast, `disabledReason`
+      tooltips/accessibility, cue-list keyboard navigation, and
+      `PageShell.ensureFocusVisible` focus-follow (`42ab565`).
 12. **Optional multilingual Qwen engines (track `qwen_multiengine_20260920`,
     released in v0.2.0)** — two opt-in engine profiles beside VieNeu, which
     stays the fresh-install and migrated-settings default:
@@ -308,40 +347,40 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-10-21)
+## Implementation Status (2026-10-23)
 
 All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
 track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
 engine track (`qwen_gguf_engine_20260923`, feature 13), the 2026-10-09
 perf track (`perf_hardening_20261009`, feature 14), the 2026-10-10 UI shell
-redesign track (`ui_shell_redesign_20261010`, feature 15), and bead-driven
-batches with no tracks. Current app version 0.3.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite now stands at
-1541 items collected / 1523 selected (18 benchmarks deselected via
-`-m 'not benchmark'`, verified live 2026-10-21 with `pytest --collect-only -q`).
-Latest gate (2026-10-21 refresh): `ruff check .` passes and
-`ruff format --check .` passes (212 files) — the format gate arrived RED with
-5 files of debt from `d17a261`/`6e7c747` (`core/asr.py`, `core/diarization.py`,
-`core/llm_refine.py`, `core/subtitle_project.py`, `tests/unit/test_diarization.py`)
-and was reformatted in this refresh. Full `pytest` on this 18-core host is
-~43–61 s under `-n auto` and reports ~1516–1517 passed + 4 skipped plus 2–4
-FAILED that VARY run to run — a pre-existing flake family, NOT a regression:
-every one of them reproduces at the previous refresh commit `e08a58e` too.
-Most are load-dependent and pass in isolation, but
-`test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces`
-also flakes ~1-in-5 IN ISOLATION (null context properties; filed as bead
-`VieNeuTTSApp-qjkk` at this refresh), so always reproduce a suspect test at the
-previous commit rather than trusting a single isolated re-run. The recurring members are
-`test_qwen_host.py::TestFrameLoop` (`test_session_lifecycle` / `test_cancel_frames`
-/ `test_transition_and_pipes` / `TestTorchPosture`) failing on a `RuntimeError:
-Only a single TORCH_LIBRARY can be used to register the namespace triton` race
-when several xdist workers import torch at once (reproduced 1-in-3 under `-n 8`
-at `e08a58e`), plus `test_qwen_engine.py::TestInitialize::test_spawn_failures`,
-`test_controller.py::TestBgOpsAsync`, `test_replay_transport.py`, and the two
-known smoke flakes below. Judge the gate on the rest of the run and re-run a
-suspect test in isolation before calling it a regression. The documented
-device-less-host failure remains
+redesign track (`ui_shell_redesign_20261010`, feature 15), the 2026-10-21
+on-device ASR & dubbing hardening track (`asr_hardening_20261021`, feature 11),
+the 2026-10-23 Subtitles UX overhaul track (`subtitles_ux_overhaul_20261023`,
+feature 11), and bead-driven batches (incl. `VieNeuTTSApp-2ifr` diarization
+hardening and `VieNeuTTSApp-4mqj` test-runtime reduction). All 13 conductor
+tracks are complete and archived under `conductor/archive/`. Current app
+version 0.3.0; curated notes in `packaging/release-notes/v0.1.1.md`–`v0.3.0.md`.
+Test suite now stands at 1597 items collected / 1579 selected (18 benchmarks
+deselected via `-m 'not benchmark'`; `-m "not slow"` → 1557,
+`-m "not slow and not benchmark"` → 1539; verified live 2026-10-23 with
+`pytest --collect-only -q`). Latest gate (2026-10-23 refresh): `ruff check .`
+passes, `ruff format --check .` passes (214 files), and
+`scripts/update_i18n.sh` is 100% clean (1175/1175 finished, 0 unfinished).
+Full `pytest` on this 18-core host runs in ~32–43 s wall under
+`-n auto --dist worksteal` after `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`)
+split the 12 giant smoke items (`test_ui_tabs.py`, `test_ui_shell.py`,
+`test_ui_studio.py`) into smaller scenario-group fixtures and fixed the
+in-process `test_qwen_host.py::TestTorchPosture` `sys.modules["torch"]`
+deletion bug (`monkeypatch.setitem(sys.modules, "torch", None)` instead of
+`delitem`, eliminating the self-inflicted `RuntimeError: Only a single
+TORCH_LIBRARY can be used to register the namespace triton` when
+`TestTorchPosture` and `TestFrameLoop` share an xdist worker). A full loaded-host
+run can still flake 1–2 order-/load-sensitive tests (`test_controller.py::TestBgOpsAsync`,
+`test_worker_thread_safety_smoke`, `test_qwen_host::TestFrameLoop::test_session_lifecycle`,
+or `test_ui_shell.py` null-context-property race `VieNeuTTSApp-qjkk`); always
+re-run any suspect test in isolation and reproduce at the previous commit
+before calling it a regression. The documented device-less-host failure remains
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 — a device-dependent real-`QAudioSink` smoke that passes in isolation but fails
 whenever it shares a run with other unit files (serially too, `-n 0`). It is
@@ -413,10 +452,11 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1541 collected / 1523 selected (18
+linux-aarch64. Suite at this refresh: 1597 collected / 1579 selected (18
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, and +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`)).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), and +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579)).
 
+<!-- refreshed 2026-10-23: 37 commits since `e64ec18` (diarization hardening epic `2ifr` `b41caf7..cb0c1e9`, test-runtime reduction `4mqj` `1542053`+`5eb6f85`, track `asr_hardening_20261021` epic `7u58` `b09dd45..d50f43b`, skill pruning `9e216f4`, and track `subtitles_ux_overhaul_20261023` epic `weit` `2f6fe8a..42ab565`, both tracks archived in `ed66f6a`). Feature 11 expanded with managed `whisper.cpp` (`b5454`) + `audiocpp_cli` staged runtime installers, pinned Whisper/Nemotron GGUF digests, shared per-video `_media_cache`, `AsrCancelled`/`DiarizationCancelled`, ASR/diarization device+threads controls, and the 5-phase Subtitles UX overhaul (staged render-invalidation gate, `renderStale`, project lifecycle, `cancelExport`, derived `state`/`busyOwner`, pinned `SubtitleActionDock`, Source/Prepare/Produce stages, `SubtitleSourcePanel`/`SubtitlePreparePanel`/`SubtitleCueEditor`/`SubtitleCastPanel` extraction, `AppProgressBar`/`AppTextField`, `Theme.warningText`, focus-follow `42ab565`). Suite 1597 collected / 1579 selected (18 benchmark deselected, verified live); ruff check + format --check green (214 files); i18n 1175/1175 finished; no `pyproject.toml`/`uv.lock` dep drift; beads 519 total / 1 open (`t80a`) / 1 blocked (`nqx.2.4`) / 40 deferred / 477 closed. -->
 <!-- refreshed 2026-10-21: 7 commits since `e08a58e` (`d17a261` video dubbing/diarization/muxing/subtitle-studio hardening, `1661604` VoicePicker popup clipping + SubtitleCard layout, `6e7c747` burn-in embed mode + webm/avi fixes, `d7b8721` styled ASS burn-in/HDR/progress, plus 3 beads-sync chores). Feature 11 gains the soft-vs-burn subtitle embed mode; feature 15 corrected to "five destinations replaced the six-tab sidebar, sixth (`subtitles`) promoted 2026-10-19 in `aef1d87`". Suite 1541 collected / 1523 selected (18 benchmark deselected, verified live); ruff format gate restored (5 files of debt from `d17a261`/`6e7c747` reformatted, 212 files green); no `pyproject.toml`/`uv.lock` dep drift; i18n 1012/1012 finished (0 unfinished, 0 vanished); beads 463 total / 46 open / 5 blocked / 416 closed (was 456 / 409 closed — `4kht` epic + children, `vxil`, `ni2i`, `poph` closed). Flake baseline rewritten: full runs flake 2–4 varying tests under load, all reproducing at `e08a58e` (triton `TORCH_LIBRARY` import race in `test_qwen_host`). -->
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->

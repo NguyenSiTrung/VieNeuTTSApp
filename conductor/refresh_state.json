@@ -1,65 +1,57 @@
 {
-  "timestamp": "2026-10-21T13:20:00+07:00",
+  "timestamp": "2026-10-23T15:55:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 11 tracks archived under conductor/archive/); zero plan.md/Beads drift. 463 total issues: 46 open (0 in_progress, 5 blocked, 41 ready), 416 closed — up from 456/409 at the 2026-10-20 refresh. Closed since last refresh: epic VieNeuTTSApp-4kht (Video Dubbing hardening, 3 phases) with children 4kht.1/.2/.3, plus vxil (video subtitle burn-in style/correctness/UX, 10 audit findings fixed in d7b8721), ni2i (.webm/.avi soft-subtitle embed), poph (burn-in option). Blocked set unchanged (5 nqx.* tasks awaiting real-device verification). One bead FILED during this refresh: VieNeuTTSApp-qjkk (P3 bug, test_ui_shell shell smoke flakes in isolation with null context properties). Gates: ruff check . green; ruff format --check . arrived RED with 5 files of debt and was fixed in this refresh (212 files green); scripts/update_i18n.sh 1012/1012 finished, 0 unfinished, 0 vanished.",
+  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 13 tracks archived under conductor/archive/, incl. asr_hardening_20261021 and subtitles_ux_overhaul_20261023 archived in ed66f6a); zero plan.md/Beads drift. 519 total issues: 1 open (VieNeuTTSApp-t80a P3 video preview panel), 0 in_progress, 1 blocked (VieNeuTTSApp-nqx.2.4 awaiting nqx.2.3), 40 deferred to 2027-01-01 (94b963b), 477 closed — up from 463 total / 416 closed at the 2026-10-21 refresh. Closed since last refresh: 7 verified issues in 94b963b (n23, a52, 6cv, x898, 3evn, nqx.3, nqx.4), epic VieNeuTTSApp-2ifr (diarization hardening + 5 children), VieNeuTTSApp-4mqj (test-runtime reduction), epic VieNeuTTSApp-7u58 (asr_hardening_20261021 + 11 child issues), and epic VieNeuTTSApp-weit (subtitles_ux_overhaul_20261023 + 34 child/phase issues). Gates: ruff check . green, ruff format --check . green (214 files), scripts/update_i18n.sh 1175/1175 finished (0 unfinished), pytest --collect-only -q 1597 collected / 1579 selected (18 benchmark deselected).",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "Implementation Status re-dated to 2026-10-21 with the real current gate: ruff check + format --check green (212 files), suite 1541 collected / 1523 selected (18 benchmark deselected), full pytest 1517 passed + 4 skipped plus 2-4 varying loaded-host flakes",
-        "replaced the stale 'exactly one red test' claim with the loaded-host flake family and its proof that every member reproduces at e08a58e (not a regression)",
-        "feature 11 gains the soft-vs-burned subtitle embed mode (6e7c747 + d7b8721, beads poph/ni2i/vxil): subtitleEmbedMode persisted per project, generated ASS burn-in with PlayRes-matched ratios and bundled Be Vietnam Pro fontsdir, WebVTT track for .webm, explicit .avi hint, HDR bit-depth preservation, ASS escaping, language tagging, ffmpeg progress relay and dub-overrun warning",
-        "feature 15 corrected: 'five destinations replaced the six-tab sidebar' plus the sixth (Lồng tiếng & Phụ đề) promoted in aef1d87",
-        "suite-size history extended with +9 items from the 2026-10-20/21 burn-in batch",
-        "new refresh marker for 2026-10-21"
+        "feature 11 expanded with diarization hardening (VieNeuTTSApp-2ifr: verified GGUF downloads + staged audiocpp_cli --help probe, 16 kHz mono normalization, weight_type=f32 on CPU-only runtimes, max_speakers ceiling merge + label remapping, DiarizationCancelled, subtitle_export_speaker_labels, removal of fake NeMo UI option), on-device ASR hardening (asr_hardening_20261021, epic 7u58: pinned Whisper GGUF sizes/SHA-256 + guarded removal, managed whisper.cpp b5454 runtime installer, shared per-video _media_cache, collision-safe <stem>_<hash8>.srt filenames, NON_SPEECH_LABELS filtering + duration-aware splitting, AsrCancelled, asr_device/asr_threads + throttled aiDownloadProgressChanged), and the Subtitles UX overhaul (subtitles_ux_overhaul_20261023, epic weit: staged render-invalidation gate, renderStale + lastStats + exportBlockedReason, project lifecycle switcher, cancelExport, derived state/busyOwner, pinned SubtitleActionDock, Source/Prepare/Produce stages, two-card drop launcher, ordered AI pipeline, SubtitleSourcePanel/SubtitlePreparePanel/SubtitleCueEditor/SubtitleCastPanel extraction, AppProgressBar/AppTextField, Theme.warningText, disabledReason, and PageShell.ensureFocusVisible)",
+        "Implementation Status re-dated to 2026-10-23: all 13 tracks archived under conductor/archive/, suite 1597 collected / 1579 selected (18 benchmark deselected; -m 'not slow' -> 1557, -m 'not slow and not benchmark' -> 1539), ruff check + format --check green (214 files), i18n 1175/1175 finished, full suite ~32-43 s wall after 4mqj smoke splits and TestTorchPosture sys.modules['torch'] = None isolation fix",
+        "suite-size history extended through 1597/1579 and new 2026-10-23 refresh marker added"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "File Import > core/video_dub.py expanded with the burn-in pipeline: probe_video_info, _burn_style/_fit_cue/_wrap_lines/_ass_escape, the _BURN_* ratio constants, FONTS_DIR, _burn_pix_fmt, WebVTT/.avi container rules, subtitle_language tagging, opt-in clamp_to_video, and the ~228x cost of a frame-touching filter",
-        "Build & Dev Tooling post-v0.3.0 summary extended with d17a261, 1661604 and the 6e7c747 + d7b8721 burn-in batch; suite 1541/1523; ruff green at 212 files",
-        "refresh marker 2026-10-21: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0)"
+        "UI Framework component inventory updated to match both qmldirs: added AppProgressBar, AppTextField, SubtitleActionDock, SubtitleSourcePanel, SubtitlePreparePanel, SubtitleCueEditor, SubtitleCastPanel, VoicePicker.voiceActivated, PageShell.ensureFocusVisible (pageWindow), and replaced stale StudioRackModule/StudioParamRow/ModeTabs/SynthesisBar references with StudioTimeline/StudioEffectSlider/StudioEffectsPanel/StudioApplyBar",
+        "File Import > SRT subtitle studio & Video dubbing/ASR/diarization/AI models updated with asr_hardening_20261021 (7u58), diarization hardening (2ifr), and subtitles_ux_overhaul_20261023 (weit + 42ab565)",
+        "Build & Dev Tooling post-v0.3.0 summary extended through 2026-10-23 with suite 1597/1579, ruff 214 files green, i18n 1175/1175 finished, and zero root pyproject.toml/uv.lock drift",
+        "refresh marker 2026-10-23 added"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "Testing: 'exactly one red test' corrected to one documented red test, plus a new loaded-host flake bullet naming every recurring member (test_qwen_host TestFrameLoop/TestTorchPosture triton TORCH_LIBRARY race, test_qwen_engine TestInitialize, test_controller TestBgOpsAsync, test_replay_transport, and the two smoke flakes) with the isolation re-run procedure",
-        "Testing: new bullet that the format gate is ruff format --check (not just ruff check), citing this refresh's 5-file debt",
-        "suite-size history extended to 1541 collected / 1523 selected (+9 from d17a261/6e7c747/d7b8721)",
-        "refresh marker 2026-10-21 recording the format debt, the i18n 1012/1012 state, and the flake baseline"
+        "top 2026-10-23 refresh marker updated to 1597 collected / 1579 selected after post-review commit 42ab565 (+1 test_every_property_is_consumed_or_api_only)",
+        "Testing > Loaded-host flake family updated to note that 5eb6f85 fixed the self-inflicted TestTorchPosture monkeypatch.delitem(sys.modules, 'torch') trigger for the triton TORCH_LIBRARY double-registration error",
+        "suite-size history extended with 2ifr + 4mqj (1554/1536), asr_hardening_20261021 (1567/1549), and subtitles_ux_overhaul_20261023 + 42ab565 (1597/1579)"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "added 12 patterns: burn-in pipeline + ASS/PlayRes/fontsdir discipline, bit-depth preservation and ffmpeg -progress for re-encoding filters, sparse fingerprint-payload evolution, engine generation counters, per-field settings clamping, argparse choices breaking a one-JSON-result contract, QML singletons needing BOTH qmldirs, Loader.status/wait_for_tabs, onXChanged binding order, Slider pressed on arrow-key steps, and the loaded-host flake baseline",
-        "corrected 14 stale bullets: the CI claims (ci.yml removed 2026-10-10 in 88f6dbb), QT_AUDIO_BACKEND actor, attach_synthesis_listener (removed; it is submit_stream_for_listener per job and never sets busy), setCreateMode('subtitles') (a NO-OP, not a redirect), one shared TransportDock per screen (Create only), MultiEffect card elevation (now RectangularShadow), and the dead ModeTabs/SynthesisBar/ParagraphTab/TextTab/StudioRackModule/StudioParamRow components",
-        "suite counts rolled to 1541 collected / 1523 selected; bullet count 179 -> 191",
-        "Last refreshed footer rewritten with the full audit trail"
+        "consolidated 6 remaining learnings from asr_hardening_20261021 and subtitles_ux_overhaul_20261023: VoicePicker.voiceActivated user-only signal on fallback-syncing pickers, component-owned disabledReason & accessibility contract, explicit API_ONLY_PROPERTIES allowlist with bidirectional test guard, immediate scalar snapshotting in QML smoke drivers, RemoveConfirmDialog onClosed ordering trap, and bounded proc.wait+thread.join after proc.kill() for grandchild pipes",
+        "updated tiered pytest and moving suite-size bullets to 1597 collected / 1579 selected (18 benchmark deselected; -m 'not slow' -> 1557, -m 'not slow and not benchmark' -> 1539)",
+        "updated loaded-host flake bullet to record the 5eb6f85 TestTorchPosture sys.modules['torch'] = None fix",
+        "Last refreshed footer updated to 2026-10-23 (211 pattern bullets across 4 sections)"
       ]
     }
   ],
   "learnings_consolidation": {
-    "tracks_scanned": 11,
-    "learnings_lines_scanned": 2796,
-    "patterns_examined": 179,
-    "new_patterns_added": 12,
-    "stale_patterns_corrected": 14,
-    "merge_candidates_identified": 8,
-    "merge_candidates_applied": 0,
-    "source": "Audited all 11 archived track learnings against the code; every proposed change was verified in the working tree before it was applied (attach_synthesis_listener = 0 hits in src/, ModeTabs/SynthesisBar/ParagraphTab/TextTab/StudioRackModule/StudioParamRow absent, MultiEffect = 0 QML refs, TransportDock instantiated once in CreateTab.qml, CREATE_MODES has no 'subtitles'). Merge candidates were reported but NOT applied - they are cosmetic deduplication of ~22 bullets and were left for a dedicated pass."
-  },
-  "gate_debt_fixed": {
-    "ruff_format": "5 files reformatted: src/vienetts_app/core/asr.py, src/vienetts_app/core/diarization.py, src/vienetts_app/core/llm_refine.py, src/vienetts_app/core/subtitle_project.py, tests/unit/test_diarization.py. Debt introduced by d17a261 and 6e7c747 (the latter left the tree with the gate already RED). Verified: ruff format --check . -> 212 files already formatted; ruff check . -> All checks passed; affected suites (test_diarization, test_asr, test_llm_refine, test_subtitle_project) 33 passed."
+    "tracks_scanned": 13,
+    "new_tracks_since_last_refresh": [
+      "asr_hardening_20261021",
+      "subtitles_ux_overhaul_20261023"
+    ],
+    "patterns_before": 205,
+    "new_patterns_added": 6,
+    "patterns_after": 211,
+    "source": "Scanned all 13 archived tracks in conductor/archive/, focusing on the two tracks completed and archived since the 2026-10-21 refresh (asr_hardening_20261021 and subtitles_ux_overhaul_20261023). 11 patterns had already been elevated during track completion/archival (4f85b00, 4dce527, ea388d0, ed66f6a); elevated the remaining 6 reusable cross-track patterns and gotchas."
   },
   "known_baseline_failures": {
-    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy; passed on this run)",
-    "loaded_host_flakes": "2-4 varying failures per full -n auto run on this 18-core host at load avg ~9-11; ALL reproduce at the previous refresh commit e08a58e, so none is a regression from this batch. Most pass in isolation, but isolation is necessary-not-sufficient: test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces also flakes ~1-in-5 IN ISOLATION (-n 0; 4/5 passed at HEAD) with a cascade of 'TypeError: Cannot read property X of null' for every context property, i.e. the driver's QML loads before setContextProperty. Filed as bead VieNeuTTSApp-qjkk during this refresh. Chief loaded-host cause: 'RuntimeError: Only a single TORCH_LIBRARY can be used to register the namespace triton' when several xdist workers import torch concurrently (reproduced ~1-in-3 under -n 8 at e08a58e; related to open bead VieNeuTTSApp-xevl)."
+    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy)",
+    "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, test_qwen_host.py::TestFrameLoop::test_session_lifecycle, or test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk). The in-process TestTorchPosture delitem(sys.modules, 'torch') trigger for the triton TORCH_LIBRARY race was fixed in 5eb6f85."
   },
-  "commits_since_last_refresh": "e08a58e..565fe23 (7 commits: d17a261 video dubbing/diarization/muxing/subtitle-studio hardening; 1661604 VoicePicker popup clipping/padding + SubtitleCard layout; 6e7c747 burn-in subtitle option + webm/avi embed fixes; d7b8721 styled ASS burn-in, HDR preservation, export progress; c29df02/ffd0015/565fe23 beads export + close sync chores)",
-  "beads_filed": [
-    "VieNeuTTSApp-qjkk: test_ui_shell shell smoke flakes in isolation: null context properties (P3 bug)"
-  ]
+  "commits_since_last_refresh": "e64ec18..ed66f6a (37 commits: 94b963b close 7 verified beads + defer 40; b41caf7..77843c9 diarization hardening epic 2ifr; 1542053..3bb6cde test-runtime reduction bead 4mqj; 85e59f8..881029c track asr_hardening_20261021 epic 7u58; 9e216f4 skill pruning; 2f6fe8a..ed66f6a track subtitles_ux_overhaul_20261023 epic weit + post-review focus-follow/API_ONLY_PROPERTIES fixes + track archival)"
 }

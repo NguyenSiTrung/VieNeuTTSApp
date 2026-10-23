@@ -33,6 +33,10 @@ ComboBox {
     property string popupTitle: qsTr("Chọn giọng đọc")
     property string selectedVoice: ""
     property string filterText: ""
+    // FR-3.4: emits only for a USER pick, never for the programmatic fallback
+    // that syncSelection applies, so a speaker mapping is never overwritten
+    // just by opening the card.
+    signal voiceActivated(string id)
     readonly property bool popupOpen: voicePopup.visible
     // Set by an audition button before its click bubbles to the row/trigger:
     // consumed + cleared so comparing/auditioning never collapses the picker.
@@ -312,6 +316,7 @@ ComboBox {
             return;
         }
         selectedVoice = row.id;
+        root.voiceActivated(row.id);
     }
 
     // A profile switch (or an enrollment change) republishes the catalog: a

@@ -1461,6 +1461,7 @@ def test_transcribe_surfaces_acoustic_fallback_warning(env, tmp_path, monkeypatc
     monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", _fallback)
     assert controller.transcribeVideo(True) is True
     assert "dự phòng" in controller.errorText
+    assert controller.noticeLevel == "warning"
 
 
 def test_rediarization_remaps_labels_to_existing_speaker_voices(env, tmp_path, monkeypatch):
@@ -1976,3 +1977,45 @@ def test_exporting_is_the_single_busy_owner(tmp_path):
     controller.cancelExport()
     assert controller.state == "rendered"
     assert controller.busyOwner == ""
+
+
+# ── FR-3.6 / FR-3.7: hint channel and notice severity ────────────────────────
+
+
+def test_seek_before_render_sets_a_hint(env, tmp_path):
+    controller, _, player = env
+    controller.importSrt(load_srt(tmp_path))
+    controller.seekToCue(0)
+    assert "âm thanh" in controller.hintText
+    assert player.seeks == []
+
+
+def test_play_before_render_announces_the_render(env, tmp_path):
+    controller, _, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    controller.play()
+    assert "đang tạo" in controller.hintText
+    assert controller.rendering is True
+
+
+def test_busy_ai_action_sets_a_hint(env, tmp_path):
+    controller, _, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    controller._set_ai_state(True, "Đang chạy", 0.2)  # noqa: SLF001
+    assert controller.refineWithLlm("refine_asr", "vi") is False
+    assert "chờ" in controller.hintText
+    controller._set_ai_state(False, "", 0.0)  # noqa: SLF001
+
+
+def test_notice_level_separates_errors_from_info(env, tmp_path):
+    controller, _, _ = env
+    assert controller.noticeLevel == "error"
+    controller.importSrt(str(tmp_path / "missing.srt"))
+    assert "Không tìm thấy" in controller.errorText
+    assert controller.noticeLevel == "error"
+    controller.clearNotice()
+    assert controller.errorText == ""
+    assert controller.noticeLevel == "info"
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.errorText == ""
+    assert controller.noticeLevel == "info"

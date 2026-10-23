@@ -12,6 +12,8 @@ ComboBox {
     readonly property string controlKind: "select"
     property int comboWidth: 260
     property string accessibleLabel: displayText
+    // FR-3.5: same disabled contract as AppButton/AppToggle.
+    property string disabledReason: ""
 
     implicitWidth: comboWidth
     implicitHeight: Theme.controlHeightMd
@@ -176,4 +178,9 @@ ComboBox {
     }
 
     Accessible.name: root.accessibleLabel
+    Accessible.description: !root.enabled ? root.disabledReason : ""
+
+    ToolTip.text: !root.enabled ? root.disabledReason : ""
+    ToolTip.visible: root.hovered && !root.enabled && root.disabledReason !== ""
+    ToolTip.delay: 350
 }

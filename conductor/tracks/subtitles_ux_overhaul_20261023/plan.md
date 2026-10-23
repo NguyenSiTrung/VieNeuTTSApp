@@ -149,7 +149,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
 > (Phase 3 owns the card's behaviour/structure, Phase 4 owns its component skins — see the
 > file-ownership split in Task 4.x; coordinate on `SubtitleCard.qml` if both run at once).
 
-- [ ] **Task 3.1: AI action group with order, scope and always-visible cancel**
+- [x] **Task 3.1: AI action group with order, scope and always-visible cancel**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - The four AI actions render in pipeline order with a group label; each has a tooltip.
@@ -158,7 +158,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Replace the flat `Flow` with a labelled group; add tooltips and descriptions.
 
-- [ ] **Task 3.2: Target-language picker for "Dịch lồng tiếng"**
+- [x] **Task 3.2: Target-language picker for "Dịch lồng tiếng"**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/subtitle_controller.py, tests/smoke/test_ui_tabs.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - A `LanguagePicker` sits beside the translate action and its value is passed to `refineWithLlm("translate_dub", lang)`.
@@ -166,7 +166,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add a `translateTargetLanguage` property and pass it through the slot.
 
-- [ ] **Task 3.3: Merge the duplicate diarization controls**
+- [x] **Task 3.3: Merge the duplicate diarization controls**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - Only one control mentions diarization in the ASR stage; the re-run action lives with the speaker bar it produces.
@@ -174,7 +174,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Rename the toggle to "Tự tách người nói khi nhận dạng"; move the re-run button into the speaker bar.
 
-- [ ] **Task 3.4: `VoicePicker`-backed per-speaker casting**
+- [x] **Task 3.4: `VoicePicker`-backed per-speaker casting**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - Each speaker row exposes a picker (not a raw ID field) whose selection calls `setSpeakerVoice(spk, id)`.
@@ -182,7 +182,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Replace the `TextField` with a compact `VoicePicker` or a "Chọn giọng…" button opening the existing picker.
 
-- [ ] **Task 3.5: Prerequisites, `disabledReason` coverage and Settings deep-links**
+- [x] **Task 3.5: Prerequisites, `disabledReason` coverage and Settings deep-links**
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/components/EngineState.qml, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - Every gated control exposes a non-empty `disabledReason` when disabled.
@@ -190,7 +190,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add `disabledReason` across the 39 remaining controls; add `EngineState` reason helpers.
 
-- [ ] **Task 3.6: Feedback for silent no-ops (`seekToCue`, `play` auto-render, AI busy returns)**
+- [x] **Task 3.6: Feedback for silent no-ops (`seekToCue`, `play` auto-render, AI busy returns)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleCard.qml, tests/unit/test_subtitle_controller.py, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - `seekToCue` before a render sets a user-visible hint instead of returning silently.
@@ -199,7 +199,7 @@ Evidence and measured geometry: `docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md`.
   - Green implementation:
     - Add a `statusText` / hint channel; update the QML cursor/label accordingly.
 
-- [ ] **Task 3.7: Error surface — dismiss, severity split, auto-clear**
+- [x] **Task 3.7: Error surface — dismiss, severity split, auto-clear**
   <!-- files: src/vienetts_app/ui/qml/SubtitlesTab.qml, src/vienetts_app/ui/subtitle_controller.py, tests/smoke/test_ui_tabs.py -->
   - Red tests:
     - The banner exposes a dismiss action that clears `errorText`.

@@ -68,6 +68,56 @@ AppCard {
         }
     ]
 
+    // FR-3.2: translation target is chosen here, not inherited silently from
+    // the synthesis tab. "" keeps the old fallback (synthesisLanguage).
+    property string translateTargetLanguage: ""
+    readonly property var translateLanguageOptions: {
+        const rows = [{ code: "", label: qsTr("Theo ngôn ngữ tổng hợp") }];
+        const langs = root.available ? (subtitleController.profileLanguages || []) : [];
+        for (let i = 0; i < langs.length; ++i)
+            rows.push({ code: langs[i].code, label: langs[i].label });
+        return rows;
+    }
+    readonly property int translateLanguageIndex: {
+        const rows = root.translateLanguageOptions;
+        for (let i = 0; i < rows.length; ++i)
+            if (rows[i].code === root.translateTargetLanguage)
+                return i;
+        return 0;
+    }
+
+    // FR-3.5: one reason per gated action, shown as the tooltip/accessible
+    // description exactly when the action is disabled.
+    function busyReason() {
+        if (!root.available)
+            return qsTr("Không có bộ điều khiển phụ đề.");
+        if (root.exporting)
+            return qsTr("Đang xuất tệp — chờ hoàn tất.");
+        if (root.busy)
+            return qsTr("Đang tạo âm thanh — chờ hoàn tất.");
+        if (root.aiBusy)
+            return qsTr("Đang chạy tác vụ AI — chờ hoàn tất.");
+        return "";
+    }
+
+    function aiActionReason(kind) {
+        if (!root.available)
+            return qsTr("Không có bộ điều khiển phụ đề.");
+        if (root.exporting)
+            return qsTr("Đang xuất tệp — chờ hoàn tất.");
+        if (root.busy)
+            return qsTr("Đang tạo âm thanh — chờ hoàn tất.");
+        if (root.aiBusy)
+            return qsTr("Một tác vụ AI khác đang chạy.");
+        if (!root.loaded)
+            return qsTr("Cần nhập phụ đề trước.");
+        if (kind === "diarize" && !root.hasVideo)
+            return qsTr("Cần video để phân tách người nói.");
+        if (kind === "asr" && !root.hasVideo)
+            return qsTr("Cần đính kèm video để nhận dạng phụ đề.");
+        return "";
+    }
+
     function setStage(value) {
         if (value === root.stage)
             return;
@@ -245,6 +295,7 @@ AppCard {
             iconKind: "upload"
             text: qsTr("Nhập Video…")
             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+            disabledReason: root.busyReason()
             onClicked: subtitleVideoDialog.open()
         }
 
@@ -257,6 +308,7 @@ AppCard {
             iconKind: "upload"
             text: qsTr("Nhập .srt…")
             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+            disabledReason: root.busyReason()
             onClicked: subtitleImportDialog.open()
         }
     }
@@ -283,6 +335,20 @@ AppCard {
             visible: text !== ""
             text: root.stageHint
             color: Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeXs
+            wrapMode: Text.WordWrap
+        }
+
+        // FR-3.6: actions that cannot run now say why in place instead of
+        // returning silently (seek before render, play that renders first,
+        // an AI action refused while another task runs).
+        Label {
+            objectName: "subtitleHintLabel"
+            Layout.fillWidth: true
+            visible: text !== ""
+            text: root.available ? subtitleController.hintText : ""
+            color: Theme.warningText
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSizeXs
             wrapMode: Text.WordWrap
@@ -422,7 +488,9 @@ AppCard {
                         id: diarizeToggle
 
                         objectName: "subtitleDiarizeToggle"
-                        text: qsTr("Phân tách người nói")
+                        text: qsTr("Tự tách người nói khi nhận dạng")
+                        disabledReason: root.hasVideo
+                            ? root.busyReason() : qsTr("Cần video để nhận dạng phụ đề.")
                         // Opt-in: diarization adds tens of seconds on CPU and,
                         // without the Nemotron GGUF installed, falls back to the
                         // acoustic heuristic. The warning now explains that.
@@ -437,6 +505,7 @@ AppCard {
                         iconKind: "wave"
                         text: qsTr("Tạo phụ đề (ASR)")
                         enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                        disabledReason: root.aiActionReason("asr")
                         onClicked: {
                             if (root.available)
                                 subtitleController.transcribeVideo(diarizeToggle.checked);
@@ -450,6 +519,7 @@ AppCard {
                         tooltipText: qsTr("Bỏ đính kèm video")
                         accessibleLabel: tooltipText
                         enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                        disabledReason: root.busyReason()
                         onClicked: {
                             if (root.available)
                                 subtitleController.clearVideo();
@@ -477,6 +547,7 @@ AppCard {
                             textRole: "label"
                             comboWidth: 210
                             enabled: root.available && !root.busy && !root.exporting
+                            disabledReason: root.busyReason()
                             model: [
                                 { label: qsTr("Thay thế âm gốc"), value: "replace" },
                                 { label: qsTr("Giữ nhạc nền (Ducking)"), value: "duck" }
@@ -503,6 +574,7 @@ AppCard {
                         AppNumberField {
                             objectName: "subtitleVideoBgGainField"
                             enabled: root.available && !root.busy && !root.exporting
+                            disabledReason: root.busyReason()
                             decimals: 0
                             scaleFactor: 1
                             from: -36
@@ -520,6 +592,7 @@ AppCard {
                         objectName: "subtitleEmbedSrtToggle"
                         text: qsTr("Nhúng phụ đề vào video")
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         checked: root.available ? subtitleController.embedSubtitles : true
                         onToggled: {
                             if (root.available)
@@ -543,6 +616,7 @@ AppCard {
                             textRole: "label"
                             comboWidth: 210
                             enabled: root.available && !root.busy && !root.exporting
+                            disabledReason: root.busyReason()
                             model: [
                                 { label: qsTr("Bật/tắt trong trình phát"), value: "soft" },
                                 { label: qsTr("In cố định lên hình"), value: "burn" }
@@ -596,8 +670,8 @@ AppCard {
             }
         }
 
-        // ── AI Refinement & Diarization Toolbar ─────────────────────────────
-        Flow {
+        // ── AI refinement group: clean → translate → fit (FR-3.1/3.2) ─────
+        ColumnLayout {
             id: aiBar
 
             objectName: "subtitleAiBar"
@@ -605,64 +679,119 @@ AppCard {
             spacing: Theme.spacingXs
             visible: root.loaded && root.stage === "prepare"
 
-            AppButton {
-                objectName: "subtitleDiarizeButton"
-                variant: "secondary"
-                size: "sm"
-                text: qsTr("Phân tách người nói")
-                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    && root.hasVideo
-                onClicked: {
-                    if (root.available)
-                        subtitleController.runDiarization();
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                SectionLabel {
+                    objectName: "subtitleAiGroupLabel"
+                    Layout.fillWidth: true
+                    text: qsTr("CÔNG CỤ AI · THEO THỨ TỰ")
+                }
+
+                AppButton {
+                    objectName: "subtitleCancelAiButton"
+                    variant: "danger"
+                    size: "sm"
+                    text: qsTr("Hủy AI")
+                    enabled: root.aiBusy
+                    disabledReason: root.aiBusy ? "" : qsTr("Không có tác vụ AI nào đang chạy.")
+                    onClicked: {
+                        if (root.available)
+                            subtitleController.cancelAiTask();
+                    }
                 }
             }
 
-            AppButton {
-                objectName: "subtitleRefineAsrButton"
-                variant: "secondary"
-                size: "sm"
-                text: qsTr("AI Làm sạch phụ đề")
-                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                onClicked: {
-                    if (root.available)
-                        subtitleController.refineWithLlm("refine_asr", "");
+            Flow {
+                Layout.fillWidth: true
+                spacing: Theme.spacingXs
+
+                AppButton {
+                    objectName: "subtitleRefineAsrButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("AI Làm sạch phụ đề")
+                    tooltipText: qsTr("Bước 1 · Sửa chính tả và nhãn người nói trên toàn bộ phụ đề.")
+                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                    disabledReason: root.aiActionReason("llm")
+                    onClicked: {
+                        if (root.available)
+                            subtitleController.refineWithLlm("refine_asr", "");
+                    }
+                }
+
+                AppButton {
+                    objectName: "subtitleTranslateDubButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("AI Dịch lồng tiếng")
+                    tooltipText: qsTr("Bước 2 · Dịch phụ đề sang ngôn ngữ đích đã chọn.")
+                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                    disabledReason: root.aiActionReason("llm")
+                    onClicked: {
+                        if (root.available)
+                            subtitleController.refineWithLlm(
+                                "translate_dub", root.translateTargetLanguage);
+                    }
+                }
+
+                AppCombo {
+                    objectName: "subtitleTranslateLanguageCombo"
+                    comboWidth: 200
+                    accessibleLabel: qsTr("Ngôn ngữ đích khi dịch")
+                    textRole: "label"
+                    model: root.translateLanguageOptions
+                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                    currentIndex: root.translateLanguageIndex
+                    onActivated: function (index) {
+                        const rows = root.translateLanguageOptions;
+                        if (index >= 0 && index < rows.length)
+                            root.translateTargetLanguage = rows[index].code;
+                    }
+                }
+
+                AppButton {
+                    objectName: "subtitleFitTimingButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("AI Rút gọn khớp thời gian")
+                    tooltipText: qsTr("Bước 3 · Rút ngắn câu cho vừa tốc độ đọc tối đa.")
+                    enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                    disabledReason: root.aiActionReason("llm")
+                    onClicked: {
+                        if (root.available)
+                            subtitleController.refineWithLlm("fit_timing", "");
+                    }
                 }
             }
 
-            AppButton {
-                objectName: "subtitleFitTimingButton"
-                variant: "secondary"
-                size: "sm"
-                text: qsTr("AI Rút gọn khớp thời gian")
-                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                onClicked: {
-                    if (root.available)
-                        subtitleController.refineWithLlm("fit_timing", "");
-                }
-            }
+            // FR-3.5: the AI prerequisites live in one named place with a
+            // deep-link, instead of being discovered only when a run fails.
+            RowLayout {
+                objectName: "subtitleAiPrereqRow"
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
 
-            AppButton {
-                objectName: "subtitleTranslateDubButton"
-                variant: "secondary"
-                size: "sm"
-                text: qsTr("AI Dịch lồng tiếng")
-                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                onClicked: {
-                    if (root.available)
-                        subtitleController.refineWithLlm("translate_dub", "");
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("ASR cần mô hình Whisper; AI cần máy chủ LLM tương thích OpenAI.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.WordWrap
                 }
-            }
 
-            AppButton {
-                objectName: "subtitleCancelAiButton"
-                variant: "danger"
-                size: "sm"
-                text: qsTr("Hủy AI")
-                visible: root.aiBusy
-                onClicked: {
-                    if (root.available)
-                        subtitleController.cancelAiTask();
+                AppButton {
+                    objectName: "subtitleAiSettingsButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("Mở Cài đặt › Mô hình")
+                    tooltipText: qsTr("Mở phần cài đặt mô hình AI và nhận dạng giọng nói")
+                    onClicked: {
+                        if (typeof bridge !== "undefined" && bridge !== null)
+                            bridge.setCurrentTab("settings");
+                    }
                 }
             }
         }
@@ -860,6 +989,7 @@ AppCard {
                                 size: "sm"
                                 iconKind: cueRowRoot.editing ? "close" : "edit"
                                 enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                                disabledReason: root.busyReason()
                                 tooltipText: qsTr("Chỉnh sửa lời thoại phụ đề")
                                 accessibleLabel: tooltipText
                                 onClicked: {
@@ -989,6 +1119,7 @@ AppCard {
                         textRole: "label"
                         comboWidth: 165
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         model: [
                             { label: qsTr("Lồng tiếng (theo SRT)"), value: "dub" },
                             { label: qsTr("Bản thoại tự nhiên"), value: "transcript" }
@@ -1006,6 +1137,7 @@ AppCard {
                         objectName: "subtitleMergeToggle"
                         text: qsTr("Gộp câu")
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         checked: root.available ? subtitleController.mergeSentences : false
                         onToggled: {
                             if (root.available)
@@ -1036,6 +1168,7 @@ AppCard {
                         Layout.minimumWidth: 64
                         visible: root.available && subtitleController.mode === "dub"
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         from: 1.0
                         to: 2.0
                         stepSize: 0.05
@@ -1095,6 +1228,7 @@ AppCard {
                         Layout.preferredWidth: 84
                         visible: root.available && subtitleController.mode === "transcript"
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         decimals: 0
                         scaleFactor: 1
                         from: 0
@@ -1122,6 +1256,7 @@ AppCard {
                         implicitWidth: 84
                         Layout.preferredWidth: 84
                         enabled: root.available && !root.busy && !root.exporting
+                        disabledReason: root.busyReason()
                         decimals: 0
                         scaleFactor: 1
                         from: -600000
@@ -1203,12 +1338,33 @@ AppCard {
                 anchors.bottomMargin: Theme.spacingXs
                 spacing: Theme.spacingXxs
 
-                Label {
-                    text: qsTr("Phân vai giọng đọc theo người nói:")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    font.weight: Theme.fontWeightMedium
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Phân vai giọng đọc theo người nói:")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    AppButton {
+                        objectName: "subtitleDiarizeButton"
+                        variant: "secondary"
+                        size: "sm"
+                        text: qsTr("Phân tách lại người nói")
+                        tooltipText: qsTr("Chạy lại phân tách trên bản phụ đề hiện tại.")
+                        enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                            && root.hasVideo
+                        disabledReason: root.aiActionReason("diarize")
+                        onClicked: {
+                            if (root.available)
+                                subtitleController.runDiarization();
+                        }
+                    }
                 }
 
                 Repeater {
@@ -1249,37 +1405,22 @@ AppCard {
                             visible: root.hasVideo
                             text: qsTr("Nghe mẫu")
                             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                            disabledReason: root.busyReason()
                             onClicked: {
                                 if (root.available)
                                     subtitleController.playSpeakerSample(modelData.id);
                             }
                         }
 
-                        TextField {
-                            objectName: "subtitleSpeakerVoiceField"
-                            Layout.minimumWidth: 120
-                            width: Math.max(120, Math.min(240, speakerRow.width * 0.45))
-                            implicitHeight: 32
-                            leftPadding: Theme.spacingSm
-                            rightPadding: Theme.spacingSm
-                            text: modelData.voice || ""
-                            placeholderText: qsTr("ID giọng đọc (để trống = giọng mặc định)")
-                            placeholderTextColor: Theme.textSubtle
-                            color: Theme.text
-                            selectedTextColor: Theme.accentText
-                            selectionColor: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
+                        VoicePicker {
+                            objectName: "subtitleSpeakerVoicePicker"
+                            compact: true
+                            fieldLabel: qsTr("Giọng cho %1").arg(modelData.label)
+                            selectedVoice: modelData.voice || ""
                             enabled: root.available && !root.busy && !root.exporting
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.width: 1
-                                border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
-                            }
-                            onEditingFinished: {
-                                if (root.available)
-                                    subtitleController.setSpeakerVoice(modelData.id, text);
+                            onVoiceActivated: (id) => {
+                                if (root.available && id !== "")
+                                    subtitleController.setSpeakerVoice(modelData.id, id);
                             }
                         }
 
@@ -1290,6 +1431,8 @@ AppCard {
                             text: qsTr("Gán giọng đang chọn")
                             enabled: root.available && !root.busy && !root.exporting
                                 && voicePicker.effectiveVoice !== ""
+                            disabledReason: root.busyReason() !== ""
+                                ? root.busyReason() : qsTr("Chọn một giọng đọc trước khi gán.")
                             onClicked: {
                                 if (root.available)
                                     subtitleController.setSpeakerVoice(
@@ -1305,6 +1448,9 @@ AppCard {
                             text: qsTr("Lấy mẫu giọng từ video")
                             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
                                 && EngineState.supportsCloning
+                            disabledReason: root.aiActionReason("diarize") !== ""
+                                ? root.aiActionReason("diarize")
+                                : qsTr("Engine hiện tại không hỗ trợ nhân bản giọng.")
                             onClicked: {
                                 if (root.available)
                                     subtitleController.cloneSpeakerFromVideo(modelData.id);

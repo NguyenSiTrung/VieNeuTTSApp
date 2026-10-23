@@ -118,13 +118,21 @@ Pane {
 
                 objectName: "subtitleErrorBanner"
                 readonly property bool synthesisError: root.synthesisErrorText !== ""
+                readonly property string level: synthesisError ? "error"
+                    : (root.subtitleAvailable ? subtitleController.noticeLevel : "error")
 
                 Layout.fillWidth: true
-                tone: !synthesisError && message !== "" ? "warning" : "error"
-                title: !synthesisError ? qsTr("Cần chú ý") : qsTr("Không thể tạo âm thanh")
+                tone: level
+                title: synthesisError ? qsTr("Không thể tạo âm thanh")
+                    : (level === "warning" ? qsTr("Lưu ý") : qsTr("Cần chú ý"))
                 message: root.subtitleErrorText || root.synthesisErrorText
                 messageObjectName: "subtitleErrorLabel"
+                actionText: qsTr("Đã hiểu")
                 visible: message !== ""
+                onActionTriggered: {
+                    if (!synthesisError && root.subtitleAvailable)
+                        subtitleController.clearNotice();
+                }
             }
 
             SubtitleCard {

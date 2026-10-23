@@ -2055,6 +2055,8 @@ DRIVER = textwrap.dedent(
                 renderedChanged = Signal()
                 exportingChanged = Signal()
                 errorTextChanged = Signal()
+                hintTextChanged = Signal()
+                noticeLevelChanged = Signal()
                 statsChanged = Signal()
                 renderProgressChanged = Signal()
                 playerStateChanged = Signal()
@@ -2078,6 +2080,8 @@ DRIVER = textwrap.dedent(
                     super().__init__()
                     self._loaded = True
                     self.imported = []
+                    self.ai_calls = []
+                    self.speaker_calls = []
                     self._rendering = False
                     self._rendered = True
                     self._exporting = False
@@ -2107,6 +2111,10 @@ DRIVER = textwrap.dedent(
                         },
                     ]
                     self._ai_busy = False
+                    self._error_text = ""
+                    self._notice_level = "info"
+                    self._hint_text = ""
+                    self.clear_notice_calls = 0
                     self._ai_stage_text = ""
                     self._ai_progress = 0.0
                     self.rate_cap_sets = []
@@ -2189,7 +2197,28 @@ DRIVER = textwrap.dedent(
 
                 @Property(str, notify=errorTextChanged)
                 def errorText(self):
-                    return ""
+                    return self._error_text
+
+                @Property(str, notify=hintTextChanged)
+                def hintText(self):
+                    return self._hint_text
+
+                @hintText.setter
+                def hintText(self, value):
+                    self._hint_text = str(value)
+                    self.hintTextChanged.emit()
+
+                @Property(str, notify=noticeLevelChanged)
+                def noticeLevel(self):
+                    return self._notice_level
+
+                @Slot()
+                def clearNotice(self):
+                    self.clear_notice_calls += 1
+                    self._error_text = ""
+                    self._notice_level = "info"
+                    self.errorTextChanged.emit()
+                    self.noticeLevelChanged.emit()
 
                 @Property(str, notify=statsChanged)
                 def statsSummary(self):
@@ -2349,6 +2378,13 @@ DRIVER = textwrap.dedent(
                 def speakers(self):
                     return self._speakers
 
+                @Property("QVariantList", notify=speakersChanged)
+                def profileLanguages(self):
+                    return [
+                        {"code": "vi", "label": "Tiếng Việt", "isAuto": False},
+                        {"code": "en", "label": "English", "isAuto": False},
+                    ]
+
                 @Property(bool, notify=speakersChanged)
                 def hasSpeakers(self):
                     return len(self._speakers) > 0
@@ -2449,6 +2485,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, str, result=bool)
                 def setSpeakerVoice(self, speaker, voice_key):
+                    self.speaker_calls.append((speaker, voice_key))
                     return True
 
                 @Slot(int, str, str, result=bool)
@@ -2466,6 +2503,7 @@ DRIVER = textwrap.dedent(
 
                 @Slot(str, str, result=bool)
                 def refineWithLlm(self, task="refine_asr", target_language=""):
+                    self.ai_calls.append((task, target_language))
                     return True
 
                 @Slot()
@@ -4112,6 +4150,122 @@ DRIVER = textwrap.dedent(
             speaker_bar_visible = bool(sfind("subtitleSpeakerBar").property("visible"))
             ai_bar_visible = bool(sfind("subtitleAiBar").property("visible"))
 
+            # FR-3.1/3.2: ordered, labelled, explained AI actions; cancel is
+            # present while idle; translation target travels to the slot.
+            ai_names = (
+                "subtitleRefineAsrButton",
+                "subtitleTranslateDubButton",
+                "subtitleFitTimingButton",
+            )
+            out["ai_group_label"] = str(sfind("subtitleAiGroupLabel").property("text"))
+            out["ai_order"] = [
+                name
+                for name, _ in sorted(
+                    ((name, sfind(name)) for name in ai_names),
+                    key=lambda pair: pair[1].x(),
+                )
+            ]
+            out["ai_tooltips"] = [
+                str(sfind(name).property("tooltipText")) for name in ai_names
+            ]
+            cancel_ai = sfind("subtitleCancelAiButton")
+            out["ai_cancel"] = {
+                "visible": bool(cancel_ai.property("visible")),
+                "enabled": bool(cancel_ai.property("enabled")),
+                "reason": str(cancel_ai.property("disabledReason")),
+            }
+            # FR-3.3: one diarization affordance per stage.
+            out["diarize_outside_ai_bar"] = not bool(
+                sfind("subtitleAiBar").findChildren(QObject, "subtitleDiarizeButton")
+            )
+            out["diarize_in_speaker_bar"] = bool(
+                sfind("subtitleSpeakerBar").findChildren(QObject, "subtitleDiarizeButton")
+            )
+            translate_combo = sfind("subtitleTranslateLanguageCombo")
+            out["translate_options"] = [
+                row["code"] for row in qjs_to_py(translate_combo.property("model"))
+            ]
+            translate_combo.setProperty("currentIndex", 2)
+            QMetaObject.invokeMethod(translate_combo, "activated", Q_ARG(int, 2))
+            app.processEvents()
+            click_item(sfind("subtitleTranslateDubButton"))
+            app.processEvents()
+            out["translate_target_after_pick"] = str(
+                sfind("subtitleCard").property("translateTargetLanguage")
+            )
+            out["ai_calls"] = list(fake_subtitle.ai_calls)
+            # FR-3.4: per-speaker casting goes through the catalog picker.
+            picker = ifind("subtitleSpeakerVoicePicker")[0]
+            QMetaObject.invokeMethod(picker, "voiceActivated", Q_ARG(str, "voice_en_01"))
+            app.processEvents()
+            out["speaker_calls"] = list(fake_subtitle.speaker_calls)
+            out["speaker_no_raw_field"] = not bool(ifind("subtitleSpeakerVoiceField"))
+            # FR-3.5: a disabled gated control always explains itself.
+            gated_names = (
+                "subtitleImportButton",
+                "subtitleImportVideoButton",
+                "subtitleTranscribeButton",
+                "subtitleDiarizeToggle",
+                "subtitleEmbedSrtToggle",
+                "subtitleEmbedModeCombo",
+                "subtitleRefineAsrButton",
+                "subtitleFitTimingButton",
+                "subtitleTranslateDubButton",
+                "subtitleCueEditButton",
+                "subtitleModeCombo",
+                "subtitleMergeToggle",
+                "subtitleRateSlider",
+                "subtitleMaxGapField",
+                "subtitleOffsetField",
+                "subtitleDiarizeButton",
+                "subtitleSpeakerSampleButton",
+                "subtitleUseCurrentVoiceForSpeakerButton",
+                "subtitleCloneSpeakerButton",
+            )
+            fake_subtitle._ai_busy = True
+            fake_subtitle.aiBusyChanged.emit()
+            app.processEvents()
+            def gated_item(name):
+                found = ifind(name)
+                return found[0] if found else sfind(name)
+
+            out["busy_reasons"] = {
+                name: str(gated_item(name).property("disabledReason")) for name in gated_names
+            }
+            fake_subtitle._ai_busy = False
+            fake_subtitle.aiBusyChanged.emit()
+            app.processEvents()
+
+            # FR-3.6/3.7: non-fatal hint channel + dismissible, tone-aware banner.
+            fake_subtitle._hint_text = "Chưa có bản âm thanh — hãy tạo trước."
+            fake_subtitle.hintTextChanged.emit()
+            app.processEvents()
+            hint_label = sfind("subtitleHintLabel")
+            out["hint"] = {
+                "text": str(hint_label.property("text")),
+                "visible": bool(hint_label.property("visible")),
+            }
+            fake_subtitle._hint_text = ""
+            fake_subtitle.hintTextChanged.emit()
+            app.processEvents()
+            fake_subtitle._error_text = "Nhãn người nói được tạo bằng phương pháp dự phòng."
+            fake_subtitle._notice_level = "warning"
+            fake_subtitle.errorTextChanged.emit()
+            fake_subtitle.noticeLevelChanged.emit()
+            app.processEvents()
+            banner = sfind("subtitleErrorBanner")
+            out["banner"] = {
+                "tone": str(banner.property("tone")),
+                "title": str(banner.property("title")),
+                "action": str(banner.property("actionText")),
+            }
+            QMetaObject.invokeMethod(banner, "actionTriggered")
+            app.processEvents()
+            out["banner_dismissed"] = {
+                "calls": fake_subtitle.clear_notice_calls,
+                "message": str(banner.property("message")),
+            }
+
             # Video attachment + embed options live in the Source stage.
             QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "source"))
             app.processEvents()
@@ -4209,8 +4363,8 @@ DRIVER = textwrap.dedent(
             window.setWidth(640)
             window.setHeight(420)
             pump(0.1)
-            out["speaker_field_width_640"] = float(
-                ifind("subtitleSpeakerVoiceField")[0].width()
+            out["speaker_picker_width_640"] = float(
+                ifind("subtitleSpeakerVoicePicker")[0].width()
             )
             window.setWidth(1120)
             window.setHeight(900)
@@ -8224,8 +8378,41 @@ class TestTextParagraphTabSmoke:
         assert result["page_max_width"] == 960
         assert result["wide_by_window_width"] == [False, False, True, True]
         assert result["cue_scrollbar"] is True
-        assert result["speaker_field_width_640"] >= 120
+        assert result["speaker_picker_width_640"] > 0
         assert result["cue_height_tall_window"] > result["cue_height_short_window"]
+        # FR-3.1–3.4: ordered, labelled AI actions; explicit translate target;
+        # one diarization control per stage; catalog-backed speaker casting.
+        assert result["ai_group_label"]
+        assert result["ai_order"] == [
+            "subtitleRefineAsrButton",
+            "subtitleTranslateDubButton",
+            "subtitleFitTimingButton",
+        ]
+        assert all(result["ai_tooltips"])
+        assert result["ai_cancel"] == {
+            "visible": True,
+            "enabled": False,
+            "reason": "Không có tác vụ AI nào đang chạy.",
+        }
+        assert result["diarize_outside_ai_bar"] is True
+        assert result["diarize_in_speaker_bar"] is True
+        assert result["translate_options"] == ["", "vi", "en"]
+        assert result["translate_target_after_pick"] == "en"
+        assert result["ai_calls"] == [["translate_dub", "en"]]
+        assert result["speaker_calls"] == [[result["speaker_calls"][0][0], "voice_en_01"]]
+        assert result["speaker_calls"][0][0] in ("SPEAKER_01", "SPEAKER_02")
+        assert result["speaker_no_raw_field"] is True
+        assert all(result["busy_reasons"].values()), result["busy_reasons"]
+        assert result["hint"] == {
+            "text": "Chưa có bản âm thanh — hãy tạo trước.",
+            "visible": True,
+        }
+        assert result["banner"] == {
+            "tone": "warning",
+            "title": "Lưu ý",
+            "action": "Đã hiểu",
+        }
+        assert result["banner_dismissed"] == {"calls": 1, "message": ""}
 
 
 class TestCloningStudioTabSmoke:

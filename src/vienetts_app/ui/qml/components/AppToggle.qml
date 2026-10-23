@@ -9,6 +9,9 @@ CheckBox {
 
     readonly property string controlKind: "toggle"
     property string accessibleLabel: text
+    // FR-3.5: a disabled control must say why. AppButton already does; toggles
+    // carry the same contract so hosts never invent a second tooltip idiom.
+    property string disabledReason: ""
 
     implicitHeight: Theme.controlHitTarget
     spacing: Theme.spacingSm
@@ -46,4 +49,9 @@ CheckBox {
     }
 
     Accessible.name: root.accessibleLabel
+    Accessible.description: !root.enabled ? root.disabledReason : ""
+
+    ToolTip.text: !root.enabled ? root.disabledReason : ""
+    ToolTip.visible: root.hovered && root.enabled === false && root.disabledReason !== ""
+    ToolTip.delay: 350
 }

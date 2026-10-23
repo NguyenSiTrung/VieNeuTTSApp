@@ -9,6 +9,8 @@ Slider {
 
     readonly property string controlKind: "slider"
     property string accessibleLabel: ""
+    // FR-3.5: same disabled contract as AppButton/AppToggle/AppCombo.
+    property string disabledReason: ""
 
     // A slider needs a real default width: hosts put it in a RowLayout with
     // `Layout.fillWidth: true` beside fixed-size siblings, and a layout will
@@ -54,4 +56,9 @@ Slider {
     }
 
     Accessible.name: root.accessibleLabel
+    Accessible.description: !root.enabled ? root.disabledReason : ""
+
+    ToolTip.text: !root.enabled ? root.disabledReason : ""
+    ToolTip.visible: root.hovered && !root.enabled && root.disabledReason !== ""
+    ToolTip.delay: 350
 }

@@ -9,6 +9,8 @@ SpinBox {
 
     readonly property string controlKind: "number"
     property string accessibleLabel: ""
+    // FR-3.5: same disabled contract as the other shared controls.
+    property string disabledReason: ""
     property int decimals: 2
     property int scaleFactor: 100
     readonly property real realValue: value / scaleFactor
@@ -93,4 +95,9 @@ SpinBox {
     }
 
     Accessible.name: root.accessibleLabel
+    Accessible.description: !root.enabled ? root.disabledReason : ""
+
+    ToolTip.text: !root.enabled ? root.disabledReason : ""
+    ToolTip.visible: root.hovered && !root.enabled && root.disabledReason !== ""
+    ToolTip.delay: 350
 }

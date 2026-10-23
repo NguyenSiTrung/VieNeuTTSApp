@@ -195,6 +195,8 @@ class SubtitleController(QObject):
     policyChanged = Signal()
     exportingChanged = Signal()
     errorTextChanged = Signal()
+    hintTextChanged = Signal()
+    noticeLevelChanged = Signal()
     exportFinished = Signal(str, str)  # path, error ("" = ok)
     #: Burn-in re-encodes and can take minutes; this carries ffmpeg's fraction
     #: so the card shows a real bar instead of a silent freeze.
@@ -248,6 +250,9 @@ class SubtitleController(QObject):
         self._unit_progress = 0.0
         self._play_after_render = False
         self._error_text = ""
+        self._notice_level = "error"
+        # FR-3.6: non-fatal feedback for actions that used to return silently.
+        self._hint_text = ""
         self._exporting = False
         self._export_progress = 0.0
         # Invalidated by clear(): a stale export callback for a discarded
@@ -405,6 +410,15 @@ class SubtitleController(QObject):
         if message != self._error_text:
             self._error_text = message
             self.errorTextChanged.emit()
+        if message:
+            self._set_hint("")
+        if message == "":
+            if self._notice_level != "info":
+                self._notice_level = "info"
+                self.noticeLevelChanged.emit()
+        elif self._notice_level == "info":
+            self._notice_level = "error"
+            self.noticeLevelChanged.emit()
 
     # ── destroy-confirmation gate (FR-1.1) ───────────────────────────────────
 
@@ -863,6 +877,31 @@ class SubtitleController(QObject):
     @Property(str, notify=errorTextChanged)
     def errorText(self) -> str:
         return self._error_text
+
+    @Property(str, notify=noticeLevelChanged)
+    def noticeLevel(self) -> str:
+        """Severity of the current ``errorText``: ``info|warning|error``."""
+        return self._notice_level
+
+    @Property(str, notify=hintTextChanged)
+    def hintText(self) -> str:
+        """Non-fatal guidance for an action that could not run (FR-3.6)."""
+        return self._hint_text
+
+    @Slot()
+    def clearNotice(self) -> None:
+        """Dismiss the banner without touching the project."""
+        self._set_error("")
+
+    def _set_hint(self, message: str) -> None:
+        if message != self._hint_text:
+            self._hint_text = message
+            self.hintTextChanged.emit()
+
+    def _set_warning(self, message: str) -> None:
+        self._notice_level = "warning"
+        self.noticeLevelChanged.emit()
+        self._set_error(message)
 
     @Property(str, notify=videoChanged)
     def videoPath(self) -> str:
@@ -1924,6 +1963,7 @@ class SubtitleController(QObject):
         cached = self._store.cached_render(project)
         if cached is None:
             self._play_after_render = True
+            self._set_hint(self.tr("Chưa có bản âm thanh — đang tạo trước khi phát."))
             self.render()
             return
         self._project = cached
@@ -1973,7 +2013,12 @@ class SubtitleController(QObject):
     @Slot(int)
     def seekToCue(self, index: int) -> None:
         project = self._project
-        if project is None or self._timeline is None or not 0 <= index < len(project.cues):
+        if project is None:
+            return
+        if self._timeline is None:
+            self._set_hint(self.tr("Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề."))
+            return
+        if not 0 <= index < len(project.cues):
             return
         if index >= len(self._timeline.segments):
             return
@@ -2306,7 +2351,9 @@ class SubtitleController(QObject):
             self._set_error(self.tr("Chưa có tệp video để nhận diện phụ đề."))
             return False
         if self._rendering or self._ai_busy:
+            self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
             return False
+        self._set_hint("")
         # FR-1.6: a re-run overwrites the managed SRT — never silently discard
         # a live render or cue edits the user made on top of it.
         self._stage_invalidation(
@@ -2400,7 +2447,7 @@ class SubtitleController(QObject):
                 srt_target.write_text(format_srt(cues, include_speakers=True), encoding="utf-8")
             self._activate_cues_project(srt_target, cues, video_path=str(vpath), title=vpath.stem)
             if warn:
-                self._set_error(warn)
+                self._set_warning(warn)
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
@@ -2419,11 +2466,14 @@ class SubtitleController(QObject):
         """Run speaker diarization on the loaded project's video or rendered track."""
         project = self._project
         if project is None or self._rendering or self._ai_busy:
+            if project is not None and (self._rendering or self._ai_busy):
+                self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
             return False
         media = self.videoPath
         if not media or not Path(media).is_file():
             self._set_error(self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói."))
             return False
+        self._set_hint("")
         self._stage_invalidation(
             "diarization", self.tr("Phân tách người nói"), self._run_diarization_now
         )
@@ -2474,7 +2524,10 @@ class SubtitleController(QObject):
             tagged, warn = res
             self._set_ai_state(False, "", 1.0)
             self._update_project_cues(tagged)
-            self._set_error(warn)
+            if warn:
+                self._set_warning(warn)
+            else:
+                self._set_error("")
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
@@ -2668,7 +2721,10 @@ class SubtitleController(QObject):
         """Refine project cues with the configured OpenAI-compatible LLM off-thread."""
         project = self._project
         if project is None or self._rendering or self._ai_busy:
+            if project is not None and (self._rendering or self._ai_busy):
+                self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
             return False
+        self._set_hint("")
         self._stage_invalidation(
             "llm",
             self.tr("Tinh chỉnh phụ đề bằng AI"),
@@ -2811,6 +2867,7 @@ class SubtitleController(QObject):
         self._position_ms = 0
         self._error_text = ""
         self.errorTextChanged.emit()
+        self._set_hint("")
         self.loadedChanged.emit()
         self.titleChanged.emit()
         self.sourcePathChanged.emit()

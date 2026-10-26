@@ -107,11 +107,25 @@ def _cue_to_json(cue: Cue) -> dict[str, Any]:
     }
     if cue.speaker:
         out["speaker"] = cue.speaker
+    if cue.speech_start_ms is not None:
+        out["speechStartMs"] = int(cue.speech_start_ms)
+    if cue.speech_end_ms is not None:
+        out["speechEndMs"] = int(cue.speech_end_ms)
     return out
 
 
 def _cue_from_json(data: Any) -> Cue | None:
     if not isinstance(data, dict):
+        return None
+    raw_speech_start = data.get("speechStartMs")
+    if raw_speech_start is not None and (
+        isinstance(raw_speech_start, bool) or not isinstance(raw_speech_start, int)
+    ):
+        return None
+    raw_speech_end = data.get("speechEndMs")
+    if raw_speech_end is not None and (
+        isinstance(raw_speech_end, bool) or not isinstance(raw_speech_end, int)
+    ):
         return None
     try:
         return Cue(
@@ -120,6 +134,8 @@ def _cue_from_json(data: Any) -> Cue | None:
             end_ms=int(data["endMs"]),
             text=str(data["text"]),
             speaker=str(data.get("speaker") or ""),
+            speech_start_ms=raw_speech_start,
+            speech_end_ms=raw_speech_end,
         )
     except (KeyError, TypeError, ValueError):
         return None

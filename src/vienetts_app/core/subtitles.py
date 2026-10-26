@@ -95,6 +95,8 @@ class Cue:
     end_ms: int
     text: str
     speaker: str = ""
+    speech_start_ms: int | None = None
+    speech_end_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.index < 1:
@@ -107,10 +109,43 @@ class Cue:
             raise ValueError("cue text must be non-blank")
         if not isinstance(self.speaker, str):
             raise ValueError("cue speaker must be a string")
+        if self.speech_start_ms is not None:
+            if isinstance(self.speech_start_ms, bool) or not isinstance(self.speech_start_ms, int):
+                raise ValueError("cue speech_start_ms must be an int or None")
+            if not (self.start_ms <= self.speech_start_ms <= self.end_ms):
+                raise ValueError(
+                    f"cue speech_start_ms ({self.speech_start_ms}) must be within "
+                    f"[{self.start_ms}, {self.end_ms}]"
+                )
+        if self.speech_end_ms is not None:
+            if isinstance(self.speech_end_ms, bool) or not isinstance(self.speech_end_ms, int):
+                raise ValueError("cue speech_end_ms must be an int or None")
+            if not (self.start_ms <= self.speech_end_ms <= self.end_ms):
+                raise ValueError(
+                    f"cue speech_end_ms ({self.speech_end_ms}) must be within "
+                    f"[{self.start_ms}, {self.end_ms}]"
+                )
+        if self.effective_speech_start_ms > self.effective_speech_end_ms:
+            raise ValueError(
+                f"cue effective_speech_end_ms ({self.effective_speech_end_ms}) must be >= "
+                f"effective_speech_start_ms ({self.effective_speech_start_ms})"
+            )
 
     @property
     def duration_ms(self) -> int:
         return self.end_ms - self.start_ms
+
+    @property
+    def effective_speech_start_ms(self) -> int:
+        return self.start_ms if self.speech_start_ms is None else self.speech_start_ms
+
+    @property
+    def effective_speech_end_ms(self) -> int:
+        return self.end_ms if self.speech_end_ms is None else self.speech_end_ms
+
+    @property
+    def speech_duration_ms(self) -> int:
+        return self.effective_speech_end_ms - self.effective_speech_start_ms
 
 
 def _fraction_to_ms(digits: str) -> int:

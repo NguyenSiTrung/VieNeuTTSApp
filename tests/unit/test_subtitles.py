@@ -213,3 +213,56 @@ def test_speaker_prefix_parsing_and_formatting() -> None:
     )
     parsed = parse_cues(non_speech_srt)
     assert parsed == [Cue(1, 2_000, 3_500, "Xin chào các bạn.", speaker="")]
+
+
+def test_cue_speech_bounds_properties_and_validation() -> None:
+    default_cue = Cue(1, 1_000, 3_000, "Xin chào.")
+    assert default_cue.speech_start_ms is None
+    assert default_cue.speech_end_ms is None
+    assert default_cue.effective_speech_start_ms == 1_000
+    assert default_cue.effective_speech_end_ms == 3_000
+    assert default_cue.speech_duration_ms == 2_000
+    assert default_cue.duration_ms == 2_000
+
+    start_only = Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=1_250)
+    assert start_only.effective_speech_start_ms == 1_250
+    assert start_only.effective_speech_end_ms == 3_000
+    assert start_only.speech_duration_ms == 1_750
+    assert start_only.duration_ms == 2_000
+
+    end_only = Cue(1, 1_000, 3_000, "Xin chào.", speech_end_ms=2_600)
+    assert end_only.effective_speech_start_ms == 1_000
+    assert end_only.effective_speech_end_ms == 2_600
+    assert end_only.speech_duration_ms == 1_600
+    assert end_only.duration_ms == 2_000
+
+    both = Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=1_250, speech_end_ms=2_600)
+    assert both.effective_speech_start_ms == 1_250
+    assert both.effective_speech_end_ms == 2_600
+    assert both.speech_duration_ms == 1_350
+    assert both.duration_ms == 2_000
+
+    zero_speech = Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=2_000, speech_end_ms=2_000)
+    assert zero_speech.speech_duration_ms == 0
+
+    boundary_exact = Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=1_000, speech_end_ms=3_000)
+    assert boundary_exact.speech_duration_ms == 2_000
+
+    # Out-of-range speech_start_ms / speech_end_ms or inverted bounds raise ValueError.
+    with pytest.raises(ValueError):
+        Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=999)
+    with pytest.raises(ValueError):
+        Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=3_001)
+    with pytest.raises(ValueError):
+        Cue(1, 1_000, 3_000, "Xin chào.", speech_end_ms=999)
+    with pytest.raises(ValueError):
+        Cue(1, 1_000, 3_000, "Xin chào.", speech_end_ms=3_001)
+    with pytest.raises(ValueError):
+        Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=2_500, speech_end_ms=2_000)
+
+    # Non-int or bool values raise ValueError.
+    for bad in (True, False, 1_500.0, "1500"):
+        with pytest.raises(ValueError):
+            Cue(1, 1_000, 3_000, "Xin chào.", speech_start_ms=bad)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            Cue(1, 1_000, 3_000, "Xin chào.", speech_end_ms=bad)  # type: ignore[arg-type]

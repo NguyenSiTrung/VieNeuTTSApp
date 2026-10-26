@@ -939,3 +939,111 @@ def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
     assert spliced.video_path == str(tmp_path / "movie.mp4")
     assert spliced.speaker_voices == {"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"}
     assert [c.speaker for c in spliced.adjusted] == ["SPEAKER_01", "SPEAKER_02"]
+
+
+def test_speech_bounds_sparse_json_and_fingerprint(tmp_path: Path) -> None:
+    import hashlib
+
+    from vienetts_app.core.subtitle_project import (
+        _cue_from_json,
+        _cue_to_json,
+        _policy_to_json,
+    )
+    from vienetts_app.core.subtitles import Cue
+
+    plain_cues = (
+        Cue(1, 0, 2_000, "Hello world."),
+        Cue(2, 2_500, 4_000, "Second cue here."),
+    )
+    policy = FitPolicy.dub(rate_cap=1.5)
+
+    # Sparse serialization omits speechStartMs/speechEndMs when None.
+    serialized_plain = _cue_to_json(plain_cues[0])
+    assert "speechStartMs" not in serialized_plain
+    assert "speechEndMs" not in serialized_plain
+
+    # Byte-identical golden fingerprint when speech bounds are None.
+    expected_payload = {
+        "version": PROJECT_VERSION,
+        "sampleRate": SR,
+        "voice": "voice-a",
+        "policy": _policy_to_json(policy),
+        "cues": [
+            {"index": 1, "startMs": 0, "endMs": 2_000, "text": "Hello world."},
+            {"index": 2, "startMs": 2_500, "endMs": 4_000, "text": "Second cue here."},
+        ],
+    }
+    golden_fp = hashlib.sha256(
+        json.dumps(
+            expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    fp_none = render_fingerprint(plain_cues, policy, SR, "voice-a")
+    assert fp_none == golden_fp
+
+    # Setting speech_start_ms or speech_end_ms changes render_fingerprint.
+    cues_start_set = (
+        Cue(1, 0, 2_000, "Hello world.", speech_start_ms=150),
+        Cue(2, 2_500, 4_000, "Second cue here."),
+    )
+    cues_end_set = (
+        Cue(1, 0, 2_000, "Hello world."),
+        Cue(2, 2_500, 4_000, "Second cue here.", speech_end_ms=3_800),
+    )
+    cues_both_set = (
+        Cue(1, 0, 2_000, "Hello world.", speech_start_ms=150, speech_end_ms=1_850),
+        Cue(2, 2_500, 4_000, "Second cue here.", speech_end_ms=3_800),
+    )
+    fp_start = render_fingerprint(cues_start_set, policy, SR, "voice-a")
+    fp_end = render_fingerprint(cues_end_set, policy, SR, "voice-a")
+    fp_both = render_fingerprint(cues_both_set, policy, SR, "voice-a")
+    assert len({fp_none, fp_start, fp_end, fp_both}) == 4
+
+    # Round-trip through SubtitleProjectStore preserves sparse JSON and exact fields.
+    store = make_store(tmp_path)
+    mixed_cues = (
+        Cue(1, 0, 2_000, "No bounds"),
+        Cue(2, 2_500, 4_000, "Start bound only", speech_start_ms=2_650),
+        Cue(3, 4_500, 6_000, "End bound only", speech_end_ms=5_750),
+        Cue(4, 6_500, 8_000, "Both bounds", speech_start_ms=6_600, speech_end_ms=7_850),
+    )
+    project = build_project(
+        tmp_path / "speech_bounds.srt",
+        mixed_cues,
+        policy,
+        sample_rate=SR,
+        voice_key="voice-a",
+    )
+    store.save(project)
+    raw_json = json.loads(store.project_path(project.id).read_text(encoding="utf-8"))
+    raw_cues = raw_json["cues"]
+    assert "speechStartMs" not in raw_cues[0] and "speechEndMs" not in raw_cues[0]
+    assert raw_cues[1]["speechStartMs"] == 2_650 and "speechEndMs" not in raw_cues[1]
+    assert "speechStartMs" not in raw_cues[2] and raw_cues[2]["speechEndMs"] == 5_750
+    assert raw_cues[3]["speechStartMs"] == 6_600 and raw_cues[3]["speechEndMs"] == 7_850
+
+    loaded = store.require(project.id)
+    assert loaded.cues == mixed_cues
+    assert loaded.fingerprint == project.fingerprint
+
+    # Invalid speechStartMs / speechEndMs in JSON are rejected by _cue_from_json and store.load.
+    base_entry = {"index": 1, "startMs": 1_000, "endMs": 2_000, "text": "Hello"}
+    for bad_patch in (
+        {"speechStartMs": True},
+        {"speechEndMs": False},
+        {"speechStartMs": "1200"},
+        {"speechEndMs": 1_500.5},
+        {"speechStartMs": 999},
+        {"speechStartMs": 2_001},
+        {"speechEndMs": 999},
+        {"speechEndMs": 2_001},
+        {"speechStartMs": 1_600, "speechEndMs": 1_400},
+    ):
+        assert _cue_from_json({**base_entry, **bad_patch}) is None
+
+    corrupt_payload = dict(raw_json)
+    corrupt_cues = [dict(c) for c in raw_cues]
+    corrupt_cues[0]["speechStartMs"] = 2_500  # > endMs (2000)
+    corrupt_payload["cues"] = corrupt_cues
+    store.project_path(project.id).write_text(json.dumps(corrupt_payload), encoding="utf-8")
+    assert store.load(project.id) is None

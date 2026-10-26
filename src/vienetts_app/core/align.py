@@ -37,7 +37,7 @@ from typing import Any
 
 import numpy as np
 
-from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
+from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio, trim_speech_edges
 from vienetts_app.core.subtitles import Cue, cue_char_spans
 from vienetts_app.core.timeline import SegmentSpan, Timeline
 
@@ -56,6 +56,7 @@ MAX_GAP_LIMIT_MS = 60_000
 
 COMFORT_RATE = 1.15
 MIN_BREATH_GAP_MS = 120
+MIN_BORROW_GAP_MS = 250
 MAX_SLACK_BORROW_MS = 1200
 MAX_RATE_STEP = 0.20
 MIN_SUBTITLE_GAP_MS = 80
@@ -66,6 +67,7 @@ UNIT_MAX_CHARS = 220
 UNIT_GAP_MS = 600
 
 _SENTENCE_TERMINATORS = ".!?…。！？"
+_CLAUSE_PUNCT = ",;:—–-、，；："
 _SENTENCE_CLOSERS = "\"'”’»)]}"
 
 
@@ -261,7 +263,7 @@ def plan_cue(
         extended_end = srt_end
         rate = MIN_RATE
     else:
-        if next_start_ms is not None:
+        if next_start_ms is not None and int(next_start_ms) - speech_end >= MIN_BORROW_GAP_MS:
             borrow_cap = min(
                 speech_end + MAX_SLACK_BORROW_MS,
                 int(next_start_ms) - MIN_BREATH_GAP_MS,
@@ -351,8 +353,9 @@ def plan_alignment_for_clips(
     policy: FitPolicy,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
 ) -> list[CueFit]:
-    """Plan from the synthesized cue audio itself (natural length measured)."""
-    return plan_alignment(cues, [ms_for_frames(len(clip), sample_rate) for clip in clips], policy)
+    """Plan from the synthesized cue audio itself (natural length measured after edge trim)."""
+    trimmed = [trim_speech_edges(clip, sample_rate) for clip in clips]
+    return plan_alignment(cues, [ms_for_frames(len(clip), sample_rate) for clip in trimmed], policy)
 
 
 # ── rendering ────────────────────────────────────────────────────────────────
@@ -421,9 +424,10 @@ def render_alignment(
         )
     if sample_rate <= 0:
         raise AlignmentError(f"sample_rate must be > 0, got {sample_rate}")
-    fits = plan_alignment_for_clips(cues, clips, policy, sample_rate)
+    trimmed = [trim_speech_edges(clip, sample_rate) for clip in clips]
+    fits = plan_alignment(cues, [ms_for_frames(len(clip), sample_rate) for clip in trimmed], policy)
     placed = [
-        stretch_clip_to(clip, fit, sample_rate) for clip, fit in zip(clips, fits, strict=True)
+        stretch_clip_to(clip, fit, sample_rate) for clip, fit in zip(trimmed, fits, strict=True)
     ]
     total_frames = frames_for_ms(fits[-1].end_ms, sample_rate) if fits else 0
     audio = np.zeros(total_frames, dtype=np.float32)
@@ -541,24 +545,32 @@ def speech_units(
     return units
 
 
+def _cue_split_weight(text: str) -> float:
+    """Relative duration weight of a cue's text inside a merged speech unit."""
+    base = float(max(1, len(text.strip()) or len(text)))
+    clause_pauses = sum(1 for ch in text if ch in _CLAUSE_PUNCT)
+    term_pauses = sum(1 for ch in text if ch in _SENTENCE_TERMINATORS)
+    return base + 3.5 * clause_pauses + 6.0 * term_pauses
+
+
 def split_unit_audio(
     audio: np.ndarray,
     indices: Sequence[int],
     cues: Sequence[Cue],
     sample_rate: int = DEFAULT_SAMPLE_RATE,
 ) -> list[np.ndarray]:
-    """Split one merged unit's audio across its cues, proportional to text length.
+    """Split one merged unit's audio across its cues using punctuation-aware weights.
 
     Approximate by nature (no per-word timing exists inside a merged take), but
-    it is stable, exact in total length, and the per-cue fit then re-times each
-    piece — so an imperfect split shifts a cue's audio slightly, never loses it.
+    weighting clause/sentence punctuation alongside character length keeps pause
+    allocation realistic, and total length is exact.
     """
     mono = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).ravel())
     if not indices:
         return []
     if len(indices) == 1:
         return [mono]
-    weights = [max(1, len(cues[i].text)) for i in indices]
+    weights = [_cue_split_weight(cues[i].text) for i in indices]
     total = sum(weights)
     pieces: list[np.ndarray] = []
     cursor = 0

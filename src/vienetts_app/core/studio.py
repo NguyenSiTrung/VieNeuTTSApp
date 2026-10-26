@@ -951,11 +951,22 @@ def refit_subtitle_clips(
     else:
         rate_val = None
 
+    from vienetts_app.core.audio import trim_speech_edges
+
     target_idx = ids.index(clip_id)
     target = clips[target_idx]
-    raw = np.ascontiguousarray(np.asarray(new_raw_audio, dtype=np.float32).ravel())
+    raw = trim_speech_edges(
+        np.ascontiguousarray(np.asarray(new_raw_audio, dtype=np.float32).ravel()),
+        SAMPLE_RATE,
+    )
     natural_ms = ms_for_frames(len(raw), SAMPLE_RATE)
     prev_end_ms = meta.prev_cue_end_ms if target_idx == 0 else clips[target_idx - 1].placed_end_ms
+    next_start_ms = clips[target_idx + 1].srt_start_ms if target_idx + 1 < len(clips) else None
+    prev_rate = (
+        clips[target_idx - 1].fit_rate
+        if target_idx > 0 and target.speaker and target.speaker == clips[target_idx - 1].speaker
+        else None
+    )
     txt = new_text if new_text is not None else target.text
     ctx = context if context is not None else target.context
     zero_offset_policy = dataclasses.replace(meta.policy, offset_ms=0)
@@ -968,7 +979,14 @@ def refit_subtitle_clips(
             text=txt,
             speaker=target.speaker,
         )
-        fit = plan_cue(cue_obj, natural_ms, zero_offset_policy, prev_end_ms)
+        fit = plan_cue(
+            cue_obj,
+            natural_ms,
+            zero_offset_policy,
+            prev_end_ms,
+            next_start_ms=next_start_ms,
+            prev_rate=prev_rate,
+        )
         fitted_audio = stretch_clip_to(raw, fit, SAMPLE_RATE)
     else:
         duration_ms = int(round(natural_ms / rate_val)) if rate_val > 0 else natural_ms

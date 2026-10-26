@@ -48,6 +48,7 @@ from typing import Any
 import numpy as np
 
 from vienetts_app.core.align import (
+    MODE_DUB,
     AlignmentStats,
     CueFit,
     FitPolicy,
@@ -56,10 +57,16 @@ from vienetts_app.core.align import (
     frames_for_ms,
     ms_for_frames,
     plan_cue,
+    split_unit_audio,
     stretch_clip_to,
     timeline_from_fits,
 )
-from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, StreamingWavWriter
+from vienetts_app.core.audio import (
+    DEFAULT_SAMPLE_RATE,
+    StreamingWavWriter,
+    apply_micro_fade,
+    trim_speech_edges,
+)
 from vienetts_app.core.subtitles import Cue, cues_text, format_srt
 from vienetts_app.core.synthesis_context import (
     SynthesisContext,
@@ -768,11 +775,78 @@ class SubtitleTrackRenderer:
             return self.add_silent_cue(cue_index)
         return self._place(cue_index, np.asarray(clip, dtype=np.float32).ravel())
 
+    def add_unit_clip(self, unit_indices: Sequence[int], clip: np.ndarray) -> list[CueFit]:
+        """Place a merged speech unit across ``unit_indices`` at a uniform rate."""
+        if not unit_indices:
+            return []
+        if clip is None or np.asarray(clip).size == 0:
+            return [self.add_silent_cue(idx) for idx in unit_indices]
+        if len(unit_indices) == 1:
+            return [self.add_clip(unit_indices[0], clip)]
+        project = self._project
+        trimmed = trim_speech_edges(np.asarray(clip, dtype=np.float32).ravel(), project.sample_rate)
+        pieces = split_unit_audio(trimmed, unit_indices, project.cues, project.sample_rate)
+        forced_rate: float | None = None
+        if project.policy.mode == MODE_DUB:
+            first_idx = unit_indices[0]
+            last_idx = unit_indices[-1]
+            first_cue = project.cues[first_idx]
+            last_cue = project.cues[last_idx]
+            sp_start = first_cue.effective_speech_start_ms
+            sp_end = max(sp_start, last_cue.effective_speech_end_ms)
+            unit_cue = Cue(
+                index=first_cue.index,
+                start_ms=first_cue.start_ms,
+                end_ms=max(first_cue.start_ms, last_cue.end_ms),
+                text=first_cue.text,
+                speaker=first_cue.speaker,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+            after_idx = last_idx + 1
+            next_start = (
+                max(
+                    0,
+                    int(project.cues[after_idx].effective_speech_start_ms)
+                    + project.policy.offset_ms,
+                )
+                if after_idx < len(project.cues)
+                else None
+            )
+            prev_rate = (
+                self._fits[-1].rate
+                if self._fits
+                and first_cue.speaker
+                and first_cue.speaker == project.cues[first_idx - 1].speaker
+                else None
+            )
+            unit_natural_ms = ms_for_frames(int(trimmed.size), project.sample_rate)
+            unit_fit = plan_cue(
+                unit_cue,
+                unit_natural_ms,
+                project.policy,
+                self._prev_end,
+                next_start_ms=next_start,
+                prev_rate=prev_rate,
+            )
+            forced_rate = unit_fit.rate
+        return [
+            self._place(idx, piece, trim=False, forced_rate=forced_rate)
+            for idx, piece in zip(unit_indices, pieces, strict=True)
+        ]
+
     def add_silent_cue(self, cue_index: int) -> CueFit:
         """Keep a cue's slot when its synthesis produced nothing (never drop text)."""
         return self._place(cue_index, None)
 
-    def _place(self, cue_index: int, clip: np.ndarray | None) -> CueFit:
+    def _place(
+        self,
+        cue_index: int,
+        clip: np.ndarray | None,
+        *,
+        trim: bool = True,
+        forced_rate: float | None = None,
+    ) -> CueFit:
         self.open()
         if cue_index != self._last_index + 1:
             raise SubtitleProjectError(
@@ -781,13 +855,69 @@ class SubtitleTrackRenderer:
         assert self._writer is not None  # open() above
         project = self._project
         cue = project.cues[cue_index]
+        if clip is not None and trim:
+            clip = trim_speech_edges(clip, project.sample_rate)
         natural_ms = ms_for_frames(int(clip.size), project.sample_rate) if clip is not None else 0
-        fit = plan_cue(cue, natural_ms, project.policy, self._prev_end)
+        next_start = (
+            max(
+                0,
+                int(project.cues[cue_index + 1].effective_speech_start_ms)
+                + project.policy.offset_ms,
+            )
+            if cue_index + 1 < len(project.cues)
+            else None
+        )
+        prev_rate = (
+            self._fits[-1].rate
+            if self._fits and cue.speaker and cue.speaker == project.cues[cue_index - 1].speaker
+            else None
+        )
+        base_fit = plan_cue(
+            cue,
+            natural_ms,
+            project.policy,
+            self._prev_end,
+            next_start_ms=next_start,
+            prev_rate=prev_rate,
+        )
+        if forced_rate is not None and clip is not None:
+            rate = float(forced_rate)
+            duration_ms = int(round(natural_ms / rate)) if rate > 0 else natural_ms
+            end_ms = base_fit.start_ms + duration_ms
+            overflow_limit = (
+                max(base_fit.srt_end_ms, next_start - 120)
+                if next_start is not None and project.policy.mode == MODE_DUB
+                else base_fit.srt_end_ms
+            )
+            fit = CueFit(
+                index=base_fit.index,
+                start_ms=base_fit.start_ms,
+                end_ms=end_ms,
+                rate=rate,
+                srt_start_ms=base_fit.srt_start_ms,
+                srt_end_ms=base_fit.srt_end_ms,
+                natural_ms=natural_ms,
+                overflow_ms=max(0, end_ms - base_fit.srt_end_ms) if end_ms > overflow_limit else 0,
+            )
+        else:
+            fit = base_fit
         if clip is not None:
             block = stretch_clip_to(clip, fit, project.sample_rate)
         else:
             block = np.zeros(0, dtype=np.float32)
         start_frame = max(self._cursor, frames_for_ms(fit.start_ms, project.sample_rate))
+        if block.size:
+            butt_joined = (
+                self._prev_end is not None and self._cursor > 0 and start_frame == self._cursor
+            )
+            truncated = fit.overflow_ms > 0
+            if butt_joined or truncated:
+                block = apply_micro_fade(
+                    block,
+                    project.sample_rate,
+                    fade_in=butt_joined,
+                    fade_out=truncated,
+                )
         if start_frame > self._cursor:
             self._writer.write_silence(start_frame - self._cursor)
         if block.size:
@@ -966,23 +1096,9 @@ def splice_studio_window_into_subtitle(
         else 1.0
     )
 
-    if len(sub_proj.adjusted) == len(updated_cues):
-        adjusted_list = [
-            replace(adj, text=cue.text, speaker=cue.speaker)
-            for adj, cue in zip(sub_proj.adjusted, updated_cues, strict=True)
-        ]
-    else:
-        adjusted_list = [
-            Cue(
-                index=cue.index,
-                start_ms=seg.start_ms,
-                end_ms=seg.end_ms,
-                text=cue.text,
-                speaker=cue.speaker,
-            )
-            for cue, seg in zip(updated_cues, timeline.segments, strict=True)
-        ]
-
+    seg_bounds: list[tuple[int, int]] = [
+        (int(seg.start_ms), int(seg.end_ms)) for seg in timeline.segments
+    ]
     rates_list = (
         list(sub_proj.cue_rates)
         if len(sub_proj.cue_rates) == len(updated_cues)
@@ -997,42 +1113,38 @@ def splice_studio_window_into_subtitle(
         e_ms = window_base_ms + int(round((raw_e_ms - window_base_ms) * scale))
         if e_ms < s_ms:
             e_ms = s_ms
-        cue = updated_cues[idx]
-        adjusted_list[idx] = Cue(
-            index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text, speaker=cue.speaker
-        )
+        seg_bounds[idx] = (s_ms, e_ms)
         rates_list[idx] = round(float(clip.fit_rate), 4)
 
     for idx in range(int(meta.window_end), len(updated_cues)):
-        old_adj = adjusted_list[idx]
-        cue = updated_cues[idx]
-        s_ms = max(0, old_adj.start_ms + delta_ms)
-        e_ms = max(s_ms, old_adj.end_ms + delta_ms)
-        adjusted_list[idx] = Cue(
-            index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text, speaker=cue.speaker
-        )
+        old_s, old_e = seg_bounds[idx]
+        s_ms = max(0, old_s + delta_ms)
+        e_ms = max(s_ms, old_e + delta_ms)
+        seg_bounds[idx] = (s_ms, e_ms)
 
     char_spans = cue_char_spans(updated_cues)
     new_segments = tuple(
-        SegmentSpan(cs, ce, adj.start_ms, adj.end_ms)
-        for (cs, ce), adj in zip(char_spans, adjusted_list, strict=True)
+        SegmentSpan(cs, ce, s_ms, e_ms)
+        for (cs, ce), (s_ms, e_ms) in zip(char_spans, seg_bounds, strict=True)
     )
     new_timeline = Timeline(new_segments, approximate=False)
     store.save_timeline(sub_proj.id, new_timeline)
 
+    offset_ms = int(sub_proj.policy.offset_ms)
     fits_for_stats = [
         CueFit(
             index=cue.index,
-            start_ms=adj.start_ms,
-            end_ms=adj.end_ms,
+            start_ms=s_ms,
+            end_ms=e_ms,
             rate=rates_list[i],
-            srt_start_ms=cue.start_ms,
-            srt_end_ms=cue.end_ms,
-            natural_ms=max(0, adj.end_ms - adj.start_ms),
-            overflow_ms=max(0, adj.end_ms - cue.end_ms),
+            srt_start_ms=max(0, int(cue.effective_speech_start_ms) + offset_ms),
+            srt_end_ms=max(0, int(cue.end_ms) + offset_ms),
+            natural_ms=max(0, e_ms - s_ms),
+            overflow_ms=max(0, e_ms - max(0, int(cue.end_ms) + offset_ms)),
         )
-        for i, (cue, adj) in enumerate(zip(updated_cues, adjusted_list, strict=True))
+        for i, (cue, (s_ms, e_ms)) in enumerate(zip(updated_cues, seg_bounds, strict=True))
     ]
+    adjusted_list = adjusted_cues(updated_cues, fits_for_stats)
     stats = alignment_stats(fits_for_stats)
     updated_proj = replace(
         sub_proj,

@@ -494,10 +494,11 @@ def test_renderer_placement(tmp_path) -> None:
     # Cue 0: 1500 ms of audio at 0, then silence until cue 1 at 2500.
     assert np.count_nonzero(data[0:1_500]) == 1_500
     assert not data[1_500:2_500].any()
-    # Cue 1: 2000 ms spoken in a 1500 ms window -> compressed to fit 1500.
-    # (WSOLA fades the buffer edges by ~2 ms, so allow a couple of silent frames.)
-    assert np.count_nonzero(np.abs(data[2_500:4_000]) > 1e-3) >= 1_490
-    assert not data[4_000:5_000].any()
+    # Cue 1: 2000 ms spoken in a 1500 ms window (2500..4000) followed by a 1000 ms gap
+    # before Cue 2 (5000..6500) -> compressed at COMFORT_RATE (1.15x -> 1739 ms)
+    # and borrows 239 ms from the silent gap.
+    assert np.count_nonzero(np.abs(data[2_500:4_239]) > 1e-3) >= 1_725
+    assert not data[4_239:5_000].any()
     # Cue 2 was silent: its slot is silence, not missing time.
     assert not data[5_000:].any()
 
@@ -509,9 +510,9 @@ def test_renderer_placement(tmp_path) -> None:
     result = render_three(store, project)
     second = result.fits[1]
     assert second.compressed is True
-    assert second.duration_ms == 1_500
+    assert second.rate == pytest.approx(1.15)
+    assert second.duration_ms == 1_739
     assert second.overflow_ms == 0
-
     tmp_path = tmp_path / "case-b"
     tmp_path.mkdir(parents=True, exist_ok=True)
 
@@ -1047,3 +1048,59 @@ def test_speech_bounds_sparse_json_and_fingerprint(tmp_path: Path) -> None:
     corrupt_payload["cues"] = corrupt_cues
     store.project_path(project.id).write_text(json.dumps(corrupt_payload), encoding="utf-8")
     assert store.load(project.id) is None
+
+
+def test_renderer_trims_vocoder_silence_and_stretches_merged_units_uniformly(
+    tmp_path: Path,
+) -> None:
+    from vienetts_app.core.subtitles import Cue
+
+    store = make_store(tmp_path)
+    # 1. AC-1 in SubtitleTrackRenderer: 1000 ms speech + 300 ms edge silence in a 1100 ms cue
+    cues_trim = (Cue(1, 0, 1_100, "One second speech"),)
+    proj_trim = build_project(
+        tmp_path / "trim.srt",
+        cues_trim,
+        FitPolicy.dub(rate_cap=1.5),
+        sample_rate=SR,
+        voice_key="voice-a",
+    )
+    store.save(proj_trim)
+    padded_clip = np.concatenate(
+        [
+            np.zeros(150, dtype=np.float32),
+            np.full(1_000, 0.4, dtype=np.float32),
+            np.zeros(150, dtype=np.float32),
+        ]
+    )
+    with SubtitleTrackRenderer(store, proj_trim) as renderer:
+        fit0 = renderer.add_clip(0, padded_clip)
+        res_trim = renderer.finish()
+    assert fit0.rate == 1.0
+    assert fit0.compressed is False
+    assert res_trim.stats.compressed == 0
+
+    # 2. AC-3: Uniform unit rate across a multi-cue merged sentence unit
+    cues_unit = (
+        Cue(1, 0, 1_000, "Mệnh đề đầu tiên,"),
+        Cue(2, 1_000, 2_000, "mệnh đề tiếp theo"),
+        Cue(3, 2_000, 3_000, "và kết thúc câu."),
+    )
+    proj_unit = build_project(
+        tmp_path / "unit.srt",
+        cues_unit,
+        FitPolicy.dub(rate_cap=1.5, merge_sentences=True),
+        sample_rate=SR,
+        voice_key="voice-a",
+    )
+    store.save(proj_unit)
+    # 3450 ms speech for a 3000 ms merged unit window -> uniform rate = 1.15x across all 3 cues
+    unit_audio = np.full(3_450, 0.35, dtype=np.float32)
+    with SubtitleTrackRenderer(store, proj_unit) as renderer:
+        unit_fits = renderer.add_unit_clip((0, 1, 2), unit_audio)
+        res_unit = renderer.finish()
+    assert len(unit_fits) == 3
+    assert unit_fits[0].rate == pytest.approx(1.15)
+    assert unit_fits[1].rate == pytest.approx(unit_fits[0].rate)
+    assert unit_fits[2].rate == pytest.approx(unit_fits[0].rate)
+    assert res_unit.fits[0].rate == res_unit.fits[1].rate == res_unit.fits[2].rate

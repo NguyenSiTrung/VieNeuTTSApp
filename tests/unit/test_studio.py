@@ -779,7 +779,8 @@ class TestSubtitleStudio:
         store.save(sub_proj)
         with SubtitleTrackRenderer(store, sub_proj) as renderer:
             for i in range(len(cues)):
-                # Cue 0 is 750 ms raw into a 500 ms window -> compressed 1.5x to 500 ms.
+                # Cue 0 is 750 ms raw into a 500 ms window followed by a 500 ms gap ->
+                # compressed at COMFORT_RATE (1.15x -> 652 ms, leaving 1200 - 852 = 348 ms pause).
                 dur_frames = int(0.75 * 48_000) if i == 0 else int(0.4 * 48_000)
                 renderer.add_clip(i, _tone(dur_frames, freq=220.0 + i * 5))
             renderer.finish()
@@ -798,7 +799,7 @@ class TestSubtitleStudio:
         assert win0.clips[0].cue_index == 0
         assert win0.clips[0].lead_silence_ms == 200
         assert win0.clips[0].context == ctx
-        assert win0.clips[1].lead_silence_ms == 500  # 1200 - 700 = 500 ms pause
+        assert win0.clips[1].lead_silence_ms == 348  # 1200 - (200 + 652) = 348 ms pause
 
         # Reorder and delete are refused on SRT projects to preserve cue alignment.
         with pytest.raises(ValueError, match="subtitle"):
@@ -873,6 +874,18 @@ class TestSubtitleStudio:
         assert uncompressed.clips[0].overflow_ms == 500
         assert uncompressed.clips[1].placed_start_ms == 1500
         assert uncompressed.clips[1].lead_silence_ms == 0
+
+        # Refitting with a take that has leading/trailing vocoder silence trims the silence
+        # before planning so a 950 ms speech + 250 ms silence take fits a 1000 ms window at 1.0x.
+        padded_raw = np.concatenate(
+            [
+                np.zeros(int(0.125 * 48_000), dtype=np.float32),
+                _tone(int(0.95 * 48_000), freq=440.0),
+                np.zeros(int(0.125 * 48_000), dtype=np.float32),
+            ]
+        )
+        trimmed_refit = refit_subtitle_clips(proj, proj.clips[0].id, padded_raw, new_text="Trimmed")
+        assert trimmed_refit.clips[0].fit_rate == pytest.approx(1.0, abs=1e-2)
 
     def test_video_dub_metadata_and_speaker_voice_context_in_studio(self, tmp_path):
         from vienetts_app.core.align import FitPolicy

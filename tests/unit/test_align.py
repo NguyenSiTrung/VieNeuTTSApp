@@ -462,3 +462,33 @@ def test_split_unit_audio_contract() -> None:
     cues = [cue(1, 0, 1_000, "ab"), cue(2, 1_000, 2_000, "cd")]
     pieces = split_unit_audio(clip(100), [0, 1], cues, SR)
     assert [p.size for p in pieces] == [50, 50]
+
+    # Punctuation-aware weighting allocates extra pause weight to cues with commas/periods
+    punct_cues = [
+        cue(1, 0, 1_000, "abcdef,"),
+        cue(2, 1_000, 2_000, "abcdefg"),
+    ]
+    punct_pieces = split_unit_audio(clip(1_000), [0, 1], punct_cues, SR)
+    # Both cues have 7 characters, but cue 1 has a comma pause so it receives > 50% of frames
+    assert punct_pieces[0].size > punct_pieces[1].size
+    assert sum(p.size for p in punct_pieces) == 1_000
+
+    # AC-1: Pre-fit edge-silence trimming in render_alignment / plan_alignment_for_clips
+    # A 1.0 s speech take with 300 ms of vocoder silence (150 ms head + 150 ms tail)
+    # fits a 1.1 s cue window at 1.00x instead of being compressed to ~1.18x.
+    padded_speech = np.concatenate(
+        [
+            np.zeros(150, dtype=np.float32),
+            np.full(1_000, 0.5, dtype=np.float32),
+            np.zeros(150, dtype=np.float32),
+        ]
+    )
+    ac1_track = render_alignment(
+        [cue(1, 0, 1_100, "Fit at 1x")],
+        [padded_speech],
+        FitPolicy.dub(rate_cap=1.5),
+        SR,
+    )
+    assert ac1_track.fits[0].rate == 1.0
+    assert ac1_track.fits[0].compressed is False
+    assert ac1_track.fits[0].duration_ms == 1_030  # 1000 ms speech + 2 * 15 ms pad

@@ -1271,6 +1271,7 @@ class TestSubtitleStudioController:
             subtitle_mode="soft",
             subtitle_language="",
             clamp_to_video=False,
+            duck_spans=None,
             progress=None,
             data_dir=None,
         ):
@@ -1286,6 +1287,7 @@ class TestSubtitleStudioController:
                     "bg_gain_db": bg_gain_db,
                     "embed_subtitles": embed_subtitles,
                     "subtitle_mode": subtitle_mode,
+                    "duck_spans": duck_spans,
                 }
             )
             return out
@@ -1303,6 +1305,8 @@ class TestSubtitleStudioController:
         assert mux_calls[0]["embed_subtitles"] is True
         assert mux_calls[0]["subtitle_mode"] == "burn"
         assert mux_calls[0]["srt_exists"] is True
+        assert mux_calls[0]["duck_spans"] is not None
+        assert len(mux_calls[0]["duck_spans"]) >= 1
         assert len(exported) == 1
         assert exported[0][1] is True
         assert Path(exported[0][0]).is_file()

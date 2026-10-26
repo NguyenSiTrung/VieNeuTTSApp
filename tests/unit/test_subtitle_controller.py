@@ -1258,6 +1258,8 @@ def test_video_import_auto_pairs_companion_srt_and_exports_video(env, tmp_path, 
     assert mux_calls[0]["progress"] is not None
     assert "subtitle_language" in mux_calls[0]
     assert controller.exportProgress == pytest.approx(0.0)
+    assert "duck_spans" in mux_calls[0]
+    assert mux_calls[0]["duck_spans"]
 
 
 def test_reimporting_the_same_srt_keeps_saved_embed_choices(env, tmp_path):
@@ -2076,3 +2078,64 @@ def test_every_property_is_consumed_or_api_only() -> None:
         "stale_api_only": sorted(API_ONLY_PROPERTIES - unbound),
         "unknown": sorted(API_ONLY_PROPERTIES - properties),
     }
+
+
+def test_video_speech_bounds_refinement_and_uniform_unit_render(env, tmp_path: Path) -> None:
+    from vienetts_app.core.audio import write_wav_file
+
+    controller, fake, _ = env
+    video = tmp_path / "speech_lesson.mp4"
+    video.write_bytes(b"fake_video")
+    srt = tmp_path / "speech_lesson.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:01,500\nMệnh đề đầu tiên,\n\n"
+        "2\n00:00:01,600 --> 00:00:03,000\nmệnh đề thứ hai.\n",
+        encoding="utf-8",
+    )
+
+    # Populate cached 16 kHz WAV with active speech only in 200..1100 ms and 1700..2700 ms
+    cache_dir = controller._media_cache_dir(video)  # noqa: SLF001
+    sr16 = 16_000
+    wav_16k = np.zeros(sr16 * 3, dtype=np.float32)
+    t1 = np.linspace(0.0, 0.9, int(sr16 * 0.9), endpoint=False, dtype=np.float32)
+    wav_16k[int(sr16 * 0.2) : int(sr16 * 1.1)] = (0.3 * np.sin(2.0 * np.pi * 220.0 * t1)).astype(
+        np.float32
+    )
+    t2 = np.linspace(0.0, 1.0, int(sr16 * 1.0), endpoint=False, dtype=np.float32)
+    wav_16k[int(sr16 * 1.7) : int(sr16 * 2.7)] = (0.3 * np.sin(2.0 * np.pi * 260.0 * t2)).astype(
+        np.float32
+    )
+    write_wav_file(wav_16k, cache_dir / "source_16k.wav", sample_rate=sr16)
+
+    assert controller.importVideo(str(video)) is True
+    assert controller.loaded is True
+    proj_cues = controller._project.cues  # noqa: SLF001
+    assert proj_cues[0].speech_start_ms is not None and 150 <= proj_cues[0].speech_start_ms <= 220
+    assert proj_cues[0].speech_end_ms is not None and 1080 <= proj_cues[0].speech_end_ms <= 1150
+    assert proj_cues[1].speech_start_ms is not None and 1650 <= proj_cues[1].speech_start_ms <= 1720
+    assert proj_cues[1].speech_end_ms is not None and 2680 <= proj_cues[1].speech_end_ms <= 2750
+
+    # Enable mergeSentences in dub mode and render a merged 2-cue unit; both cues get the same rate
+    controller.mergeSentences = True
+    controller.render()
+    assert len(fake.pending) == 1
+    job_id, _, listener = fake.pending.pop(0)
+    # Synthesize 3200 ms of speech for the ~2500 ms unit window -> compressed at uniform rate
+    unit_wav = tmp_path / "merged_unit.wav"
+    unit_samples = np.full(int(48_000 * 3.2), 0.25, dtype=np.float32)
+    write_wav_file(unit_samples, unit_wav, sample_rate=48_000)
+    art = SynthesisArtifact(
+        job_id=job_id,
+        path=unit_wav,
+        sample_rate=48_000,
+        samples=unit_samples.size,
+        duration_ms=3_200,
+    )
+    listener.on_synthesis_terminal(
+        JobTerminal(job_id=job_id, owner="audiobook", state="completed", value=art)
+    )
+    assert controller.rendered is True
+    rates = controller._project.cue_rates  # noqa: SLF001
+    assert len(rates) == 2
+    assert rates[0] > 1.0
+    assert rates[0] == pytest.approx(rates[1])

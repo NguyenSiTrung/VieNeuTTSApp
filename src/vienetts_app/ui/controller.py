@@ -5699,7 +5699,11 @@ class AppController(QObject):
             export_srt_file,
             splice_studio_window_into_subtitle,
         )
-        from vienetts_app.core.video_dub import VideoDubError, mux_dubbed_video
+        from vienetts_app.core.video_dub import (
+            VideoDubError,
+            build_duck_spans,
+            mux_dubbed_video,
+        )
 
         project = self._require_studio()
         if project is None:
@@ -5757,6 +5761,17 @@ class AppController(QObject):
             source_wav = store.wav_path(proj_id)
             proj_dir = store.project_dir(proj_id)
             adjusted_cues = updated_proj.adjusted or updated_proj.cues
+            tl = store.load_timeline(proj_id)
+            placed_spans = (
+                tl.segments
+                if tl is not None and len(tl.segments) == len(updated_proj.cues)
+                else adjusted_cues
+            )
+            duck_spans = build_duck_spans(
+                updated_proj.cues,
+                placed_spans,
+                offset_ms=int(updated_proj.policy.offset_ms),
+            )
             embed_subs = bool(updated_proj.embed_subtitles)
             srt_temp: Path | None = None
             try:
@@ -5773,6 +5788,7 @@ class AppController(QObject):
                     embed_subtitles=embed_subs,
                     subtitle_mode=updated_proj.subtitle_embed_mode,
                     subtitle_language=self._studio_subtitle_language(),
+                    duck_spans=duck_spans,
                     data_dir=self._data_dir,
                 )
                 return reloaded, str(target)

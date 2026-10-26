@@ -83,6 +83,7 @@ from vienetts_app.core.diarization import (
     DiarizationConfig,
     diarize_cues,
     extract_speaker_reference_wav,
+    refine_cues_speech_bounds,
     remap_speakers_to_previous,
 )
 from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
@@ -114,6 +115,7 @@ from vienetts_app.core.timeline import (
 )
 from vienetts_app.core.video_dub import (
     VideoDubError,
+    build_duck_spans,
     dub_overrun_ms,
     find_companion_srt,
     find_companion_video,
@@ -410,6 +412,8 @@ class SubtitleController(QObject):
             offset_ms = int(project.policy.offset_ms) if project is not None else 0
             rate_cap = float(project.policy.rate_cap) if project is not None else 1.5
             is_dub = (project.policy.mode == MODE_DUB) if project is not None else True
+            raw_lang = str(getattr(self._app, "synthesisLanguage", "") or "vi").strip()
+            lang = "vi" if raw_lang.lower() in ("", "auto") else raw_lang
             default_v = self._effective_voice()
             rows: list[dict[str, Any]] = []
             for i, cue in enumerate(cues):
@@ -419,7 +423,18 @@ class SubtitleController(QObject):
                     if i < len(adjusted)
                     else 0
                 )
-                max_chars = max_chars_for_window(cue.duration_ms, max_rate=rate_cap)
+                gap_after_ms = (
+                    max(0, cues[i + 1].effective_speech_start_ms - cue.effective_speech_end_ms)
+                    if i + 1 < len(cues)
+                    else 800
+                )
+                slack_ms = max(0, min(gap_after_ms - 120, 800))
+                max_chars = max_chars_for_window(
+                    cue.speech_duration_ms,
+                    max_rate=rate_cap,
+                    language=lang,
+                    slack_ms=slack_ms,
+                )
                 rows.append(
                     {
                         "index": cue.index,
@@ -1320,7 +1335,7 @@ class SubtitleController(QObject):
             self._subtitle_embed_mode = embed_mode
             self._video_mix_mode = mix_mode
             self._video_bg_gain_db = bg_gain
-            project = build_project(
+            base_project = build_project(
                 source,
                 cues,
                 self._fit_policy(),
@@ -1335,7 +1350,30 @@ class SubtitleController(QObject):
                 embed_subtitles=embed_subs,
                 subtitle_embed_mode=embed_mode,
             )
-            cached = None if refused else self._store.cached_render(project)
+            cached = None if refused else self._store.cached_render(base_project)
+            if cached is None and eff_video:
+                wav_16k = self._media_cache_dir(Path(eff_video)) / "source_16k.wav"
+                if wav_16k.is_file() and any(
+                    c.speech_start_ms is None or c.speech_end_ms is None for c in cues
+                ):
+                    cues = refine_cues_speech_bounds(cues, wav_16k)
+                    base_project = build_project(
+                        source,
+                        cues,
+                        self._fit_policy(),
+                        sample_rate=DEFAULT_SAMPLE_RATE,
+                        voice_key=self._effective_voice(),
+                        title=title,
+                        context=context,
+                        video_path=eff_video,
+                        speaker_voices=speaker_voices,
+                        video_mix_mode=mix_mode,
+                        video_bg_gain_db=bg_gain,
+                        embed_subtitles=embed_subs,
+                        subtitle_embed_mode=embed_mode,
+                    )
+                    cached = None if refused else self._store.cached_render(base_project)
+            project = base_project
             if cached is not None:
                 project = replace(
                     cached,
@@ -1429,10 +1467,27 @@ class SubtitleController(QObject):
             if cues:
                 return self._activate_cues_project(companion, cues, video_path=str(source))
         if self._project is not None:
-            self._project = replace(self._project, video_path=str(source))
+            updated_cues = self._project.cues
+            wav_16k = self._media_cache_dir(source) / "source_16k.wav"
+            if not self.rendered and wav_16k.is_file():
+                updated_cues = tuple(refine_cues_speech_bounds(updated_cues, wav_16k))
+            self._project = replace(
+                self._project,
+                cues=updated_cues,
+                video_path=str(source),
+                fingerprint=render_fingerprint(
+                    updated_cues,
+                    self._project.policy,
+                    self._project.sample_rate,
+                    self._project.voice_key,
+                    self._project.context,
+                    speaker_voices=self._project.speaker_voices,
+                ),
+            )
             with contextlib.suppress(SubtitleProjectError):
                 self._store.save(self._project)
-        self._set_error("")
+            if updated_cues != self._project.cues or wav_16k.is_file():
+                self._emit_cues()
         self.videoChanged.emit()
         return True
 
@@ -1873,9 +1928,7 @@ class SubtitleController(QObject):
                 )
             )
         try:
-            pieces = split_unit_audio(audio, unit, project.cues, sample_rate)
-            for cue_index, piece in zip(unit, pieces, strict=True):
-                renderer.add_clip(cue_index, piece)
+            renderer.add_unit_clip(unit, audio, split_fn=split_unit_audio)
         except SubtitleProjectError:
             raise
         except Exception as exc:
@@ -2229,6 +2282,16 @@ class SubtitleController(QObject):
         target = self._export_target(dest_dir, f"{project.title}_dubbed", ext)
         source_wav = self._store.wav_path(project.id)
         adjusted_cues = project.adjusted or project.cues
+        placed_spans = (
+            self._timeline.segments
+            if self._timeline is not None and len(self._timeline.segments) == len(project.cues)
+            else adjusted_cues
+        )
+        duck_spans = build_duck_spans(
+            project.cues,
+            placed_spans,
+            offset_ms=int(project.policy.offset_ms),
+        )
         mix_mode = self.videoMixMode
         bg_gain = self.videoBgGainDb
         embed_subs = self.embedSubtitles
@@ -2236,7 +2299,6 @@ class SubtitleController(QObject):
         subtitle_language = self._subtitle_language()
         include_speakers = bool(getattr(self._app, "subtitleExportSpeakerLabels", False))
         proj_dir = self._store.project_dir(project.id)
-
         self._export_cancel = False
         self._export_generation += 1
         generation = self._export_generation
@@ -2272,6 +2334,7 @@ class SubtitleController(QObject):
                     embed_subtitles=embed_subs,
                     subtitle_mode=embed_mode,
                     subtitle_language=subtitle_language,
+                    duck_spans=duck_spans,
                     progress=report,
                     data_dir=self._data_dir,
                     cancel_check=lambda: self._export_cancel,

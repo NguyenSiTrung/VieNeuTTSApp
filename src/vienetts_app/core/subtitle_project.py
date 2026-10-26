@@ -773,19 +773,38 @@ class SubtitleTrackRenderer:
         """Place one cue's synthesized audio and write it to the track."""
         if clip is None or np.asarray(clip).size == 0:
             return self.add_silent_cue(cue_index)
-        return self._place(cue_index, np.asarray(clip, dtype=np.float32).ravel())
+        trim = not getattr(self, "_unit_pretrimmed", False)
+        forced_rate = getattr(self, "_unit_forced_rate", None)
+        return self._place(
+            cue_index,
+            np.asarray(clip, dtype=np.float32).ravel(),
+            trim=trim,
+            forced_rate=forced_rate,
+        )
 
-    def add_unit_clip(self, unit_indices: Sequence[int], clip: np.ndarray) -> list[CueFit]:
+    def add_unit_clip(
+        self,
+        unit_indices: Sequence[int],
+        clip: np.ndarray,
+        *,
+        split_fn: Any = split_unit_audio,
+    ) -> list[CueFit]:
         """Place a merged speech unit across ``unit_indices`` at a uniform rate."""
         if not unit_indices:
             return []
         if clip is None or np.asarray(clip).size == 0:
             return [self.add_silent_cue(idx) for idx in unit_indices]
-        if len(unit_indices) == 1:
-            return [self.add_clip(unit_indices[0], clip)]
         project = self._project
+        if len(unit_indices) == 1:
+            pieces = split_fn(
+                np.asarray(clip, dtype=np.float32).ravel(),
+                unit_indices,
+                project.cues,
+                project.sample_rate,
+            )
+            return [self.add_clip(unit_indices[0], pieces[0])]
         trimmed = trim_speech_edges(np.asarray(clip, dtype=np.float32).ravel(), project.sample_rate)
-        pieces = split_unit_audio(trimmed, unit_indices, project.cues, project.sample_rate)
+        pieces = split_fn(trimmed, unit_indices, project.cues, project.sample_rate)
         forced_rate: float | None = None
         if project.policy.mode == MODE_DUB:
             first_idx = unit_indices[0]
@@ -830,10 +849,15 @@ class SubtitleTrackRenderer:
                 prev_rate=prev_rate,
             )
             forced_rate = unit_fit.rate
-        return [
-            self._place(idx, piece, trim=False, forced_rate=forced_rate)
-            for idx, piece in zip(unit_indices, pieces, strict=True)
-        ]
+        self._unit_pretrimmed = True
+        self._unit_forced_rate = forced_rate
+        try:
+            return [
+                self.add_clip(idx, piece) for idx, piece in zip(unit_indices, pieces, strict=True)
+            ]
+        finally:
+            self._unit_pretrimmed = False
+            self._unit_forced_rate = None
 
     def add_silent_cue(self, cue_index: int) -> CueFit:
         """Keep a cue's slot when its synthesis produced nothing (never drop text)."""

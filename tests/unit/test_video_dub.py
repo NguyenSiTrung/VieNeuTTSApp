@@ -495,3 +495,50 @@ def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
     elapsed = time.monotonic() - started
     assert result.returncode != 0
     assert elapsed < 10
+
+
+def test_mux_duck_spans_suppresses_trailing_source_speech_when_dub_is_shorter(
+    tmp_path: Path,
+) -> None:
+    """AC-7: duck mode attenuates background audio across the union of original speech
+    and dub spans so source actor speech does not bleed through when dub ends early.
+    """
+    from vienetts_app.core.subtitles import Cue
+    from vienetts_app.core.timeline import SegmentSpan
+    from vienetts_app.core.video_dub import build_duck_spans
+
+    cues = [Cue(1, 0, 1_100, "Hello there", speech_start_ms=100, speech_end_ms=1_000)]
+    placed = [SegmentSpan(0, 11, 100, 350)]  # dub finishes at 350 ms while source speaks to 1000 ms
+    spans = build_duck_spans(cues, placed)
+    assert spans == [(80, 1_080)]  # padded [100 - 20, 1000 + 80]
+
+    video = _make_test_video(tmp_path / "speech_src.mp4", duration_s=1.6, with_audio=True)
+    sr = 48_000
+    # Dub audio is active only 100..350 ms and silent from 350..1600 ms.
+    dub_samples = np.zeros(int(sr * 1.6), dtype=np.float32)
+    t_dub = np.linspace(0.0, 0.25, int(sr * 0.25), endpoint=False, dtype=np.float32)
+    dub_samples[int(sr * 0.10) : int(sr * 0.35)] = (
+        0.4 * np.sin(2.0 * np.pi * 880.0 * t_dub)
+    ).astype(np.float32)
+    dub_wav = write_wav_file(dub_samples, tmp_path / "short_dub.wav", sample_rate=sr)
+
+    out_with_spans = mux_dubbed_video(
+        video,
+        dub_wav,
+        tmp_path / "ducked_with_spans.mp4",
+        mix_mode="duck",
+        bg_gain_db=-6.0,
+        embed_subtitles=False,
+        duck_spans=spans,
+    )
+    out_wav = extract_video_audio(out_with_spans, tmp_path / "out_spans.wav", sample_rate=16_000)
+    samples, out_sr = read_wav(out_wav)
+    # Trailing source speech window (500..950 ms, where dub is already silent) vs
+    # post-speech ambient window (1250..1500 ms, after original speech ended).
+    trailing_speech_rms = float(
+        np.sqrt(np.mean(np.square(samples[int(out_sr * 0.50) : int(out_sr * 0.95)])))
+    )
+    post_speech_rms = float(
+        np.sqrt(np.mean(np.square(samples[int(out_sr * 1.25) : int(out_sr * 1.50)])))
+    )
+    assert trailing_speech_rms < post_speech_rms * 0.35

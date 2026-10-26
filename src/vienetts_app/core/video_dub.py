@@ -24,9 +24,10 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
 _VIDEO_EXT_SET = frozenset(VIDEO_EXTENSIONS)
@@ -675,6 +676,67 @@ def extract_video_audio(
         raise
 
 
+def merge_duck_spans(
+    spans: Sequence[tuple[int, int]],
+    *,
+    pad_before_ms: int = 20,
+    pad_after_ms: int = 80,
+    merge_gap_ms: int = 150,
+    max_spans: int = 200,
+) -> list[tuple[int, int]]:
+    """Normalize, pad, and coalesce ``(start_ms, end_ms)`` ducking intervals."""
+    padded: list[tuple[int, int]] = []
+    for s_raw, e_raw in spans:
+        s = int(s_raw)
+        e = int(e_raw)
+        if e <= s or e <= 0:
+            continue
+        padded.append((max(0, s - pad_before_ms), e + pad_after_ms))
+    if not padded:
+        return []
+    padded.sort(key=lambda item: (item[0], item[1]))
+    merged: list[tuple[int, int]] = [padded[0]]
+    for s, e in padded[1:]:
+        prev_s, prev_e = merged[-1]
+        if s <= prev_e + merge_gap_ms:
+            merged[-1] = (prev_s, max(prev_e, e))
+        else:
+            merged.append((s, e))
+    while len(merged) > max_spans and len(merged) >= 2:
+        best_idx = min(
+            range(len(merged) - 1),
+            key=lambda idx: merged[idx + 1][0] - merged[idx][1],
+        )
+        merged[best_idx : best_idx + 2] = [(merged[best_idx][0], merged[best_idx + 1][1])]
+    return merged
+
+
+def build_duck_spans(
+    cues: Sequence[Any],
+    placed_spans: Sequence[Any] | None = None,
+    *,
+    offset_ms: int = 0,
+) -> list[tuple[int, int]]:
+    """Compute union of original speech windows and dubbed audio windows per cue."""
+    raw: list[tuple[int, int]] = []
+    for i, cue in enumerate(cues):
+        sp_start = getattr(cue, "effective_speech_start_ms", getattr(cue, "start_ms", 0))
+        sp_end = getattr(cue, "effective_speech_end_ms", getattr(cue, "end_ms", 0))
+        orig_s = max(0, int(sp_start) + offset_ms)
+        orig_e = max(orig_s, int(sp_end) + offset_ms)
+        s_ms, e_ms = orig_s, orig_e
+        if placed_spans is not None and i < len(placed_spans):
+            seg = placed_spans[i]
+            dub_s = int(getattr(seg, "start_ms", orig_s))
+            dub_e = int(getattr(seg, "end_ms", orig_e))
+            if dub_e > dub_s:
+                s_ms = min(orig_s, dub_s)
+                e_ms = max(orig_e, dub_e)
+        if e_ms > s_ms:
+            raw.append((s_ms, e_ms))
+    return merge_duck_spans(raw)
+
+
 def mux_dubbed_video(
     video_path: str | Path,
     dub_wav_path: str | Path,
@@ -687,6 +749,7 @@ def mux_dubbed_video(
     subtitle_mode: str = "soft",
     subtitle_language: str = "",
     clamp_to_video: bool = False,
+    duck_spans: Sequence[tuple[int, int]] | None = None,
     progress: Callable[[float], None] | None = None,
     data_dir: Path | None = None,
     cancel_check: Callable[[], bool] | None = None,
@@ -777,16 +840,42 @@ def mux_dubbed_video(
         video_out = "[vout]"
     audio_out = "1:a:0"
     if use_duck:
-        filters.append(
-            "[0:a:0]asplit=2[bg_src][sil_ref];"
-            "[sil_ref]volume=0[sil];"
-            "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
-            "weights=1 0:normalize=0,asplit=2[sc][dub];"
-            f"[bg_src]volume={gain_db:.1f}dB[bg_att];"
-            "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
-            "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
-            "weights=1 1:normalize=0[aout]"
-        )
+        if duck_spans is not None:
+            raw_duck_spans = [(int(s), int(e)) for s, e in duck_spans]
+        elif srt_path is not None and Path(srt_path).is_file():
+            raw_duck_spans = [(s, e) for s, e, _ in _read_srt_cues(Path(srt_path))]
+        else:
+            raw_duck_spans = []
+        merged_duck = merge_duck_spans(raw_duck_spans)
+        if merged_duck:
+            enable_expr = "+".join(
+                f"between(t,{s / 1000.0:.3f},{e / 1000.0:.3f})" for s, e in merged_duck
+            )
+            filters.append(
+                "[0:a:0]asplit=3[bg_src][sc_ref][sil_ref];"
+                "[sil_ref]volume=0[sil];"
+                f"[sc_ref]volume=volume=0:enable='not({enable_expr})'[sc_span];"
+                "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
+                "weights=1 0:normalize=0,asplit=2[dub_sc][dub];"
+                "[dub_sc][sc_span]amix=inputs=2:duration=longest:dropout_transition=0:"
+                "weights=1 1:normalize=0[sc];"
+                f"[bg_src]volume={gain_db:.1f}dB,"
+                f"volume=volume=-12.0dB:enable='{enable_expr}'[bg_att];"
+                "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
+                "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
+                "weights=1 1:normalize=0[aout]"
+            )
+        else:
+            filters.append(
+                "[0:a:0]asplit=2[bg_src][sil_ref];"
+                "[sil_ref]volume=0[sil];"
+                "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
+                "weights=1 0:normalize=0,asplit=2[sc][dub];"
+                f"[bg_src]volume={gain_db:.1f}dB[bg_att];"
+                "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
+                "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
+                "weights=1 1:normalize=0[aout]"
+            )
         audio_out = "[aout]"
     if filters:
         cmd += ["-filter_complex", ";".join(filters)]

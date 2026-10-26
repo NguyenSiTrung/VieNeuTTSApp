@@ -1,0 +1,28 @@
+{
+  "track_id": "dub_pacing_alignment_20261026",
+  "type": "feature",
+  "status": "completed",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-10-26T00:00:00Z",
+  "updated_at": "2026-10-26T12:00:00Z",
+  "description": "Natural Dubbing Pacing, Acoustic Speech-Window Alignment & Smart Timing: optional speech_start_ms/speech_end_ms on Cue from 16kHz RMS VAD + Nemotron-3 turns + Whisper word timestamps, pre-fit TTS edge-silence trimming & micro-fades, two-stage elastic dub alignment (1.15x comfort rate -> lookahead post-cue gap borrowing -> rateCap + neighbor smoothing), uniform merged speech-unit stretching, language/slack-aware LLM maxChars budgeting, readable subtitle hold, and full speech+dub span video ducking.",
+  "execution_mode": "parallel",
+  "manual_phase_verification": false,
+  "beads_epic": "VieNeuTTSApp-o8af",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-o8af.1",
+    "phase1_task1": "VieNeuTTSApp-o8af.1.1",
+    "phase1_task2": "VieNeuTTSApp-o8af.1.2",
+    "phase2": "VieNeuTTSApp-o8af.2",
+    "phase2_task1": "VieNeuTTSApp-o8af.2.1",
+    "phase2_task2": "VieNeuTTSApp-o8af.2.2",
+    "phase3": "VieNeuTTSApp-o8af.3",
+    "phase3_task1": "VieNeuTTSApp-o8af.3.1",
+    "phase3_task2": "VieNeuTTSApp-o8af.3.2",
+    "phase4": "VieNeuTTSApp-o8af.4",
+    "phase4_task1": "VieNeuTTSApp-o8af.4.1",
+    "phase4_task2": "VieNeuTTSApp-o8af.4.2"
+  }
+}

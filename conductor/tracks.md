@@ -32,3 +32,8 @@ under `conductor/archive/`.
 
 <!-- Archived: asr_hardening_20261021 (On-device ASR & video-dubbing hardening — pinned Whisper GGUF size/SHA-256 with guarded resolve/remove, managed whisper.cpp runtime installer (staged extract, `--help` probe, atomic promote), `AsrCancelled`/`DiarizationCancelled` semantics with truthful auto-fallback, non-speech filtering + duration-aware splitting + micro-fragment merge, shared 16 kHz WAV/segment caches, collision-safe managed `.srt` names, ASR device/threads settings with throttled download progress and QML controls; 3 phases / 8 tasks complete 2026-10-21; beads epic VieNeuTTSApp-7u58 closed), archived 2026-10-23 → ./archive/asr_hardening_20261021/ -->
 <!-- Archived: subtitles_ux_overhaul_20261023 (UI/UX audit remediation for the "Lồng tiếng & Phụ đề" destination — staged render-invalidation gate, stale-render truth and export cancel, project lifecycle, derived `state`/`busyOwner`, pinned SubtitleActionDock, Source/Prepare/Produce stages, two-card empty launcher with drop routing, ordered AI pipeline + target-language picker, VoicePicker casting, warningText contrast, AppProgressBar/AppTextField, cue-list keyboard + focus-follow, and the card split into Source/Prepare/Cue/Cast components; 5 phases / 29 tasks complete 2026-10-23; beads epic VieNeuTTSApp-weit closed. Residual: video preview filed as VieNeuTTSApp-t80a), archived 2026-10-23 → ./archive/subtitles_ux_overhaul_20261023/ -->
+
+---
+
+## [x] Track: Natural Dubbing Pacing, Acoustic Speech-Window Alignment & Smart Timing
+*Link: [./conductor/tracks/dub_pacing_alignment_20261026/](./conductor/tracks/dub_pacing_alignment_20261026/)*

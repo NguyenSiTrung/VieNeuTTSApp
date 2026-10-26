@@ -251,6 +251,35 @@ short snippet to a full document, fully offline.
       `AppTextField`, `Theme.warningText` AA contrast, `disabledReason`
       tooltips/accessibility, cue-list keyboard navigation, and
       `PageShell.ensureFocusVisible` focus-follow (`42ab565`).
+    - **Natural dubbing pacing, acoustic speech-window alignment & smart timing
+      (track `dub_pacing_alignment_20261026`, epic `VieNeuTTSApp-o8af`, archived
+      2026-10-26)**: separates each cue's active speaking span
+      (`Cue.speech_start_ms`/`speech_end_ms`, sparsely persisted in
+      `project.json` so existing `render_fingerprint` caches stay byte-identical)
+      from its reading-hold caption window `[start_ms, end_ms]`, refined from
+      16 kHz RMS energy VAD (`refine_cues_speech_bounds` in
+      `core/diarization.py`) intersected with diarization `RttmTurn` bounds and
+      Whisper `word_timestamps=True` word-boundary clause splits (`core/asr.py`).
+      Synthesized clips strip leading/trailing vocoder silence before fitting
+      (`trim_speech_edges` at $-45\text{ dBFS}$ with $15\text{ ms}$ breath guard
+      + $5\text{ ms}$ half-cosine `apply_micro_fade` in `core/audio.py`).
+      `plan_cue` / `plan_alignment` (`core/align.py`) anchor at
+      `effective_speech_start_ms + offset_ms` and fit in two elastic stages —
+      Stage 1 gentle compression up to `COMFORT_RATE = 1.15`, Stage 2 lookahead
+      post-cue silence borrowing up to $\min(\text{target\_end} + 1200,
+      \text{next\_start} - 120)\text{ ms}$ when the post-cue gap is $\ge 250\text{ ms}$,
+      and Stage 3 compression up to `rate_cap` with same-speaker rate step
+      smoothing ($|\Delta\text{rate}| \le 0.20\times$). Merged sentence units
+      stretch at one uniform rate (`SubtitleTrackRenderer.add_unit_clip`) and
+      split across cues with punctuation pause weights (`split_unit_audio`);
+      `max_chars_for_window` (`core/llm_refine.py`) scales by target language
+      (`LANGUAGE_CHARS_PER_SEC`: Latin/vi $14.0\text{ cps}$ vs `zh` $4.8$, `ja`
+      $6.0$, `ko` $5.5$) and speech window + post-cue slack; `adjusted_cues`
+      preserves readable subtitle display hold; and `mux_dubbed_video(...,
+      mix_mode="duck")` attenuates background audio across the full union of
+      original speech and dubbed spans (`build_duck_spans` in
+      `core/video_dub.py`) so trailing source speech never leaks when a dub clip
+      finishes early.
 12. **Optional multilingual Qwen engines (track `qwen_multiengine_20260920`,
     released in v0.2.0)** — two opt-in engine profiles beside VieNeu, which
     stays the fresh-install and migrated-settings default:
@@ -347,7 +376,7 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-10-23)
+## Implementation Status (2026-10-26)
 
 All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
@@ -357,17 +386,18 @@ perf track (`perf_hardening_20261009`, feature 14), the 2026-10-10 UI shell
 redesign track (`ui_shell_redesign_20261010`, feature 15), the 2026-10-21
 on-device ASR & dubbing hardening track (`asr_hardening_20261021`, feature 11),
 the 2026-10-23 Subtitles UX overhaul track (`subtitles_ux_overhaul_20261023`,
-feature 11), and bead-driven batches (incl. `VieNeuTTSApp-2ifr` diarization
-hardening and `VieNeuTTSApp-4mqj` test-runtime reduction). All 13 conductor
-tracks are complete and archived under `conductor/archive/`. Current app
-version 0.3.0; curated notes in `packaging/release-notes/v0.1.1.md`–`v0.3.0.md`.
-Test suite now stands at 1597 items collected / 1579 selected (18 benchmarks
-deselected via `-m 'not benchmark'`; `-m "not slow"` → 1557,
-`-m "not slow and not benchmark"` → 1539; verified live 2026-10-23 with
-`pytest --collect-only -q`). Latest gate (2026-10-23 refresh): `ruff check .`
-passes, `ruff format --check .` passes (214 files), and
-`scripts/update_i18n.sh` is 100% clean (1175/1175 finished, 0 unfinished).
-Full `pytest` on this 18-core host runs in ~32–43 s wall under
+feature 11), the 2026-10-26 natural dubbing pacing & acoustic speech-window
+alignment track (`dub_pacing_alignment_20261026`, feature 11), and bead-driven
+batches (incl. `VieNeuTTSApp-2ifr` diarization hardening and `VieNeuTTSApp-4mqj`
+test-runtime reduction). All 14 conductor tracks are complete and archived under
+`conductor/archive/`. Current app version 0.3.0; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite now stands at 1614
+items collected / 1596 selected (18 benchmarks deselected via
+`-m 'not benchmark'`; `-m "not slow"` → 1574, `-m "not slow and not benchmark"`
+→ 1556; verified live 2026-10-26 with `pytest --collect-only -q`). Latest gate
+(2026-10-26 refresh): `ruff check .` passes, `ruff format --check .` passes
+(214 files), and `scripts/update_i18n.sh` is 100% clean (1175/1175 finished, 0
+unfinished). Full `pytest` on this 18-core host runs in ~32–43 s wall under
 `-n auto --dist worksteal` after `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`)
 split the 12 giant smoke items (`test_ui_tabs.py`, `test_ui_shell.py`,
 `test_ui_studio.py`) into smaller scenario-group fixtures and fixed the
@@ -452,10 +482,11 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1597 collected / 1579 selected (18
+linux-aarch64. Suite at this refresh: 1614 collected / 1596 selected (18
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), and +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579)).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), and +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596)).
 
+<!-- refreshed 2026-10-26: 10 commits since `226ba45` (`765c10a..3d6418b`, track `dub_pacing_alignment_20261026`, epic `VieNeuTTSApp-o8af` closed and archived in `3d6418b`). Feature 11 expanded with optional `Cue.speech_start_ms`/`speech_end_ms` (sparse `project.json` serialization preserving legacy `render_fingerprint` hashes), 16 kHz RMS VAD + `RttmTurn` speech-bound refinement (`refine_cues_speech_bounds`) and Whisper `word_timestamps=True` clause splitting, pre-fit `trim_speech_edges` (-45 dBFS, 15 ms pad) + 5 ms `apply_micro_fade`, two-stage elastic `dub` alignment (`COMFORT_RATE = 1.15` -> post-cue gap borrowing up to 1200 ms -> `rate_cap` with <=0.20x same-speaker step clamping), uniform merged sentence-unit stretching (`SubtitleTrackRenderer.add_unit_clip`) with punctuation-weighted `split_unit_audio`, language/slack-aware LLM `max_chars_for_window` (`LANGUAGE_CHARS_PER_SEC`), readable `adjusted_cues` caption hold, and full speech+dub span background ducking (`build_duck_spans` in `mux_dubbed_video`). Suite 1614 collected / 1596 selected (18 benchmark deselected, +17 items, verified live); ruff check + format --check green (214 files); i18n 1175/1175 finished; no `pyproject.toml`/`uv.lock` dep drift; beads 532 total / 1 open (`t80a`) / 1 blocked (`nqx.2.4`) / 40 deferred / 490 closed (+13 issues closed for `o8af`). -->
 <!-- refreshed 2026-10-23: 37 commits since `e64ec18` (diarization hardening epic `2ifr` `b41caf7..cb0c1e9`, test-runtime reduction `4mqj` `1542053`+`5eb6f85`, track `asr_hardening_20261021` epic `7u58` `b09dd45..d50f43b`, skill pruning `9e216f4`, and track `subtitles_ux_overhaul_20261023` epic `weit` `2f6fe8a..42ab565`, both tracks archived in `ed66f6a`). Feature 11 expanded with managed `whisper.cpp` (`b5454`) + `audiocpp_cli` staged runtime installers, pinned Whisper/Nemotron GGUF digests, shared per-video `_media_cache`, `AsrCancelled`/`DiarizationCancelled`, ASR/diarization device+threads controls, and the 5-phase Subtitles UX overhaul (staged render-invalidation gate, `renderStale`, project lifecycle, `cancelExport`, derived `state`/`busyOwner`, pinned `SubtitleActionDock`, Source/Prepare/Produce stages, `SubtitleSourcePanel`/`SubtitlePreparePanel`/`SubtitleCueEditor`/`SubtitleCastPanel` extraction, `AppProgressBar`/`AppTextField`, `Theme.warningText`, focus-follow `42ab565`). Suite 1597 collected / 1579 selected (18 benchmark deselected, verified live); ruff check + format --check green (214 files); i18n 1175/1175 finished; no `pyproject.toml`/`uv.lock` dep drift; beads 519 total / 1 open (`t80a`) / 1 blocked (`nqx.2.4`) / 40 deferred / 477 closed. -->
 <!-- refreshed 2026-10-21: 7 commits since `e08a58e` (`d17a261` video dubbing/diarization/muxing/subtitle-studio hardening, `1661604` VoicePicker popup clipping + SubtitleCard layout, `6e7c747` burn-in embed mode + webm/avi fixes, `d7b8721` styled ASS burn-in/HDR/progress, plus 3 beads-sync chores). Feature 11 gains the soft-vs-burn subtitle embed mode; feature 15 corrected to "five destinations replaced the six-tab sidebar, sixth (`subtitles`) promoted 2026-10-19 in `aef1d87`". Suite 1541 collected / 1523 selected (18 benchmark deselected, verified live); ruff format gate restored (5 files of debt from `d17a261`/`6e7c747` reformatted, 212 files green); no `pyproject.toml`/`uv.lock` dep drift; i18n 1012/1012 finished (0 unfinished, 0 vanished); beads 463 total / 46 open / 5 blocked / 416 closed (was 456 / 409 closed — `4kht` epic + children, `vxil`, `ni2i`, `poph` closed). Flake baseline rewritten: full runs flake 2–4 varying tests under load, all reproducing at `e08a58e` (triton `TORCH_LIBRARY` import race in `test_qwen_host`). -->
 

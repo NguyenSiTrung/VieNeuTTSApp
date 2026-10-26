@@ -18,6 +18,7 @@
 <!-- refreshed 2026-10-20: no root pyproject/uv.lock dep drift. Post-v0.3.0 on main: (1) Dedicated top-level `SubtitlesTab.qml` (`Lồng tiếng & Phụ đề`, `aef1d87`): promoted `subtitles` to a sixth destination in `ShellBridge.TABS`, narrowed `CreateTab` `CREATE_MODES` to `compose`/`document`/`files`, rebuilt `SubtitleCard.qml` into a responsive two-column workstation, and finished all 991 English i18n catalog entries (`vienetts_en.ts`/`.qm`); (2) Video Dubbing Studio integration (`12734a0`, bead `eet9` closed): `SubtitleStudioMeta` video/mix/speaker_voices metadata, per-speaker `StudioClip.voice` & `SynthesisContext` resolution with `studioRegenDialog` voice pre-selection, 1-click `controller.studioExportVideo` window splice + `-c:v copy` muxing, and `controller.studioPlayOriginalCue` source video slice audition; suite now 1532 collected / 1514 selected (18 benchmark deselected, verified live 2026-10-20) -->
 <!-- refreshed 2026-10-21: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0 — `pyproject.toml` and `uv.lock` untouched since `e08a58e`). Post-v0.3.0 on main: (1) video-dubbing hardening `d17a261` (`core/video_dub.py`, `core/diarization.py`, `core/asr.py`, `core/llm_refine.py`, `core/subtitle_project.py`, `core/studio.py`, `ui/subtitle_controller.py`, `ui/controller.py`: muxing/diarization correctness, inline cue editing, per-speaker sample audition, AI progress bars, Studio staged-ops auto-commit, 15 new QML objectNames incl. `subtitleCueEditButton`/`subtitleSpeakerSampleButton`/`studioEmbedSrtToggle`); (2) `1661604` VoicePicker popup window-edge clipping/padding + `SubtitleCard` layout; (3) soft-vs-burned subtitle embed mode `6e7c747` + `d7b8721` (beads `poph`/`ni2i`/`vxil` closed): `subtitleEmbedMode` persisted per project (`core/subtitle_project.py`, `soft` default), generated ASS burn-in (`probe_video_info` + `_burn_style`/`_fit_cue`/`_ass_escape`/`_wrap_lines`, PlayRes-matched ratios, `_BURN_MAX_LINES = 3` with adaptive shrink, bundled Be Vietnam Pro `fontsdir`, `_burn_pix_fmt` HDR bit-depth preservation), WebVTT soft track for `.webm`, explicit `.avi` no-soft-track hint, `subtitle_language` tagging, ffmpeg `-progress` relay + dub-overrun warning, opt-in `clamp_to_video`; suite now 1541 collected / 1523 selected (18 benchmark deselected, verified live 2026-10-21); `ruff check .` + `ruff format --check .` green after reformatting 5 files of debt (212 files) -->
 <!-- refreshed 2026-10-23: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0 — `pyproject.toml` and `uv.lock` untouched since `e08a58e`). Post-v0.3.0 on main: (1) diarization hardening (`VieNeuTTSApp-2ifr`, `b41caf7..cb0c1e9`): verified Nemotron-3 GGUF downloads + staged `audiocpp_cli` `--help` probe, 16 kHz mono WAV normalization, `diarization_device`/`diarization_threads`/`subtitle_export_speaker_labels` settings, `weight_type=f32` on CPU-only runtimes, `max_speakers` ceiling merge + label remapping, `DiarizationCancelled`, and removal of fake NeMo UI option; (2) test-runtime reduction (`VieNeuTTSApp-4mqj`, `1542053` + `5eb6f85`): smoke-fixture splitting + `sys.modules["torch"] = None` isolation fix; (3) track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, archived `ed66f6a`): pinned `WHISPER_GGUF_MODELS` sizes/SHA-256 + guarded removal, managed `whisper.cpp` (`b5454`, `whisper-cli`) staged runtime installer, shared per-video `_media_cache` (`source_16k.wav` + `asr_segments_cache.json` + `diar_turns_cache.json`), collision-safe `<stem>_<hash8>.srt` paths, `NON_SPEECH_LABELS` filtering + duration-aware splitting, `AsrCancelled`, and `asrDevice`/`asrThreads` + throttled `aiDownloadProgressChanged`; (4) track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `2f6fe8a..42ab565`, archived `ed66f6a`): staged `_PendingInvalidation` gate, `renderStale`/`lastStats`/`exportBlockedReason`, project lifecycle switcher, `cancelExport()`, derived `state`/`busyOwner` + `API_ONLY_PROPERTIES`, pinned `SubtitleActionDock`, extracted `SubtitleSourcePanel`/`SubtitlePreparePanel`/`SubtitleCueEditor`/`SubtitleCastPanel`, `AppProgressBar`/`AppTextField`, `Theme.warningText`, `disabledReason`, and `PageShell.ensureFocusVisible` (`pageWindow`). Suite now 1597 collected / 1579 selected (18 benchmark deselected, verified live 2026-10-23); `ruff check .` + `ruff format --check .` green (214 files); i18n 1175/1175 finished -->
+<!-- refreshed 2026-10-26: no root pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0 — `pyproject.toml` and `uv.lock` untouched). Track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, archived `3d6418b`): optional `Cue.speech_start_ms`/`speech_end_ms` with sparse `project.json` serialization, `trim_speech_edges` (-45 dBFS, 15 ms pad) + 5 ms half-cosine `apply_micro_fade` in `core/audio.py`, 16 kHz RMS VAD + `RttmTurn` speech-bound refinement (`refine_cues_speech_bounds` in `core/diarization.py`) and Whisper `word_timestamps=True` word-boundary splitting (`core/asr.py`), `LANGUAGE_CHARS_PER_SEC` + speech-window/slack `max_chars_for_window` in `core/llm_refine.py`, two-stage elastic `plan_cue`/`plan_alignment` (`COMFORT_RATE = 1.15` -> post-cue gap borrowing up to 1200 ms -> `rate_cap` with <=0.20x same-speaker step clamping) + readable `adjusted_cues` caption hold + punctuation-weighted `split_unit_audio` in `core/align.py`, uniform merged speech-unit placement (`SubtitleTrackRenderer.add_unit_clip`) in `core/subtitle_project.py`, and full speech+dub span background ducking (`build_duck_spans`/`merge_duck_spans` in `core/video_dub.py`). Suite now 1614 collected / 1596 selected (+17 items, 18 benchmark deselected, verified live 2026-10-26); `ruff check .` + `ruff format --check .` green (214 files); i18n 1175/1175 finished -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -195,8 +196,10 @@ an explicit stored choice is never overridden):
   `exportFormat` setting, WAV default) encodes via libsndfile through
   `core/audio.py` — no new direct dependency.
 - Reading speed 0.5–2.0× via NumPy WSOLA + inter-paragraph pause 0–2.0 s
-  (`core/audio.py`, v0.1.5); Mini Audio Studio post-synthesis op stack
-  (v0.1.13, `core/studio.py`: gain/fade/speed/gap/normalize/trim +
+  (`core/audio.py`, v0.1.5), plus vectorized pre-fit TTS edge-silence trimming
+  (`trim_speech_edges`, $-45\text{ dBFS}$ threshold with $15\text{ ms}$ attack/release
+  pad) and $5\text{ ms}$ half-cosine boundary taper (`apply_micro_fade`,
+  `dub_pacing_alignment_20261026`); Mini Audio Studio post-synthesis op stack
   per-segment re-synthesis with 10 ms crossfade); WASAPI restart-storm
   guard on Windows. v0.1.14 redesigns the studio as a pro-audio deck:
   72 px master waveform deck with peak/RMS/dynamic-range telemetry, grouped
@@ -273,26 +276,38 @@ an explicit stored choice is never overridden):
   `BatchQueueCard` is now a list-only queue panel, and a mode switch keeps the
   page scrolled in place (`e255027`).
 - SRT subtitle dub/transcript studio (2026-09-14, bead-driven; extended
-  2026-10-19..23 by `VieNeuTTSApp-n5ts`, `VieNeuTTSApp-b3nq`, `ab1aad1`,
+  2026-10-19..26 by `VieNeuTTSApp-n5ts`, `VieNeuTTSApp-b3nq`, `ab1aad1`,
   `aef1d87`, `VieNeuTTSApp-eet9` `12734a0`, `VieNeuTTSApp-2ifr`,
-  `asr_hardening_20261021` `VieNeuTTSApp-7u58`, and
-  `subtitles_ux_overhaul_20261023` `VieNeuTTSApp-weit`):
+  `asr_hardening_20261021` `VieNeuTTSApp-7u58`,
+  `subtitles_ux_overhaul_20261023` `VieNeuTTSApp-weit`, and
+  `dub_pacing_alignment_20261026` `VieNeuTTSApp-o8af`):
   `core/subtitles.py` (pure `.srt` cue model — parse, strip styling /
   `{\an8}`-style override blocks and `NON_SPEECH_LABELS` tokens like
   `[BLANK_AUDIO]`/`[MUSIC]`, collapse whitespace, re-emit; tolerant
-  `HH:MM:SS,mmm` stamps; `[SPEAKER_01]` speaker prefix round-trip),
-  `core/align.py` (cue→clock fit planning: `dub` compresses an overlong take
-  up to a `1.0–2.0×` rate cap and pushes later cues on overflow, `transcript`
+  `HH:MM:SS,mmm` stamps; `[SPEAKER_01]` speaker prefix round-trip; optional
+  `speech_start_ms`/`speech_end_ms` acoustic speech bounds inside `[start_ms,
+  end_ms]` with `effective_speech_start_ms`/`effective_speech_end_ms`/
+  `speech_duration_ms`),
+  `core/align.py` (cue→clock fit planning: `dub` anchors at
+  `effective_speech_start_ms + offset_ms` and fits in two elastic stages —
+  `COMFORT_RATE = 1.15` within the speech window, lookahead post-cue silence
+  borrowing up to $\min(\text{target\_end} + 1200, \text{next\_start} - 120)\text{ ms}$
+  when gap $\ge 250\text{ ms}$, then up to a `1.0–2.0×` rate cap with $\le 0.20\times$
+  same-speaker step clamping and pushes later cues on overflow; `transcript`
   never compresses and caps inter-cue pauses at 1500 ms default; optional
-  sentence-unit merging that breaks at speaker transitions; NumPy WSOLA reuses
-  the app's reading-speed bounds), `core/subtitle_project.py` (workspace store +
-  streaming `SubtitleTrackRenderer` writing `PCM_16` `track.wav` clip-by-clip,
-  a render fingerprint that caches the track including per-cue speakers and
-  `speaker_voices`, atomic JSON writes with WinError-32 retry, aligned-SRT
-  export with optional `include_speakers` via `subtitle_export_speaker_labels`,
-  and chunked 64k-frame `splice_studio_window_into_subtitle` save-back from
-  Audio Studio), and `ui/subtitle_controller.py` + `ui/qml/SubtitlesTab.qml` +
-  `ui/qml/components/SubtitleActionDock.qml` + `ui/qml/components/SubtitleCard.qml`
+  sentence-unit merging that breaks at speaker transitions and splits audio with
+  punctuation pause weights via `split_unit_audio`; `adjusted_cues` preserves
+  readable caption display hold; NumPy WSOLA reuses the app's reading-speed
+  bounds), `core/subtitle_project.py` (workspace store with sparse
+  `speechStartMs`/`speechEndMs` JSON emission + streaming
+  `SubtitleTrackRenderer` writing `PCM_16` `track.wav` clip-by-clip with
+  pre-fit `trim_speech_edges` + `apply_micro_fade` and uniform merged-unit
+  stretching via `add_unit_clip`, a render fingerprint that caches the track
+  including per-cue speakers and `speaker_voices`, atomic JSON writes with
+  WinError-32 retry, aligned-SRT export with optional `include_speakers` via
+  `subtitle_export_speaker_labels`, and chunked 64k-frame
+  `splice_studio_window_into_subtitle` save-back from Audio Studio), and
+  `ui/subtitle_controller.py` + `ui/qml/SubtitlesTab.qml` +
   (`SubtitleSourcePanel`, `SubtitlePreparePanel`, `SubtitleCueEditor`,
   `SubtitleCastPanel`). Since `subtitles_ux_overhaul_20261023`,
   `SubtitleController` enforces a staged `_PendingInvalidation` confirmation
@@ -303,11 +318,15 @@ an explicit stored choice is never overridden):
   derived `state` + `busyOwner` (`""|ai|render|export`) with
   `API_ONLY_PROPERTIES` contract verification.
 - Video dubbing, Whisper ASR, speaker diarization, LLM refinement & managed AI
-  downloads (2026-10-19..23, epics `VieNeuTTSApp-b3nq`, `VieNeuTTSApp-2ifr`,
-  `VieNeuTTSApp-7u58`, `VieNeuTTSApp-weit`; zero new root dependencies):
+  downloads (2026-10-19..26, epics `VieNeuTTSApp-b3nq`, `VieNeuTTSApp-2ifr`,
+  `VieNeuTTSApp-7u58`, `VieNeuTTSApp-weit`, `VieNeuTTSApp-o8af`; zero new root
+  dependencies):
   - `core/video_dub.py`: companion `.srt`/video discovery, `ffmpeg` audio
     extraction (full or `[start_ms, end_ms]` slices), and `-c:v copy`
-    stream-copy video muxing (`replace` or `duck` background audio mix +
+    stream-copy video muxing (`replace` or `duck` background audio mix with
+    `build_duck_spans` / `merge_duck_spans` attenuating background audio across
+    the union of original speech `[effective_speech_start_ms,
+    effective_speech_end_ms]` and dubbed `[fit.start_ms, fit.end_ms]` spans +
     container-aware soft `.srt` embedding). Since 2026-10-20/21 (`6e7c747` +
     `d7b8721`, beads `poph`/`ni2i`/`vxil`) also **burns subtitles into the
     picture**: `probe_video_info` (never raises — burn-in must work when
@@ -336,9 +355,10 @@ an explicit stored choice is never overridden):
     `soundfile`+`numpy` 16 kHz mono WAV normalization (`_ensure_16k_wav` +
     `.json` sidecar), `asr_segments_cache.json` caching under
     `subtitles/_media_cache/<stem>_<hash8>/`, `asr_device`/`asr_threads`
-    configuration, shared `NON_SPEECH_LABELS` filtering, and duration-aware
-    clause splitting + bidirectional micro-fragment merging
-    (`normalize_asr_segments_to_cues`).
+    configuration, shared `NON_SPEECH_LABELS` filtering, Whisper
+    `word_timestamps=True` word-boundary clause splitting + bidirectional
+    micro-fragment merging (`normalize_asr_segments_to_cues`), and automatic
+    `refine_cues_speech_bounds` against `source_16k.wav`).
   - `core/diarization.py` (hardened in epic `VieNeuTTSApp-2ifr`):
     `nemotron_gguf` (`audio-cpp/Nemotron-3-Diarization-GGUF` Q8_0/BF16 via
     `audiocpp_cli --mode diarize` on CPU/GPU with `--no-gpu` fallback and
@@ -348,13 +368,17 @@ an explicit stored choice is never overridden):
     fallback, with 16 kHz mono normalization, `diar_turns_cache.json` caching,
     `max_speakers` (1–8) ceiling merge + speaker-voice label remapping on
     re-run, `DiarizationCancelled` semantics, `diarization_device`/
-    `diarization_threads` settings, and `select_speaker_reference_clip` /
+    `diarization_threads` settings, `refine_cues_speech_bounds` (10 ms RMS
+    energy VAD over `read_wav_range` on `source_16k.wav` intersected with
+    `RttmTurn` bounds), and `select_speaker_reference_clip` /
     `extract_speaker_reference_wav` for 1-click speaker voice cloning and
     off-thread sample audition.
   - `core/llm_refine.py`: stdlib `urllib.request` OpenAI-compatible
     `/chat/completions` client (`probe_llm_connection`, `refine_cues_with_llm`
     for `refine_asr`, `fit_timing`, and `translate_dub` with explicit target
-    language).
+    language, `LANGUAGE_CHARS_PER_SEC` language-aware speaking rates, and
+    `speech_duration_ms` + bounded post-cue silence slack budgeting in
+    `max_chars_for_window`).
   - `core/ai_models.py` + `SettingsModels.qml` (`settingsAiDubbingCard`):
     size+SHA-256-verified catalog, atomic `.part` downloader, guarded
     `is_relative_to` model removal, and throttled progress
@@ -504,11 +528,13 @@ an explicit stored choice is never overridden):
   `poph`/`ni2i`/`vxil`), diarization hardening (`b41caf7..cb0c1e9`, epic
   `2ifr`), test-runtime reduction + torch isolation fix (`1542053` + `5eb6f85`,
   bead `4mqj`), track `asr_hardening_20261021` (`b09dd45..d50f43b`, epic `7u58`,
-  archived `ed66f6a`), and track `subtitles_ux_overhaul_20261023`
-  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`). Test suite 1597
-  collected / 1579 selected (18 benchmark deselected); `ruff check .` +
-  `ruff format --check .` green (214 files); i18n 1175/1175 finished; no root
-  dependency drift (`pyproject.toml` / `uv.lock` untouched).
+  archived `ed66f6a`), track `subtitles_ux_overhaul_20261023`
+  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`), and track
+  `dub_pacing_alignment_20261026` (`765c10a..dfac5b8`, epic `o8af`, archived
+  `3d6418b`). Test suite 1614 collected / 1596 selected (18 benchmark
+  deselected); `ruff check .` + `ruff format --check .` green (214 files); i18n
+  1175/1175 finished; no root dependency drift (`pyproject.toml` / `uv.lock`
+  untouched).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

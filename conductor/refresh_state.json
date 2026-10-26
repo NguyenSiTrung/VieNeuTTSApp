@@ -1,57 +1,54 @@
 {
-  "timestamp": "2026-10-23T15:55:00+07:00",
+  "timestamp": "2026-10-26T17:15:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 13 tracks archived under conductor/archive/, incl. asr_hardening_20261021 and subtitles_ux_overhaul_20261023 archived in ed66f6a); zero plan.md/Beads drift. 519 total issues: 1 open (VieNeuTTSApp-t80a P3 video preview panel), 0 in_progress, 1 blocked (VieNeuTTSApp-nqx.2.4 awaiting nqx.2.3), 40 deferred to 2027-01-01 (94b963b), 477 closed — up from 463 total / 416 closed at the 2026-10-21 refresh. Closed since last refresh: 7 verified issues in 94b963b (n23, a52, 6cv, x898, 3evn, nqx.3, nqx.4), epic VieNeuTTSApp-2ifr (diarization hardening + 5 children), VieNeuTTSApp-4mqj (test-runtime reduction), epic VieNeuTTSApp-7u58 (asr_hardening_20261021 + 11 child issues), and epic VieNeuTTSApp-weit (subtitles_ux_overhaul_20261023 + 34 child/phase issues). Gates: ruff check . green, ruff format --check . green (214 files), scripts/update_i18n.sh 1175/1175 finished (0 unfinished), pytest --collect-only -q 1597 collected / 1579 selected (18 benchmark deselected).",
+  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 14 tracks archived under conductor/archive/, incl. dub_pacing_alignment_20261026 archived in 3d6418b); zero plan.md/Beads drift. 532 total issues: 1 open (VieNeuTTSApp-t80a P3 video preview panel), 0 in_progress, 1 blocked (VieNeuTTSApp-nqx.2.4 awaiting nqx.2.3), 40 deferred to 2027-01-01 (94b963b), 490 closed — up from 519 total / 477 closed at the 2026-10-23 refresh (+13 issues created and closed for epic VieNeuTTSApp-o8af dub_pacing_alignment_20261026: 4 phase beads + 8 task beads + epic).",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "feature 11 expanded with diarization hardening (VieNeuTTSApp-2ifr: verified GGUF downloads + staged audiocpp_cli --help probe, 16 kHz mono normalization, weight_type=f32 on CPU-only runtimes, max_speakers ceiling merge + label remapping, DiarizationCancelled, subtitle_export_speaker_labels, removal of fake NeMo UI option), on-device ASR hardening (asr_hardening_20261021, epic 7u58: pinned Whisper GGUF sizes/SHA-256 + guarded removal, managed whisper.cpp b5454 runtime installer, shared per-video _media_cache, collision-safe <stem>_<hash8>.srt filenames, NON_SPEECH_LABELS filtering + duration-aware splitting, AsrCancelled, asr_device/asr_threads + throttled aiDownloadProgressChanged), and the Subtitles UX overhaul (subtitles_ux_overhaul_20261023, epic weit: staged render-invalidation gate, renderStale + lastStats + exportBlockedReason, project lifecycle switcher, cancelExport, derived state/busyOwner, pinned SubtitleActionDock, Source/Prepare/Produce stages, two-card drop launcher, ordered AI pipeline, SubtitleSourcePanel/SubtitlePreparePanel/SubtitleCueEditor/SubtitleCastPanel extraction, AppProgressBar/AppTextField, Theme.warningText, disabledReason, and PageShell.ensureFocusVisible)",
-        "Implementation Status re-dated to 2026-10-23: all 13 tracks archived under conductor/archive/, suite 1597 collected / 1579 selected (18 benchmark deselected; -m 'not slow' -> 1557, -m 'not slow and not benchmark' -> 1539), ruff check + format --check green (214 files), i18n 1175/1175 finished, full suite ~32-43 s wall after 4mqj smoke splits and TestTorchPosture sys.modules['torch'] = None isolation fix",
-        "suite-size history extended through 1597/1579 and new 2026-10-23 refresh marker added"
+        "feature 11 expanded with track dub_pacing_alignment_20261026 (epic VieNeuTTSApp-o8af, archived 3d6418b): optional Cue.speech_start_ms/speech_end_ms with sparse project.json serialization, 16 kHz RMS VAD + RttmTurn speech-bound refinement (refine_cues_speech_bounds) and Whisper word_timestamps=True clause splitting, pre-fit trim_speech_edges (-45 dBFS, 15 ms pad) + 5 ms apply_micro_fade, two-stage elastic dub alignment (COMFORT_RATE = 1.15 -> post-cue gap borrowing up to 1200 ms -> rate_cap with <=0.20x same-speaker rate smoothing), uniform merged sentence-unit stretching (SubtitleTrackRenderer.add_unit_clip) + punctuation-weighted split_unit_audio, language/slack-aware LLM max_chars_for_window (LANGUAGE_CHARS_PER_SEC), readable adjusted_cues caption hold, and full speech+dub span background ducking (build_duck_spans in mux_dubbed_video)",
+        "Implementation Status re-dated to 2026-10-26: all 14 tracks archived under conductor/archive/, suite 1614 collected / 1596 selected (18 benchmark deselected; -m 'not slow' -> 1574, -m 'not slow and not benchmark' -> 1556), ruff check + format --check green (214 files), i18n 1175/1175 finished",
+        "suite-size history extended through 1614/1596 (+17 in dub_pacing_alignment_20261026) and new 2026-10-26 refresh marker added"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "UI Framework component inventory updated to match both qmldirs: added AppProgressBar, AppTextField, SubtitleActionDock, SubtitleSourcePanel, SubtitlePreparePanel, SubtitleCueEditor, SubtitleCastPanel, VoicePicker.voiceActivated, PageShell.ensureFocusVisible (pageWindow), and replaced stale StudioRackModule/StudioParamRow/ModeTabs/SynthesisBar references with StudioTimeline/StudioEffectSlider/StudioEffectsPanel/StudioApplyBar",
-        "File Import > SRT subtitle studio & Video dubbing/ASR/diarization/AI models updated with asr_hardening_20261021 (7u58), diarization hardening (2ifr), and subtitles_ux_overhaul_20261023 (weit + 42ab565)",
-        "Build & Dev Tooling post-v0.3.0 summary extended through 2026-10-23 with suite 1597/1579, ruff 214 files green, i18n 1175/1175 finished, and zero root pyproject.toml/uv.lock drift",
-        "refresh marker 2026-10-23 added"
+        "Audio section updated with pre-fit trim_speech_edges (-45 dBFS, 15 ms pad) and 5 ms half-cosine apply_micro_fade in core/audio.py",
+        "File Import > SRT subtitle studio & Video dubbing/ASR/diarization/LLM updated with dub_pacing_alignment_20261026 (VieNeuTTSApp-o8af): Cue speech bounds, two-stage elastic plan_cue/plan_alignment + readable adjusted_cues hold + punctuation-weighted split_unit_audio, SubtitleTrackRenderer.add_unit_clip, build_duck_spans/merge_duck_spans in core/video_dub.py, word_timestamps=True in core/asr.py, refine_cues_speech_bounds in core/diarization.py, and LANGUAGE_CHARS_PER_SEC + speech/slack max_chars_for_window in core/llm_refine.py",
+        "Build & Dev Tooling post-v0.3.0 summary extended through 2026-10-26 with suite 1614/1596, ruff 214 files green, i18n 1175/1175 finished, and zero root pyproject.toml/uv.lock drift",
+        "refresh marker 2026-10-26 added"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "top 2026-10-23 refresh marker updated to 1597 collected / 1579 selected after post-review commit 42ab565 (+1 test_every_property_is_consumed_or_api_only)",
-        "Testing > Loaded-host flake family updated to note that 5eb6f85 fixed the self-inflicted TestTorchPosture monkeypatch.delitem(sys.modules, 'torch') trigger for the triton TORCH_LIBRARY double-registration error",
-        "suite-size history extended with 2ifr + 4mqj (1554/1536), asr_hardening_20261021 (1567/1549), and subtitles_ux_overhaul_20261023 + 42ab565 (1597/1579)"
+        "top 2026-10-26 refresh marker added with suite 1614 collected / 1596 selected (+17 items in dub_pacing_alignment_20261026)",
+        "suite-size history extended with 2026-10-26 dub_pacing_alignment_20261026 (o8af, 765c10a..dfac5b8, +17 items -> 1614/1596)"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "consolidated 6 remaining learnings from asr_hardening_20261021 and subtitles_ux_overhaul_20261023: VoicePicker.voiceActivated user-only signal on fallback-syncing pickers, component-owned disabledReason & accessibility contract, explicit API_ONLY_PROPERTIES allowlist with bidirectional test guard, immediate scalar snapshotting in QML smoke drivers, RemoveConfirmDialog onClosed ordering trap, and bounded proc.wait+thread.join after proc.kill() for grandchild pipes",
-        "updated tiered pytest and moving suite-size bullets to 1597 collected / 1579 selected (18 benchmark deselected; -m 'not slow' -> 1557, -m 'not slow and not benchmark' -> 1539)",
-        "updated loaded-host flake bullet to record the 5eb6f85 TestTorchPosture sys.modules['torch'] = None fix",
-        "Last refreshed footer updated to 2026-10-23 (211 pattern bullets across 4 sections)"
+        "consolidated 2 remaining learnings from dub_pacing_alignment_20261026 (language- & slack-aware LLM timing budget with LANGUAGE_CHARS_PER_SEC, and rejecting bool before int in timestamp validators since bool subclasses int, plus overflow_ms counting only past the elastically borrowed window) alongside the 4 elevated in 35f8f35/3d6418b",
+        "updated tiered pytest and moving suite-size bullets to 1614 collected / 1596 selected (18 benchmark deselected; -m 'not slow' -> 1574, -m 'not slow and not benchmark' -> 1556)",
+        "Last refreshed footer updated to 2026-10-26 (217 pattern bullets across 4 sections, 14 archived tracks)"
       ]
     }
   ],
   "learnings_consolidation": {
-    "tracks_scanned": 13,
+    "tracks_scanned": 14,
     "new_tracks_since_last_refresh": [
-      "asr_hardening_20261021",
-      "subtitles_ux_overhaul_20261023"
+      "dub_pacing_alignment_20261026"
     ],
-    "patterns_before": 205,
+    "patterns_before": 211,
     "new_patterns_added": 6,
-    "patterns_after": 211,
-    "source": "Scanned all 13 archived tracks in conductor/archive/, focusing on the two tracks completed and archived since the 2026-10-21 refresh (asr_hardening_20261021 and subtitles_ux_overhaul_20261023). 11 patterns had already been elevated during track completion/archival (4f85b00, 4dce527, ea388d0, ed66f6a); elevated the remaining 6 reusable cross-track patterns and gotchas."
+    "patterns_after": 217,
+    "source": "Scanned all 14 archived tracks in conductor/archive/, focusing on dub_pacing_alignment_20261026 completed and archived since the 2026-10-23 refresh (226ba45). 4 patterns were elevated during track completion/archival (35f8f35, 3d6418b); elevated the remaining 2 reusable patterns/gotchas during refresh."
   },
   "known_baseline_failures": {
     "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy)",
     "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, test_qwen_host.py::TestFrameLoop::test_session_lifecycle, or test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk). The in-process TestTorchPosture delitem(sys.modules, 'torch') trigger for the triton TORCH_LIBRARY race was fixed in 5eb6f85."
   },
-  "commits_since_last_refresh": "e64ec18..ed66f6a (37 commits: 94b963b close 7 verified beads + defer 40; b41caf7..77843c9 diarization hardening epic 2ifr; 1542053..3bb6cde test-runtime reduction bead 4mqj; 85e59f8..881029c track asr_hardening_20261021 epic 7u58; 9e216f4 skill pruning; 2f6fe8a..ed66f6a track subtitles_ux_overhaul_20261023 epic weit + post-review focus-follow/API_ONLY_PROPERTIES fixes + track archival)"
+  "commits_since_last_refresh": "226ba45..3d6418b (10 commits: 765c10a..dfac5b8 8 implementation tasks across 4 phases for track dub_pacing_alignment_20261026 epic VieNeuTTSApp-o8af, 35f8f35 complete track + elevate 4 patterns, 3d6418b archive track)"
 }

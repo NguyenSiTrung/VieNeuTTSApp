@@ -29,6 +29,7 @@ import numpy as np
 
 from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
 from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.diarization import refine_cues_speech_bounds
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
@@ -79,6 +80,9 @@ class RawSegment:
     end_ms: int
     text: str
     speaker: str = ""
+    words: tuple[tuple[int, int, str], ...] = ()
+    speech_start_ms: int | None = None
+    speech_end_ms: int | None = None
 
 
 def _strip_non_speech(text: str) -> str:
@@ -87,6 +91,119 @@ def _strip_non_speech(text: str) -> str:
     if not cleaned or not any(ch.isalnum() for ch in cleaned):
         return ""
     return cleaned
+
+
+def _extract_words(
+    raw_words: Any,
+    seg_start_ms: int,
+    seg_end_ms: int,
+) -> tuple[tuple[int, int, str], ...]:
+    if not raw_words:
+        return ()
+    parsed: list[tuple[int, int, str]] = []
+    for item in raw_words:
+        if isinstance(item, tuple | list) and len(item) >= 3:
+            try:
+                w_start = int(round(float(item[0])))
+                w_end = int(round(float(item[1])))
+                w_txt = _strip_non_speech(str(item[2] or ""))
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(item, dict):
+            w_raw = str(item.get("word") or item.get("text") or "").strip()
+            w_txt = _strip_non_speech(w_raw)
+            try:
+                if "start_ms" in item or "end_ms" in item:
+                    w_start = int(round(float(item.get("start_ms", seg_start_ms))))
+                    w_end = int(round(float(item.get("end_ms", w_start))))
+                else:
+                    w_start = int(round(float(item.get("start", seg_start_ms / 1000.0)) * 1000))
+                    w_end = int(round(float(item.get("end", w_start / 1000.0)) * 1000))
+            except (TypeError, ValueError):
+                continue
+        else:
+            w_raw = str(getattr(item, "word", None) or getattr(item, "text", None) or "").strip()
+            w_txt = _strip_non_speech(w_raw)
+            try:
+                w_start = int(round(float(getattr(item, "start", seg_start_ms / 1000.0)) * 1000))
+                w_end = int(round(float(getattr(item, "end", w_start / 1000.0)) * 1000))
+            except (TypeError, ValueError):
+                continue
+        if not w_txt:
+            continue
+        w_start = max(seg_start_ms, min(seg_end_ms, w_start))
+        w_end = max(w_start, min(seg_end_ms, w_end))
+        parsed.append((w_start, w_end, w_txt))
+    return tuple(parsed)
+
+
+def _clamp_speech_bounds(
+    start_ms: int,
+    end_ms: int,
+    speech_start_ms: int | None,
+    speech_end_ms: int | None,
+    words: tuple[tuple[int, int, str], ...] = (),
+) -> tuple[int | None, int | None]:
+    s_bound = speech_start_ms
+    e_bound = speech_end_ms
+    if s_bound is None and words:
+        s_bound = words[0][0]
+    if e_bound is None and words:
+        e_bound = words[-1][1]
+    if s_bound is not None:
+        s_bound = max(start_ms, min(end_ms, int(s_bound)))
+    if e_bound is not None:
+        lo = s_bound if s_bound is not None else start_ms
+        e_bound = max(lo, min(end_ms, int(e_bound)))
+    return s_bound, e_bound
+
+
+def _partition_words_for_chunks(
+    words: tuple[tuple[int, int, str], ...],
+    chunks: Sequence[str],
+) -> list[tuple[tuple[int, int, str], ...]] | None:
+    if not words or len(words) < len(chunks):
+        return None
+    token_counts = [len(c.split()) for c in chunks]
+    if sum(token_counts) == len(words) and all(cnt > 0 for cnt in token_counts):
+        grouped: list[tuple[tuple[int, int, str], ...]] = []
+        cursor = 0
+        for cnt in token_counts:
+            grouped.append(words[cursor : cursor + cnt])
+            cursor += cnt
+        return grouped
+
+    grouped = []
+    w_idx = 0
+    n_words = len(words)
+    n_chunks = len(chunks)
+    for c_idx, chunk in enumerate(chunks):
+        if c_idx == n_chunks - 1:
+            rem = words[w_idx:]
+            if not rem:
+                return None
+            grouped.append(rem)
+            break
+        target_chars = max(1, len(re.sub(r"\s+", "", chunk)))
+        max_end = n_words - (n_chunks - 1 - c_idx)
+        acc_chars = 0
+        start_idx = w_idx
+        while w_idx < max_end:
+            w_chars = max(1, len(re.sub(r"\s+", "", words[w_idx][2])))
+            if (
+                w_idx > start_idx
+                and acc_chars + w_chars > target_chars
+                and abs(target_chars - acc_chars) <= abs((acc_chars + w_chars) - target_chars)
+            ):
+                break
+            acc_chars += w_chars
+            w_idx += 1
+            if acc_chars >= target_chars:
+                break
+        if w_idx == start_idx:
+            w_idx += 1
+        grouped.append(words[start_idx:w_idx])
+    return grouped if len(grouped) == n_chunks and all(grouped) else None
 
 
 def _split_long_segment(
@@ -98,9 +215,23 @@ def _split_long_segment(
     text = clean_cue_text(seg.text)
     if not text:
         return []
-    duration = max(1, seg.end_ms - seg.start_ms)
+    seg_end_ms = max(seg.start_ms + 1, seg.end_ms)
+    duration = max(1, seg_end_ms - seg.start_ms)
     if len(text) <= max_chars and duration <= max_duration_ms:
-        return [RawSegment(seg.start_ms, max(seg.start_ms + 1, seg.end_ms), text, seg.speaker)]
+        sp_start, sp_end = _clamp_speech_bounds(
+            seg.start_ms, seg_end_ms, seg.speech_start_ms, seg.speech_end_ms, seg.words
+        )
+        return [
+            RawSegment(
+                seg.start_ms,
+                seg_end_ms,
+                text,
+                seg.speaker,
+                words=seg.words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        ]
 
     eff_max_chars = max_chars
     if max_duration_ms > 0 and duration > max_duration_ms:
@@ -137,20 +268,113 @@ def _split_long_segment(
         chunks.append(current)
 
     if len(chunks) <= 1:
-        return [RawSegment(seg.start_ms, max(seg.start_ms + 1, seg.end_ms), text, seg.speaker)]
+        sp_start, sp_end = _clamp_speech_bounds(
+            seg.start_ms, seg_end_ms, seg.speech_start_ms, seg.speech_end_ms, seg.words
+        )
+        return [
+            RawSegment(
+                seg.start_ms,
+                seg_end_ms,
+                text,
+                seg.speaker,
+                words=seg.words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        ]
+
+    word_groups = _partition_words_for_chunks(seg.words, chunks)
+    if word_groups is not None:
+        out: list[RawSegment] = []
+        prev_end = seg.start_ms
+        for i, (chunk, c_words) in enumerate(zip(chunks, word_groups, strict=True)):
+            w_first_start = c_words[0][0]
+            w_last_end = max(w_first_start + 1, c_words[-1][1])
+            c_start = seg.start_ms if i == 0 else max(prev_end, w_first_start)
+            if i == len(chunks) - 1:
+                c_end = max(c_start + 1, seg_end_ms)
+            else:
+                c_end = max(c_start + 1, min(seg_end_ms, w_last_end))
+            sp_start, sp_end = _clamp_speech_bounds(
+                c_start, c_end, w_first_start, w_last_end, c_words
+            )
+            out.append(
+                RawSegment(
+                    c_start,
+                    c_end,
+                    chunk,
+                    seg.speaker,
+                    words=c_words,
+                    speech_start_ms=sp_start,
+                    speech_end_ms=sp_end,
+                )
+            )
+            prev_end = c_end
+        return out
 
     total_chars = max(1, sum(len(c) for c in chunks))
-    out: list[RawSegment] = []
+    out = []
     cursor_ms = seg.start_ms
     for i, chunk in enumerate(chunks):
         if i == len(chunks) - 1:
-            end_ms = max(cursor_ms + 1, seg.end_ms)
+            end_ms = max(cursor_ms + 1, seg_end_ms)
         else:
             span = max(1, int(round(duration * len(chunk) / total_chars)))
-            end_ms = min(seg.end_ms, cursor_ms + span)
-        out.append(RawSegment(cursor_ms, max(cursor_ms + 1, end_ms), chunk, seg.speaker))
+            end_ms = max(cursor_ms + 1, min(seg_end_ms, cursor_ms + span))
+        c_sp_start = seg.speech_start_ms if i == 0 else None
+        c_sp_end = seg.speech_end_ms if i == len(chunks) - 1 else None
+        if c_sp_start is not None or c_sp_end is not None:
+            c_sp_start = c_sp_start if c_sp_start is not None else cursor_ms
+            c_sp_end = c_sp_end if c_sp_end is not None else end_ms
+            c_sp_start, c_sp_end = _clamp_speech_bounds(cursor_ms, end_ms, c_sp_start, c_sp_end)
+        out.append(
+            RawSegment(
+                cursor_ms,
+                end_ms,
+                chunk,
+                seg.speaker,
+                speech_start_ms=c_sp_start,
+                speech_end_ms=c_sp_end,
+            )
+        )
         cursor_ms = end_ms
     return out
+
+
+def _merge_two_segments(a: RawSegment, b: RawSegment) -> RawSegment:
+    s_ms = a.start_ms
+    e_ms = max(s_ms + 1, b.end_ms)
+    words = a.words + b.words
+    has_bounds = (
+        a.speech_start_ms is not None
+        or a.speech_end_ms is not None
+        or b.speech_start_ms is not None
+        or b.speech_end_ms is not None
+        or bool(words)
+    )
+    if has_bounds:
+        sp_start = (
+            a.speech_start_ms
+            if a.speech_start_ms is not None
+            else (a.words[0][0] if a.words else a.start_ms)
+        )
+        sp_end = (
+            b.speech_end_ms
+            if b.speech_end_ms is not None
+            else (b.words[-1][1] if b.words else b.end_ms)
+        )
+        sp_start, sp_end = _clamp_speech_bounds(s_ms, e_ms, sp_start, sp_end, words)
+    else:
+        sp_start, sp_end = None, None
+    return RawSegment(
+        s_ms,
+        e_ms,
+        f"{a.text} {b.text}",
+        a.speaker,
+        words=words,
+        speech_start_ms=sp_start,
+        speech_end_ms=sp_end,
+    )
 
 
 def normalize_asr_segments_to_cues(
@@ -170,7 +394,21 @@ def normalize_asr_segments_to_cues(
         spk = "" if norm_spk in NON_SPEECH_LABELS else raw_spk
         s_ms = max(0, int(seg.start_ms))
         e_ms = max(s_ms + 1, int(seg.end_ms))
-        cleaned.append(RawSegment(s_ms, e_ms, txt, spk))
+        words = _extract_words(seg.words, s_ms, e_ms) if seg.words else ()
+        sp_start, sp_end = _clamp_speech_bounds(
+            s_ms, e_ms, seg.speech_start_ms, seg.speech_end_ms, words
+        )
+        cleaned.append(
+            RawSegment(
+                s_ms,
+                e_ms,
+                txt,
+                spk,
+                words=words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        )
 
     if not cleaned:
         return []
@@ -189,12 +427,7 @@ def normalize_asr_segments_to_cues(
             and len(curr.text) + 1 + len(cleaned[i + 1].text) <= max_chars
         ):
             nxt = cleaned[i + 1]
-            cleaned[i + 1] = RawSegment(
-                curr.start_ms,
-                nxt.end_ms,
-                f"{curr.text} {nxt.text}",
-                curr.speaker,
-            )
+            cleaned[i + 1] = _merge_two_segments(curr, nxt)
             i += 1
             continue
         if (
@@ -205,12 +438,7 @@ def normalize_asr_segments_to_cues(
             and len(merged[-1].text) + 1 + len(curr.text) <= max_chars
         ):
             prev = merged[-1]
-            merged[-1] = RawSegment(
-                prev.start_ms,
-                curr.end_ms,
-                f"{prev.text} {curr.text}",
-                prev.speaker,
-            )
+            merged[-1] = _merge_two_segments(prev, curr)
             i += 1
             continue
         merged.append(curr)
@@ -226,7 +454,20 @@ def normalize_asr_segments_to_cues(
     for idx, seg in enumerate(split_all, start=1):
         start_ms = max(prev_end, seg.start_ms)
         end_ms = max(start_ms + 1, seg.end_ms)
-        cues.append(Cue(idx, start_ms, end_ms, seg.text, speaker=seg.speaker))
+        sp_start, sp_end = _clamp_speech_bounds(
+            start_ms, end_ms, seg.speech_start_ms, seg.speech_end_ms, seg.words
+        )
+        cues.append(
+            Cue(
+                idx,
+                start_ms,
+                end_ms,
+                seg.text,
+                speaker=seg.speaker,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        )
         prev_end = end_ms
     return cues
 
@@ -291,6 +532,7 @@ def _run_faster_whisper(
             language=lang,
             vad_filter=True,
             condition_on_previous_text=False,
+            word_timestamps=True,
         )
         total_s = float(getattr(info, "duration", 0.0) or 0.0)
         raw_segments: list[RawSegment] = []
@@ -301,8 +543,21 @@ def _run_faster_whisper(
             end_s = float(getattr(seg, "end", start_s + 0.5) or (start_s + 0.5))
             txt = str(getattr(seg, "text", "") or "").strip()
             if txt:
+                seg_start_ms = int(round(start_s * 1000))
+                seg_end_ms = max(seg_start_ms + 1, int(round(end_s * 1000)))
+                seg_words = _extract_words(getattr(seg, "words", None), seg_start_ms, seg_end_ms)
+                sp_start, sp_end = _clamp_speech_bounds(
+                    seg_start_ms, seg_end_ms, None, None, seg_words
+                )
                 raw_segments.append(
-                    RawSegment(int(round(start_s * 1000)), int(round(end_s * 1000)), txt)
+                    RawSegment(
+                        seg_start_ms,
+                        seg_end_ms,
+                        txt,
+                        words=seg_words,
+                        speech_start_ms=sp_start,
+                        speech_end_ms=sp_end,
+                    )
                 )
             if progress_cb is not None and total_s > 0:
                 progress_cb(
@@ -540,6 +795,7 @@ def _run_openai_whisper_api(
         raise AsrError(f"Phản hồi từ máy chủ ASR không hợp lệ: {exc}") from exc
 
     segments = payload.get("segments") if isinstance(payload, dict) else None
+    top_words_raw = payload.get("words") if isinstance(payload, dict) else None
     out: list[RawSegment] = []
     if isinstance(segments, list):
         for item in segments:
@@ -549,9 +805,34 @@ def _run_openai_whisper_api(
             if not txt:
                 continue
             start_ms = int(round(float(item.get("start", 0.0)) * 1000))
-            end_ms = int(round(float(item.get("end", start_ms / 1000.0 + 1.0)) * 1000))
+            end_ms = max(
+                start_ms + 1,
+                int(round(float(item.get("end", start_ms / 1000.0 + 1.0)) * 1000)),
+            )
             spk = str(item.get("speaker") or "").strip()
-            out.append(RawSegment(start_ms, max(start_ms + 1, end_ms), txt, spk))
+            seg_words = _extract_words(item.get("words"), start_ms, end_ms)
+            if not seg_words and isinstance(top_words_raw, list) and top_words_raw:
+                matching_top = []
+                for w_item in top_words_raw:
+                    if isinstance(w_item, dict):
+                        with contextlib.suppress(TypeError, ValueError):
+                            ws = int(round(float(w_item.get("start", -1.0)) * 1000))
+                            we = int(round(float(w_item.get("end", ws / 1000.0)) * 1000))
+                            if min(end_ms, max(ws + 1, we)) > max(start_ms, ws):
+                                matching_top.append(w_item)
+                seg_words = _extract_words(matching_top, start_ms, end_ms)
+            sp_start, sp_end = _clamp_speech_bounds(start_ms, end_ms, None, None, seg_words)
+            out.append(
+                RawSegment(
+                    start_ms,
+                    end_ms,
+                    txt,
+                    spk,
+                    words=seg_words,
+                    speech_start_ms=sp_start,
+                    speech_end_ms=sp_end,
+                )
+            )
     elif (
         isinstance(payload, dict)
         and isinstance(payload.get("text"), str)
@@ -565,7 +846,18 @@ def _run_openai_whisper_api(
         if dur_s <= 0.0:
             dur_s = 5.0
         dur_ms = max(1000, int(round(dur_s * 1000)))
-        out.append(RawSegment(0, dur_ms, payload["text"].strip()))
+        seg_words = _extract_words(top_words_raw, 0, dur_ms)
+        sp_start, sp_end = _clamp_speech_bounds(0, dur_ms, None, None, seg_words)
+        out.append(
+            RawSegment(
+                0,
+                dur_ms,
+                payload["text"].strip(),
+                words=seg_words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        )
 
     if progress_cb is not None:
         progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
@@ -695,22 +987,48 @@ def _load_cached_segments(work_dir: Path | None, key: str) -> list[RawSegment] |
             e_ms = max(s_ms + 1, int(item.get("end_ms", s_ms + 1)))
         except (TypeError, ValueError):
             continue
-        out.append(RawSegment(s_ms, e_ms, txt, str(item.get("speaker") or "").strip()))
+        words = _extract_words(item.get("words"), s_ms, e_ms)
+        sp_start: int | None = None
+        sp_end: int | None = None
+        if item.get("speech_start_ms") is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                sp_start = int(item["speech_start_ms"])
+        if item.get("speech_end_ms") is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                sp_end = int(item["speech_end_ms"])
+        sp_start, sp_end = _clamp_speech_bounds(s_ms, e_ms, sp_start, sp_end, words)
+        out.append(
+            RawSegment(
+                s_ms,
+                e_ms,
+                txt,
+                str(item.get("speaker") or "").strip(),
+                words=words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+            )
+        )
     return out or None
 
 
 def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[RawSegment]) -> None:
     if work_dir is None or not key or not segments:
         return
-    raw = [
-        {
+    raw: list[dict[str, Any]] = []
+    for s in segments:
+        item: dict[str, Any] = {
             "start_ms": s.start_ms,
             "end_ms": s.end_ms,
             "text": s.text,
             "speaker": s.speaker,
         }
-        for s in segments
-    ]
+        if s.words:
+            item["words"] = [[w[0], w[1], w[2]] for w in s.words]
+        if s.speech_start_ms is not None:
+            item["speech_start_ms"] = int(s.speech_start_ms)
+        if s.speech_end_ms is not None:
+            item["speech_end_ms"] = int(s.speech_end_ms)
+        raw.append(item)
     with contextlib.suppress(OSError):
         work_dir.mkdir(parents=True, exist_ok=True)
         (work_dir / ASR_CACHE_FILENAME).write_text(
@@ -842,7 +1160,7 @@ def transcribe_media_to_cues(
         cues = normalize_asr_segments_to_cues(raw)
         if not cues:
             raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")
-        return cues
+        return refine_cues_speech_bounds(cues, wav_path)
     finally:
         if temp_dir_obj is not None:
             with contextlib.suppress(OSError):

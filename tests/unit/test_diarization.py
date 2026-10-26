@@ -9,11 +9,13 @@ import numpy as np
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.diarization import (
     DiarizationConfig,
+    RttmTurn,
     assign_speakers_from_turns,
     diarize_cues,
     extract_speaker_reference_wav,
     parse_audiocpp_turns,
     parse_rttm_turns,
+    refine_cues_speech_bounds,
     select_speaker_reference_clip,
 )
 from vienetts_app.core.subtitles import Cue
@@ -200,3 +202,61 @@ def test_nemotron_3_diarization_gguf_audiocpp_cpu_turns(tmp_path: Path) -> None:
         data_dir=tmp_path,
     )
     assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_02"]
+
+
+def test_refine_cues_speech_bounds_vad_and_turn_intersection(tmp_path: Path) -> None:
+    sr = 16_000
+    # Cue 1 [0..2000 ms]: 250 ms leading silence, 1250 ms active speech (250..1500 ms),
+    # 500 ms trailing silence. Cue 2 [2200..3500 ms]: completely silent.
+    lead_sil = np.zeros(int(sr * 0.250), dtype=np.float32)
+    active_speech = _synth_voice_tone(sr, 1.250, 140.0, 1100.0)
+    trail_sil = np.zeros(int(sr * 0.500), dtype=np.float32)
+    cue2_sil = np.zeros(int(sr * 1.500), dtype=np.float32)
+    full = np.concatenate([lead_sil, active_speech, trail_sil, cue2_sil])
+    wav_path = write_wav_file(full, tmp_path / "source_16k.wav", sample_rate=sr)
+
+    cues = [
+        Cue(1, 0, 2000, "Câu có khoảng lặng đầu và cuối.", speaker="SPEAKER_01"),
+        Cue(2, 2200, 3400, "Câu im lặng.", speaker="SPEAKER_02"),
+        Cue(
+            3,
+            2200,
+            3400,
+            "Câu giữ biên có sẵn khi âm thanh im lặng.",
+            speaker="SPEAKER_02",
+            speech_start_ms=2350,
+            speech_end_ms=3100,
+        ),
+    ]
+    refined = refine_cues_speech_bounds(cues, wav_path)
+    # Caption window [0, 2000] stays intact; speech bounds tighten to ~[220, 1530] (30 ms pad)
+    assert refined[0].start_ms == 0
+    assert refined[0].end_ms == 2000
+    assert refined[0].speech_start_ms is not None
+    assert refined[0].speech_end_ms is not None
+    assert 200 <= refined[0].speech_start_ms <= 250
+    assert 1500 <= refined[0].speech_end_ms <= 1550
+    assert refined[0].speech_duration_ms < refined[0].duration_ms
+
+    # Silent WAV slice yields None and never overwrites existing bounds
+    assert refined[1].speech_start_ms is None
+    assert refined[1].speech_end_ms is None
+    assert refined[2].speech_start_ms == 2350
+    assert refined[2].speech_end_ms == 3100
+
+    # Intersecting with RttmTurn tightens bounds to the intersection for matching speaker
+    turns = [
+        RttmTurn(320, 1420, "SPEAKER_01"),
+        RttmTurn(100, 1900, "SPEAKER_02"),
+    ]
+    intersected = refine_cues_speech_bounds([cues[0]], wav_path, turns=turns)
+    assert intersected[0].start_ms == 0
+    assert intersected[0].end_ms == 2000
+    assert intersected[0].speech_start_ms == 320
+    assert intersected[0].speech_end_ms == 1420
+
+    # Non-overlapping turn falls back to VAD bounds rather than producing an empty span
+    disjoint_turns = [RttmTurn(1700, 1950, "SPEAKER_01")]
+    fallback = refine_cues_speech_bounds([cues[0]], wav_path, turns=disjoint_turns)
+    assert fallback[0].speech_start_ms == refined[0].speech_start_ms
+    assert fallback[0].speech_end_ms == refined[0].speech_end_ms

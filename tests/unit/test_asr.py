@@ -437,3 +437,136 @@ def test_openai_api_json_with_arrow_and_top_level_text_duration(tmp_path: Path) 
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_faster_whisper_word_timestamps_and_word_accurate_splitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav = write_wav_file(np.zeros(16_000 * 10, dtype=np.float32), tmp_path / "words.wav", 16_000)
+    seen_kwargs: dict[str, object] = {}
+
+    class _FakeWord:
+        def __init__(self, start: float, end: float, word: str) -> None:
+            self.start = start
+            self.end = end
+            self.word = word
+
+    class _FakeSeg:
+        def __init__(self, start: float, end: float, text: str, words: list[_FakeWord]) -> None:
+            self.start = start
+            self.end = end
+            self.text = text
+            self.words = words
+
+    class _FakeInfo:
+        duration = 10.0
+        language = "vi"
+
+    class _FakeWhisperModel:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            self.model_size = model_size
+
+        def transcribe(self, path: str, **kwargs: object):
+            seen_kwargs.update(kwargs)
+            # Clause 1 spoken quickly in 0.25..1.80s, followed by a pause until 3.40s,
+            # then clause 2 in 3.40..8.60s (total segment duration 9.0s > 7.0s max_duration_ms).
+            words = [
+                _FakeWord(0.25, 0.60, "Mệnh"),
+                _FakeWord(0.60, 0.95, "đề"),
+                _FakeWord(0.95, 1.35, "đầu"),
+                _FakeWord(1.35, 1.80, "tiên,"),
+                _FakeWord(3.40, 4.20, "mệnh"),
+                _FakeWord(4.20, 5.10, "đề"),
+                _FakeWord(5.10, 6.50, "thứ"),
+                _FakeWord(6.50, 8.60, "hai."),
+            ]
+            return (
+                iter([_FakeSeg(0.0, 9.0, "Mệnh đề đầu tiên, mệnh đề thứ hai.", words)]),
+                _FakeInfo(),
+            )
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = _FakeWhisperModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+
+    work_dir = tmp_path / "work"
+    cues = transcribe_media_to_cues(
+        wav,
+        AsrConfig(backend="faster_whisper", model="base", language="vi"),
+        work_dir=work_dir,
+    )
+    assert seen_kwargs.get("word_timestamps") is True
+    assert len(cues) == 2
+    # Split lands on exact word boundaries (1800 ms, 3400 ms) instead of 50/50 char ratio
+    assert cues[0].text == "Mệnh đề đầu tiên,"
+    assert cues[0].start_ms == 0
+    assert cues[0].end_ms == 1800
+    assert cues[0].speech_start_ms == 250
+    assert cues[0].speech_end_ms == 1800
+
+    assert cues[1].text == "mệnh đề thứ hai."
+    assert cues[1].start_ms == 3400
+    assert cues[1].end_ms == 9000
+    assert cues[1].speech_start_ms == 3400
+    assert cues[1].speech_end_ms == 8600
+
+    # Cached segments preserve word timestamps and speech bounds on reload
+    cues_cached = transcribe_media_to_cues(
+        wav,
+        AsrConfig(backend="faster_whisper", model="base", language="vi"),
+        work_dir=work_dir,
+    )
+    assert cues_cached == cues
+
+
+def test_openai_api_verbose_json_word_timestamps(tmp_path: Path) -> None:
+    wav = write_wav_file(np.zeros(16_000 * 4, dtype=np.float32), tmp_path / "api_words.wav", 16_000)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            _ = self.rfile.read(length)
+            payload = {
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 2.0,
+                        "text": "Xin chào bạn.",
+                        "words": [
+                            {"word": "Xin", "start": 0.22, "end": 0.55},
+                            {"word": "chào", "start": 0.55, "end": 1.05},
+                            {"word": "bạn.", "start": 1.05, "end": 1.62},
+                        ],
+                    }
+                ]
+            }
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        cues = transcribe_media_to_cues(
+            wav,
+            AsrConfig(
+                backend="openai_api",
+                model="whisper-1",
+                api_base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            ),
+        )
+        assert len(cues) == 1
+        assert cues[0].start_ms == 0
+        assert cues[0].end_ms == 2000
+        assert cues[0].speech_start_ms == 220
+        assert cues[0].speech_end_ms == 1620
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -135,6 +135,9 @@ def test_dub_policy() -> None:
     assert fit.end_ms == 500  # stops early: the rest of the window is silence
     assert fit.overflow_ms == 0
 
+    # With a 1500 ms post-cue silent gap (3500..5000), a 3000 ms take in a 1500 ms
+    # window borrows up to 1200 ms from the gap at COMFORT_RATE (1.15x -> 2609 ms)
+    # instead of rushing at 1.5x, while still leaving breath room before 5000 ms.
     policy = FitPolicy.dub(rate_cap=1.5)
     fits = plan_alignment(
         [cue(1, 0, 1_000), cue(2, 2_000, 3_500), cue(3, 5_000, 6_000)],
@@ -143,13 +146,11 @@ def test_dub_policy() -> None:
     )
     assert [(f.start_ms, f.end_ms) for f in fits] == [
         (0, 1_000),
-        (2_000, 4_000),
-        (5_000, 6_000),  # 4000 < 5000: it still lands on its own subtitle time
+        (2_000, 4_609),
+        (5_000, 6_000),  # 4609 < 5000: it still lands on its own subtitle time
     ]
-    # Only the overlong cue is compressed; the others are untouched.
-    assert [f.rate for f in fits] == [1.0, 1.5, 1.0]
+    assert [f.rate for f in fits] == [1.0, pytest.approx(1.15), 1.0]
     assert [f.pushed_ms for f in fits] == [0, 0, 0]
-
     # A 9000 ms take in a 1000 ms window cannot fit even at 2x (4500 > 1000).
     policy = FitPolicy.dub(rate_cap=2.0)
     fits = plan_alignment(
@@ -289,8 +290,11 @@ def test_timeline_from_fits_rejects_mismatch():
 
 def test_alignment_stats_contract() -> None:
     policy = FitPolicy.dub(rate_cap=1.5)
+    # Cue 2 (2000..3500) followed closely by Cue 3 (3600..6000) cannot borrow slack,
+    # so 3000 ms compresses at rate_cap=1.5 to 2000 ms (ending at 4000, +500 ms overflow)
+    # and pushes Cue 3 by +400 ms.
     fits = plan_alignment(
-        [cue(1, 0, 1_000), cue(2, 2_000, 3_500), cue(3, 5_000, 6_000)],
+        [cue(1, 0, 1_000), cue(2, 2_000, 3_500), cue(3, 3_600, 6_000)],
         [1_000, 3_000, 1_000],
         policy,
     )
@@ -300,11 +304,10 @@ def test_alignment_stats_contract() -> None:
     assert stats.max_rate == 1.5
     assert stats.overflowed == 1
     assert stats.max_overflow_ms == 500
-    assert stats.pushed == 0
-    assert stats.total_ms == 6_000
-    assert stats.drift_ms == 0
+    assert stats.pushed == 1
+    assert stats.total_ms == 5_000
+    assert stats.drift_ms == -1_000
     assert stats.clean is False  # one cue overran its window
-
     stats = alignment_stats([])
     assert stats.cues == 0
     assert stats.clean is True
@@ -332,6 +335,64 @@ def test_adjusted_cues_contract() -> None:
 
     with pytest.raises(AlignmentError):
         adjusted_cues([cue(1, 0, 1_000)], [])
+
+
+def test_two_stage_elastic_fit_speech_bounds_and_caption_hold() -> None:
+    # 1. Speech-onset anchoring uses effective_speech_start_ms / effective_speech_end_ms + offset_ms
+    c_speech = Cue(1, 1_000, 3_000, "Hello", speech_start_ms=1_250, speech_end_ms=2_250)
+    fit_speech = plan_cue(c_speech, 900, FitPolicy.dub(offset_ms=100))
+    assert fit_speech.srt_start_ms == 1_350
+    assert fit_speech.srt_end_ms == 3_100
+    assert fit_speech.start_ms == 1_350
+    assert fit_speech.end_ms == 2_250
+    assert fit_speech.rate == 1.0
+    assert fit_speech.overflow_ms == 0
+
+    # 2. AC-2: 1400 ms take in a 1000 ms window (400 ms overrun) followed by a 1000 ms silent gap
+    # borrows from the gap at COMFORT_RATE (1.15x -> 1217 ms) instead of rushing at 1.40x.
+    cues_gap = [Cue(1, 0, 1_000, "One"), Cue(2, 2_000, 3_000, "Two")]
+    fits_gap = plan_alignment(cues_gap, [1_400, 800], FitPolicy.dub(rate_cap=1.5))
+    assert fits_gap[0].rate == pytest.approx(1.15)
+    assert fits_gap[0].start_ms == 0
+    assert fits_gap[0].end_ms == 1_217
+    assert fits_gap[0].overflow_ms == 0
+    assert fits_gap[1].start_ms == 2_000
+    assert fits_gap[1].pushed_ms == 0
+
+    # 3. Same-speaker neighbor rate step clamping (|rate - prev_rate| <= 0.20) when slack permits
+    spk_cues = [
+        Cue(1, 0, 1_000, "Line 1", speaker="SPEAKER_01"),
+        Cue(2, 1_200, 2_200, "Line 2", speaker="SPEAKER_01"),
+        Cue(3, 4_500, 5_500, "Line 3", speaker="SPEAKER_01"),
+    ]
+    spk_fits = plan_alignment(spk_cues, [1_000, 3_080, 1_000], FitPolicy.dub(rate_cap=1.5))
+    assert spk_fits[0].rate == pytest.approx(1.0)
+    assert spk_fits[1].rate == pytest.approx(1.20)
+    assert abs(spk_fits[1].rate - spk_fits[0].rate) <= 0.20 + 1e-6
+    assert spk_fits[1].end_ms == 1_200 + int(round(3_080 / 1.20))
+    assert spk_fits[2].start_ms == 4_500
+
+    # 4. AC-6: adjusted_cues preserves readable subtitle hold without overlapping next_fit.start_ms
+    hold_cues = [
+        Cue(1, 0, 2_000, "Short dub"),
+        Cue(2, 2_100, 3_500, "Next cue"),
+    ]
+    hold_fits = plan_alignment(hold_cues, [900, 1_200], FitPolicy.dub())
+    retimed = adjusted_cues(hold_cues, hold_fits)
+    assert hold_fits[0].end_ms == 900
+    # Capped at min(srt_end_ms=2000, next_fit.start_ms - 80 = 2020) -> 2000
+    assert (retimed[0].start_ms, retimed[0].end_ms) == (0, 2_000)
+    # When pushed close to next cue, hold stops 80 ms before next_fit.start_ms
+    pushed_cues = [
+        Cue(1, 0, 2_000, "Pushed dub"),
+        Cue(2, 2_200, 3_500, "Close next"),
+    ]
+    pushed_fits = [
+        plan_cue(pushed_cues[0], 900, FitPolicy.dub(), prev_end_ms=300),
+        plan_cue(pushed_cues[1], 1_000, FitPolicy.dub(), prev_end_ms=1_200),
+    ]
+    retimed_pushed = adjusted_cues(pushed_cues, pushed_fits)
+    assert (retimed_pushed[0].start_ms, retimed_pushed[0].end_ms) == (300, 2_200 - 80)
 
 
 # ── speech units (merge_sentences) ───────────────────────────────────────────

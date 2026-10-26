@@ -54,6 +54,11 @@ MAX_RATE_CAP = 2.0
 MAX_OFFSET_MS = 600_000  # ±10 min: generous for a re-cut, far from a typo
 MAX_GAP_LIMIT_MS = 60_000
 
+COMFORT_RATE = 1.15
+MIN_BREATH_GAP_MS = 120
+MAX_SLACK_BORROW_MS = 1200
+MAX_RATE_STEP = 0.20
+MIN_SUBTITLE_GAP_MS = 80
 #: Speech-unit grouping (``merge_sentences``). Subtitle cues frequently omit
 #: terminal punctuation entirely, so a sentence test alone would merge a whole
 #: movie into one unit; the char and gap guards keep units sentence-sized.
@@ -226,6 +231,9 @@ def plan_cue(
     natural_ms: int,
     policy: FitPolicy,
     prev_end_ms: int | None = None,
+    *,
+    next_start_ms: int | None = None,
+    prev_rate: float | None = None,
 ) -> CueFit:
     """Place one cue given the previous cue's end (``None`` = first cue).
 
@@ -234,17 +242,11 @@ def plan_cue(
     overlapping — an overlong take pushes its successors instead of covering
     them.
     """
-    srt_start = max(0, int(cue.start_ms) + policy.offset_ms)
-    srt_end = max(srt_start, int(cue.end_ms) + policy.offset_ms)
-    window_ms = max(1, srt_end - srt_start)
+    srt_start = max(0, int(cue.effective_speech_start_ms) + policy.offset_ms)
+    speech_end = max(srt_start, int(cue.effective_speech_end_ms) + policy.offset_ms)
+    srt_end = max(speech_end, int(cue.end_ms) + policy.offset_ms)
+    window_ms = max(1, speech_end - srt_start)
     natural = max(0, int(natural_ms))
-
-    if policy.mode == MODE_TRANSCRIPT:
-        rate = MIN_RATE
-    else:
-        # natural/window > 1 means "speaks slower than the subtitle allows".
-        rate = min(float(policy.rate_cap), max(MIN_RATE, natural / window_ms))
-    duration_ms = int(round(natural / rate)) if rate > 0 else natural
 
     if prev_end_ms is None:
         start_ms = srt_start
@@ -255,7 +257,48 @@ def plan_cue(
     else:
         start_ms = max(int(prev_end_ms), srt_start)
 
+    if policy.mode == MODE_TRANSCRIPT:
+        extended_end = srt_end
+        rate = MIN_RATE
+    else:
+        if next_start_ms is not None:
+            borrow_cap = min(
+                speech_end + MAX_SLACK_BORROW_MS,
+                int(next_start_ms) - MIN_BREATH_GAP_MS,
+            )
+            extended_end = max(speech_end, borrow_cap)
+        else:
+            extended_end = max(speech_end, min(speech_end + MAX_SLACK_BORROW_MS, srt_end))
+        extended_window = max(window_ms, extended_end - start_ms)
+        comfort_cap = min(float(policy.rate_cap), COMFORT_RATE)
+        if natural <= window_ms:
+            rate = MIN_RATE
+        elif natural / window_ms <= comfort_cap:
+            rate = max(MIN_RATE, natural / window_ms)
+        elif extended_window > window_ms and natural / comfort_cap <= extended_window:
+            rate = max(MIN_RATE, comfort_cap)
+        else:
+            rate = min(float(policy.rate_cap), max(comfort_cap, natural / extended_window))
+            if prev_rate is not None and rate > float(prev_rate) + MAX_RATE_STEP:
+                clamped_rate = min(
+                    float(policy.rate_cap),
+                    max(MIN_RATE, float(prev_rate) + MAX_RATE_STEP),
+                )
+                if next_start_ms is not None:
+                    max_slack_end = int(next_start_ms) - MIN_BREATH_GAP_MS
+                    if start_ms + int(round(natural / clamped_rate)) <= max_slack_end:
+                        rate = clamped_rate
+                        extended_end = max(
+                            extended_end,
+                            start_ms + int(round(natural / rate)),
+                        )
+                else:
+                    rate = clamped_rate
+
+    duration_ms = int(round(natural / rate)) if rate > 0 else natural
     end_ms = start_ms + duration_ms
+    overflow_limit = max(srt_end, extended_end) if policy.mode == MODE_DUB else srt_end
+    overflow_ms = max(0, end_ms - srt_end) if end_ms > overflow_limit else 0
     return CueFit(
         index=cue.index,
         start_ms=start_ms,
@@ -264,7 +307,7 @@ def plan_cue(
         srt_start_ms=srt_start,
         srt_end_ms=srt_end,
         natural_ms=natural,
-        overflow_ms=max(0, end_ms - srt_end),
+        overflow_ms=overflow_ms,
     )
 
 
@@ -280,8 +323,23 @@ def plan_alignment(
         )
     fits: list[CueFit] = []
     prev_end: int | None = None
-    for cue, natural in zip(cues, natural_ms, strict=True):
-        fit = plan_cue(cue, natural, policy, prev_end)
+    for i, (cue, natural) in enumerate(zip(cues, natural_ms, strict=True)):
+        next_start = (
+            max(0, int(cues[i + 1].effective_speech_start_ms) + policy.offset_ms)
+            if i + 1 < len(cues)
+            else None
+        )
+        prev_rate = (
+            fits[-1].rate if fits and cue.speaker and cue.speaker == cues[i - 1].speaker else None
+        )
+        fit = plan_cue(
+            cue,
+            natural,
+            policy,
+            prev_end,
+            next_start_ms=next_start,
+            prev_rate=prev_rate,
+        )
         fits.append(fit)
         prev_end = fit.end_ms
     return fits
@@ -410,9 +468,24 @@ def adjusted_cues(cues: Sequence[Cue], fits: Sequence[CueFit]) -> list[Cue]:
     if len(cues) != len(fits):
         raise AlignmentError(f"cues ({len(cues)}) and fits ({len(fits)}) must have the same length")
     retimed: list[Cue] = []
-    for cue, fit in zip(cues, fits, strict=True):
-        start = fit.start_ms if fit.end_ms > fit.start_ms else cue.start_ms
-        end = fit.end_ms if fit.end_ms > fit.start_ms else cue.end_ms
+    for i, (cue, fit) in enumerate(zip(cues, fits, strict=True)):
+        if fit.end_ms <= fit.start_ms:
+            start = cue.start_ms
+            end = cue.end_ms
+        else:
+            start = fit.start_ms
+            pushed = max(0, fit.pushed_ms)
+            desired_end = max(fit.end_ms, fit.srt_end_ms + pushed)
+            if i + 1 < len(fits):
+                next_fit = fits[i + 1]
+                next_start = (
+                    next_fit.start_ms
+                    if next_fit.end_ms > next_fit.start_ms
+                    else cues[i + 1].start_ms
+                )
+                end = max(fit.end_ms, min(desired_end, next_start - MIN_SUBTITLE_GAP_MS))
+            else:
+                end = desired_end
         retimed.append(Cue(cue.index, start, max(start, end), cue.text, speaker=cue.speaker))
     return retimed
 

@@ -35,5 +35,4 @@ under `conductor/archive/`.
 
 ---
 
-## [x] Track: Natural Dubbing Pacing, Acoustic Speech-Window Alignment & Smart Timing
-*Link: [./conductor/tracks/dub_pacing_alignment_20261026/](./conductor/tracks/dub_pacing_alignment_20261026/)*
+<!-- Archived: dub_pacing_alignment_20261026 (Natural Dubbing Pacing, Acoustic Speech-Window Alignment & Smart Timing — optional speech_start_ms/speech_end_ms on Cue from 16 kHz RMS VAD + Nemotron-3 turns + Whisper word timestamps, pre-fit TTS edge-silence trimming & micro-fades, two-stage elastic dub alignment with 1.15x comfort rate + post-cue gap borrowing + same-speaker rate smoothing, uniform merged speech-unit stretching, language/slack-aware LLM maxChars budgeting, readable subtitle hold, and full speech+dub span video ducking; 4 phases / 8 tasks complete 2026-10-26; beads epic VieNeuTTSApp-o8af closed), archived 2026-10-26 → ./archive/dub_pacing_alignment_20261026/ -->

@@ -507,6 +507,69 @@ def wav_duration_seconds(path: str | Path) -> float:
     return len(data) / sr
 
 
+def trim_speech_edges(
+    audio: np.ndarray,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    *,
+    threshold_db: float = -45.0,
+    pad_ms: int = 15,
+) -> np.ndarray:
+    """Strip leading and trailing dead air below ``threshold_db`` while keeping ``pad_ms`` guard.
+
+    Returns the 1-D ``np.float32`` array untouched when empty or all samples fall
+    at or below the linear amplitude threshold ``10 ** (threshold_db / 20.0)``.
+    """
+    if not isinstance(audio, np.ndarray):
+        raise ValueError(f"audio must be a numpy array, got {type(audio).__name__}")
+    if audio.ndim != 1:
+        raise ValueError(f"audio must be 1-D mono, got {audio.ndim} dimensions")
+    if sample_rate <= 0:
+        raise ValueError(f"sample_rate must be > 0, got {sample_rate}")
+    mono = np.ascontiguousarray(audio, dtype=np.float32)
+    if mono.size == 0:
+        return mono
+    threshold = float(10.0 ** (float(threshold_db) / 20.0))
+    active = np.flatnonzero(np.abs(mono) > threshold)
+    if active.size == 0:
+        return mono
+    pad_frames = max(0, int(round(sample_rate * (pad_ms / 1000.0))))
+    start = max(0, int(active[0]) - pad_frames)
+    end = min(mono.size, int(active[-1]) + 1 + pad_frames)
+    return np.ascontiguousarray(mono[start:end], dtype=np.float32)
+
+
+def apply_micro_fade(
+    audio: np.ndarray,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    *,
+    fade_ms: float = 5.0,
+    fade_in: bool = True,
+    fade_out: bool = True,
+) -> np.ndarray:
+    """Apply a half-cosine micro-fade at clip boundaries without mutating input.
+
+    Uses ``0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_len, dtype=np.float32)))``
+    over ``min(size // 2, round(sample_rate * fade_ms / 1000.0))`` samples at the
+    start and/or end, leaving interior samples bit-identically untouched.
+    """
+    if not isinstance(audio, np.ndarray):
+        raise ValueError(f"audio must be a numpy array, got {type(audio).__name__}")
+    if audio.ndim != 1:
+        raise ValueError(f"audio must be 1-D mono, got {audio.ndim} dimensions")
+    if sample_rate <= 0:
+        raise ValueError(f"sample_rate must be > 0, got {sample_rate}")
+    out = np.array(audio, dtype=np.float32, copy=True, order="C")
+    fade_len = min(out.size // 2, int(round(sample_rate * (fade_ms / 1000.0))))
+    if out.size < 4 or fade_len <= 1 or (not fade_in and not fade_out):
+        return out
+    fade = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_len, dtype=np.float32)))
+    if fade_in:
+        out[:fade_len] *= fade
+    if fade_out:
+        out[-fade_len:] *= fade[::-1]
+    return out
+
+
 def time_stretch_audio(
     audio: np.ndarray,
     rate: float,

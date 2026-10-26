@@ -10,6 +10,7 @@ import soundfile as sf
 from tests.unit.wsola_reference import reference_time_stretch
 
 from vienetts_app.core.audio import (
+    apply_micro_fade,
     compute_waveform_envelope,
     compute_waveform_envelope_from_wav,
     encode_wav_bytes,
@@ -18,6 +19,7 @@ from vienetts_app.core.audio import (
     export_wav_file,
     read_wav,
     time_stretch_audio,
+    trim_speech_edges,
     wav_duration_seconds,
     write_wav_file,
 )
@@ -460,3 +462,119 @@ class TestExportAudioFile:
         assert export_format_for(tmp_path / "a.wav") == "wav"
         assert export_format_for(tmp_path / "a") == "wav"
         assert export_format_for(tmp_path / "a.ogg") == "wav"
+
+
+class TestTrimSpeechEdges:
+    def test_strips_leading_and_trailing_silence_keeping_pad_guard(self) -> None:
+        sr = 48_000
+        leading = np.zeros(4_800, dtype=np.float32)  # 100 ms silence
+        active = tone(9_600, sr=sr)  # 200 ms speech
+        trailing = np.zeros(7_200, dtype=np.float32)  # 150 ms silence
+        clip = np.concatenate([leading, active, trailing])
+
+        trimmed = trim_speech_edges(clip, sample_rate=sr, threshold_db=-45.0, pad_ms=15)
+        pad_frames = int(round(sr * 0.015))  # 720 frames
+        first_active = int(np.flatnonzero(np.abs(active) > 10.0 ** (-45.0 / 20.0))[0])
+        last_active = int(np.flatnonzero(np.abs(active) > 10.0 ** (-45.0 / 20.0))[-1])
+        expected_start = 4_800 + first_active - pad_frames
+        expected_end = 4_800 + last_active + 1 + pad_frames
+
+        assert trimmed.dtype == np.float32
+        assert trimmed.flags["C_CONTIGUOUS"]
+        assert np.array_equal(trimmed, clip[expected_start:expected_end])
+
+    def test_preserves_empty_all_silent_and_already_tight_clips(self) -> None:
+        empty = np.array([], dtype=np.float32)
+        got_empty = trim_speech_edges(empty)
+        assert got_empty.dtype == np.float32
+        assert got_empty.size == 0
+
+        # Sub-threshold noise (-50 dB < -45 dB threshold) stays untouched
+        sub_threshold = np.full(1_200, 10.0 ** (-50.0 / 20.0), dtype=np.float32)
+        got_silent = trim_speech_edges(sub_threshold, threshold_db=-45.0)
+        assert got_silent.dtype == np.float32
+        assert np.array_equal(got_silent, sub_threshold)
+
+        # Already-tight clip clamps pad guard cleanly to [0, size]
+        tight = np.full(2_400, 0.25, dtype=np.float32)
+        got_tight = trim_speech_edges(tight, pad_ms=20)
+        assert got_tight.dtype == np.float32
+        assert np.array_equal(got_tight, tight)
+
+        # Float64 input converts to contiguous float32
+        f64 = np.concatenate([np.zeros(500), np.full(400, 0.5), np.zeros(500)])
+        got_f64 = trim_speech_edges(f64, sample_rate=10_000, pad_ms=10)
+        assert got_f64.dtype == np.float32
+        assert got_f64.size == 400 + 2 * 100
+
+    def test_validation_rejects_invalid_inputs(self) -> None:
+        with pytest.raises(ValueError, match="1-D mono"):
+            trim_speech_edges(np.zeros((10, 2), dtype=np.float32))
+        with pytest.raises(ValueError, match="sample_rate"):
+            trim_speech_edges(np.zeros(10, dtype=np.float32), sample_rate=0)
+
+
+class TestApplyMicroFade:
+    def test_half_cosine_taper_start_end_and_interior_preservation(self) -> None:
+        sr = 48_000
+        fade_ms = 5.0
+        fade_len = int(round(sr * (fade_ms / 1000.0)))  # 240 samples
+        orig = np.ones(2_000, dtype=np.float32)
+
+        both = apply_micro_fade(orig, sample_rate=sr, fade_ms=fade_ms)
+        assert both.dtype == np.float32
+        assert both.flags["C_CONTIGUOUS"]
+        # Does not mutate input array
+        assert np.all(orig == 1.0)
+
+        expected_taper = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_len, dtype=np.float32)))
+        assert np.allclose(both[:fade_len], expected_taper, atol=1e-6)
+        assert np.allclose(both[-fade_len:], expected_taper[::-1], atol=1e-6)
+        assert np.array_equal(both[fade_len:-fade_len], orig[fade_len:-fade_len])
+
+        only_in = apply_micro_fade(
+            orig, sample_rate=sr, fade_ms=fade_ms, fade_in=True, fade_out=False
+        )
+        assert np.allclose(only_in[:fade_len], expected_taper, atol=1e-6)
+        assert np.array_equal(only_in[fade_len:], orig[fade_len:])
+
+        only_out = apply_micro_fade(
+            orig, sample_rate=sr, fade_ms=fade_ms, fade_in=False, fade_out=True
+        )
+        assert np.array_equal(only_out[:-fade_len], orig[:-fade_len])
+        assert np.allclose(only_out[-fade_len:], expected_taper[::-1], atol=1e-6)
+
+        neither = apply_micro_fade(
+            orig, sample_rate=sr, fade_ms=fade_ms, fade_in=False, fade_out=False
+        )
+        assert np.array_equal(neither, orig)
+        assert neither is not orig
+
+    def test_short_and_empty_array_safety(self) -> None:
+        for size in (0, 1, 2, 3):
+            short = np.ones(size, dtype=np.float32)
+            got = apply_micro_fade(short, sample_rate=48_000, fade_ms=5.0)
+            assert got.dtype == np.float32
+            assert np.array_equal(got, short)
+            assert got is not short
+
+        # fade_ms = 0 -> fade_len <= 1 -> untouched copy
+        clip = np.ones(100, dtype=np.float32)
+        got_zero = apply_micro_fade(clip, sample_rate=48_000, fade_ms=0.0)
+        assert np.array_equal(got_zero, clip)
+        assert got_zero is not clip
+
+        # Clamps fade_len to mono.size // 2 when clip is shorter than 2 * fade_ms
+        small = np.ones(20, dtype=np.float32)
+        got_small = apply_micro_fade(small, sample_rate=48_000, fade_ms=5.0)
+        assert got_small.size == 20
+        assert got_small[0] == pytest.approx(0.0, abs=1e-6)
+        assert got_small[-1] == pytest.approx(0.0, abs=1e-6)
+        assert got_small[9] == pytest.approx(1.0, abs=1e-6)
+        assert got_small[10] == pytest.approx(1.0, abs=1e-6)
+
+    def test_validation_rejects_invalid_inputs(self) -> None:
+        with pytest.raises(ValueError, match="1-D mono"):
+            apply_micro_fade(np.zeros((10, 2), dtype=np.float32))
+        with pytest.raises(ValueError, match="sample_rate"):
+            apply_micro_fade(np.zeros(10, dtype=np.float32), sample_rate=-1)

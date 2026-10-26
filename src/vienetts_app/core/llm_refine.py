@@ -32,16 +32,60 @@ class LlmConfig:
     timeout_s: float = 60.0
 
 
+LANGUAGE_CHARS_PER_SEC: dict[str, float] = {
+    "auto": 14.0,
+    "vi": 14.0,
+    "vietnamese": 14.0,
+    "en": 14.0,
+    "english": 14.0,
+    "fr": 14.0,
+    "french": 14.0,
+    "es": 14.5,
+    "spanish": 14.5,
+    "it": 14.5,
+    "italian": 14.5,
+    "de": 13.5,
+    "german": 13.5,
+    "pt": 14.0,
+    "portuguese": 14.0,
+    "ru": 13.0,
+    "russian": 13.0,
+    "zh": 4.8,
+    "chinese": 4.8,
+    "ja": 6.0,
+    "japanese": 6.0,
+    "ko": 5.5,
+    "korean": 5.5,
+}
+
+
+def _resolve_chars_per_sec(language: str, chars_per_sec: float | None) -> float:
+    if chars_per_sec is not None:
+        return float(chars_per_sec)
+    key = (language or "").strip().lower()
+    if not key:
+        return 14.0
+    if key in LANGUAGE_CHARS_PER_SEC:
+        return LANGUAGE_CHARS_PER_SEC[key]
+    base = re.split(r"[-_\s(]", key, maxsplit=1)[0]
+    return LANGUAGE_CHARS_PER_SEC.get(base, 14.0)
+
+
 def max_chars_for_window(
     duration_ms: int,
     *,
-    chars_per_sec: float = 14.0,
+    chars_per_sec: float | None = None,
     max_rate: float = 1.25,
+    language: str = "vi",
+    slack_ms: int = 0,
 ) -> int:
     """Maximum comfortable spoken character count for a ``duration_ms`` subtitle window."""
-    secs = max(0.1, float(duration_ms) / 1000.0)
-    budget = int(round(secs * float(chars_per_sec) * min(float(max_rate), 1.35)))
-    return max(8, budget)
+    cps = _resolve_chars_per_sec(language, chars_per_sec)
+    effective_ms = max(0, int(duration_ms)) + max(0, min(int(slack_ms), 800))
+    secs = max(0.1, float(effective_ms) / 1000.0)
+    budget = int(round(secs * cps * min(float(max_rate), 1.35)))
+    min_chars = 4 if cps <= 7.0 else 8
+    return max(min_chars, budget)
 
 
 def _post_chat_completion(
@@ -197,18 +241,32 @@ def refine_cues_with_llm(
         if cancel_check is not None and cancel_check():
             raise LlmRefineError("Đã hủy tác vụ tinh chỉnh AI.")
         batch = cue_list[start : start + step]
-        req_items = [
-            {
-                "index": c.index,
-                "startMs": c.start_ms,
-                "endMs": c.end_ms,
-                "durationMs": c.duration_ms,
-                "maxChars": max_chars_for_window(c.duration_ms, max_rate=rate_cap),
-                "speaker": c.speaker,
-                "text": c.text,
-            }
-            for c in batch
-        ]
+        req_items: list[dict[str, Any]] = []
+        for offset, c in enumerate(batch):
+            idx = start + offset
+            if idx + 1 < len(cue_list):
+                gap_after_ms = max(0, cue_list[idx + 1].effective_speech_start_ms - c.end_ms)
+            else:
+                gap_after_ms = 800
+            borrowable_slack_ms = max(0, min(gap_after_ms - 120, 800))
+            req_items.append(
+                {
+                    "index": c.index,
+                    "startMs": c.start_ms,
+                    "endMs": c.end_ms,
+                    "durationMs": c.duration_ms,
+                    "speechDurationMs": c.speech_duration_ms,
+                    "gapAfterMs": gap_after_ms,
+                    "maxChars": max_chars_for_window(
+                        c.speech_duration_ms,
+                        max_rate=min(float(rate_cap), 1.20),
+                        language=target_language,
+                        slack_ms=borrowable_slack_ms,
+                    ),
+                    "speaker": c.speaker,
+                    "text": c.text,
+                }
+            )
         user_prompt = json.dumps(req_items, ensure_ascii=False)
         reply = _post_chat_completion(
             config,

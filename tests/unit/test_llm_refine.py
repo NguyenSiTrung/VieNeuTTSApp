@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from vienetts_app.core.llm_refine import (
+    LANGUAGE_CHARS_PER_SEC,
     LlmConfig,
     LlmRefineError,
     max_chars_for_window,
@@ -23,6 +24,39 @@ def test_max_chars_for_window_scales_with_duration_and_rate() -> None:
     assert max_chars_for_window(2000, chars_per_sec=14.0, max_rate=1.25) == 35
     # Short window still allows a sensible minimum (>=8 chars)
     assert max_chars_for_window(200) >= 8
+
+
+def test_max_chars_for_window_language_scaling_and_slack() -> None:
+    assert LANGUAGE_CHARS_PER_SEC["vi"] == 14.0
+    assert LANGUAGE_CHARS_PER_SEC["en"] == 14.0
+    assert LANGUAGE_CHARS_PER_SEC["zh"] == 4.8
+    assert LANGUAGE_CHARS_PER_SEC["ja"] == 6.0
+    assert LANGUAGE_CHARS_PER_SEC["ko"] == 5.5
+
+    # 2.0s window at max_rate=1.20 across languages
+    vi_budget = max_chars_for_window(2000, max_rate=1.20, language="vi")
+    en_budget = max_chars_for_window(2000, max_rate=1.20, language="en")
+    zh_budget = max_chars_for_window(2000, max_rate=1.20, language="zh")
+    ja_budget = max_chars_for_window(2000, max_rate=1.20, language="ja")
+    ko_budget = max_chars_for_window(2000, max_rate=1.20, language="ko")
+
+    assert vi_budget == en_budget == 34  # round(2.0 * 14.0 * 1.20)
+    assert zh_budget == 12  # round(2.0 * 4.8 * 1.20)
+    assert ja_budget == 14  # round(2.0 * 6.0 * 1.20)
+    assert ko_budget == 13  # round(2.0 * 5.5 * 1.20)
+    assert max_chars_for_window(2000, max_rate=1.20, language="Chinese") == zh_budget
+
+    # Minimum budget is 4 for CJK (cps <= 7.0) and 8 for alphabetic scripts
+    assert max_chars_for_window(100, language="zh") == 4
+    assert max_chars_for_window(100, language="vi") == 8
+
+    # Post-cue slack increases budget up to 800 ms cap
+    with_slack = max_chars_for_window(2000, max_rate=1.20, language="vi", slack_ms=500)
+    capped_slack = max_chars_for_window(2000, max_rate=1.20, language="vi", slack_ms=1500)
+    max_slack = max_chars_for_window(2000, max_rate=1.20, language="vi", slack_ms=800)
+    assert with_slack > vi_budget
+    assert with_slack == 42  # round(2.5 * 14.0 * 1.20)
+    assert capped_slack == max_slack == 47  # round(2.8 * 14.0 * 1.20)
 
 
 def test_llm_refine_modes_and_connection_probe() -> None:
@@ -120,3 +154,81 @@ def test_llm_refine_modes_and_connection_probe() -> None:
             LlmConfig(base_url="http://127.0.0.1:1/v1", timeout_s=0.5),
             task="refine_asr",
         )
+
+
+def test_refine_cues_with_llm_uses_speech_duration_and_post_cue_slack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_messages: list[list[dict[str, str]]] = []
+
+    def fake_post(
+        config: LlmConfig,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.2,
+    ) -> str:
+        captured_messages.append(messages)
+        items = json.loads(messages[-1]["content"])
+        return json.dumps(
+            [{"index": it["index"], "speaker": it["speaker"], "text": it["text"]} for it in items],
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)
+
+    # Cue 1 has a 2500ms caption window but only 1000ms of speech [100, 1100],
+    # followed by Cue 2 whose effective_speech_start_ms is 3100 (gap_after_ms = 600ms,
+    # borrowable_slack_ms = 480ms).
+    # Cue 2 is the final cue so gap_after_ms = 800ms (borrowable_slack_ms = 680ms).
+    cues = [
+        Cue(
+            1,
+            0,
+            2500,
+            "Hello world",
+            speaker="SPEAKER_01",
+            speech_start_ms=100,
+            speech_end_ms=1100,
+        ),
+        Cue(
+            2,
+            2900,
+            4500,
+            "Second line",
+            speaker="SPEAKER_02",
+            speech_start_ms=3100,
+            speech_end_ms=4300,
+        ),
+    ]
+    cfg = LlmConfig()
+    refine_cues_with_llm(
+        cues,
+        cfg,
+        task="translate_dub",
+        target_language="zh",
+        rate_cap=1.40,
+        batch_size=1,
+    )
+    assert len(captured_messages) == 2
+    item1 = json.loads(captured_messages[0][-1]["content"])[0]
+    item2 = json.loads(captured_messages[1][-1]["content"])[0]
+
+    assert item1["durationMs"] == 2500
+    assert item1["speechDurationMs"] == 1000
+    assert item1["gapAfterMs"] == 600
+    assert item1["maxChars"] == max_chars_for_window(
+        1000,
+        max_rate=1.20,
+        language="zh",
+        slack_ms=480,
+    )
+
+    assert item2["durationMs"] == 1600
+    assert item2["speechDurationMs"] == 1200
+    assert item2["gapAfterMs"] == 800
+    assert item2["maxChars"] == max_chars_for_window(
+        1200,
+        max_rate=1.20,
+        language="zh",
+        slack_ms=680,
+    )

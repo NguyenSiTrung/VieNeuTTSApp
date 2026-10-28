@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import threading
@@ -12,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from vienetts_app.core import asr
 from vienetts_app.core.asr import (
     AsrCancelled,
     AsrConfig,
@@ -403,6 +405,108 @@ def test_api_error_detail_redacts_key_and_cache_key_is_sparse(tmp_path: Path) ->
     remote = AsrConfig(api_base_url="http://example.invalid/v1", api_model="remote-model")
     assert _asr_cache_key(wav, remote) != base
     assert "remote-model" in _asr_cache_key(wav, remote)
+
+
+def test_chunked_api_silence_offsets_retry_prompt_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import soundfile as sf
+
+    monkeypatch.setattr(asr, "API_CHUNK_SECONDS", 10)
+    monkeypatch.setattr(asr.tempfile, "tempdir", str(tmp_path))
+    samples = np.full(25 * 16_000, 0.3, dtype=np.float32)
+    samples[int(9.4 * 16_000) : int(9.8 * 16_000)] = 0
+    samples[int(18.8 * 16_000) : int(19.4 * 16_000)] = 0
+    wav = write_wav_file(samples, tmp_path / "long.wav", 16_000)
+    chunks = asr._plan_api_chunks(wav)
+    assert len(chunks) == 3
+    assert 9.4 <= chunks[0][1] / 16_000 <= 9.8
+    assert 18.8 <= chunks[1][1] / 16_000 <= 19.4
+    assert chunks[0][1] == chunks[1][0] and chunks[1][1] == chunks[2][0]
+    bodies: list[bytes] = []
+    status = "retry"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            bodies.append(body)
+            if status == "error" or (status == "retry" and len(bodies) == 2):
+                self.send_response(401 if status == "error" else 503)
+                self.end_headers()
+                self.wfile.write(b'{"error":{"message":"unavailable"}}')
+                return
+            payload = {
+                "segments": [
+                    {
+                        "start": 0.1,
+                        "end": 0.7,
+                        "text": f"chunk{len(bodies)}",
+                        "words": [{"word": "hello", "start": 0.2, "end": 0.5}],
+                    }
+                ]
+            }
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    config = AsrConfig(
+        backend="openai_api", api_base_url=f"http://127.0.0.1:{server.server_port}/v1"
+    )
+    try:
+        result = asr._run_openai_whisper_api(wav, config)
+        assert len(bodies) == 4 and len(result) == 3
+        for index, segment in enumerate(result):
+            offset_ms = round(chunks[index][0] * 1000 / 16_000)
+            assert segment.start_ms == offset_ms + 100
+            assert segment.words[0][:2] == (offset_ms + 200, offset_ms + 500)
+        assert b'name="prompt"\r\n\r\nchunk1\r\n' in bodies[1]
+        assert b'name="prompt"\r\n\r\nchunk3\r\n' in bodies[3]
+        for body in bodies:
+            audio = body.split(b"\r\n\r\nRIFF", 1)[1]
+            info = sf.info(io.BytesIO(b"RIFF" + audio))
+            assert info.subtype == "PCM_16" and info.duration <= 10
+            assert len(body) < 25_000_000
+        assert 600 * 16_000 * 2 < 25_000_000
+        assert not list(tmp_path.glob("vieneu-asr-*"))
+        bodies.clear()
+        status = "cancel"
+        with pytest.raises(AsrCancelled):
+            asr._run_openai_whisper_api(wav, config, cancel_check=lambda: len(bodies) >= 1)
+        assert len(bodies) == 1 and not list(tmp_path.glob("vieneu-asr-*"))
+        bodies.clear()
+        status = "error"
+        with pytest.raises(AsrError):
+            asr._run_openai_whisper_api(wav, config)
+        assert len(bodies) == 1 and not list(tmp_path.glob("vieneu-asr-*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_short_large_float_wav_is_converted_before_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import soundfile as sf
+
+    monkeypatch.setattr(asr.tempfile, "tempdir", str(tmp_path))
+    wav = write_wav_file(np.zeros(6_250_000, dtype=np.float32), tmp_path / "float.wav", 16_000)
+    seen: list[Path] = []
+
+    def fake_upload(path, config, **kwargs):
+        seen.append(path)
+        assert sf.info(str(path)).subtype == "PCM_16"
+        assert path.stat().st_size < 25_000_000
+        return [RawSegment(0, 100, "ok")]
+
+    monkeypatch.setattr(asr, "_upload_whisper_api", fake_upload)
+    assert asr._run_openai_whisper_api(wav, AsrConfig()) == [RawSegment(0, 100, "ok")]
+    assert len(seen) == 1 and not seen[0].exists()
+    assert not list(tmp_path.glob("vieneu-asr-*"))
 
 
 def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:

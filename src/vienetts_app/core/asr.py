@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -28,7 +28,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
-from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.audio import StreamingWavWriter, read_wav_range, write_wav_file
 from vienetts_app.core.diarization import refine_cues_speech_bounds
 from vienetts_app.core.llm_client import http_error_detail
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
@@ -43,6 +43,7 @@ _NON_SPEECH_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 MODEL_SAMPLE_RATE = 16_000
+API_CHUNK_SECONDS = 600
 SHARED_WAV_FILENAME = "source_16k.wav"
 WAV_INPUT_16K_FILENAME = "input_16k.wav"
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
@@ -713,12 +714,14 @@ def _run_whisper_cpp(
             srt_out.unlink(missing_ok=True)
 
 
-def _run_openai_whisper_api(
+def _upload_whisper_api(
     wav_path: Path,
     config: AsrConfig,
     *,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    prompt: str = "",
+    timeout: float = 120,
 ) -> list[RawSegment]:
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
@@ -742,6 +745,8 @@ def _run_openai_whisper_api(
     _add_field("response_format", "verbose_json")
     if config.language and config.language != "auto":
         _add_field("language", config.language)
+    if prompt:
+        _add_field("prompt", prompt[-200:])
 
     audio_bytes = wav_path.read_bytes()
     parts.append(
@@ -765,17 +770,22 @@ def _run_openai_whisper_api(
         progress_cb(0.3, "Đang gửi âm thanh tới máy chủ ASR…")
 
     req = Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urlopen(req, timeout=120) as resp:  # noqa: S310
-            raw_resp = resp.read().decode("utf-8", errors="replace")
-    except HTTPError as exc:
-        message = f"Máy chủ ASR HTTP {exc.code} ({url}): {http_error_detail(exc)}"
-        key = config.api_key.strip()
-        raise AsrError(message.replace(key, "[redacted]") if key else message) from None
-    except (URLError, TimeoutError, OSError) as exc:
-        message = f"Không thể kết nối máy chủ ASR ({url}): {exc}"
-        key = config.api_key.strip()
-        raise AsrError(message.replace(key, "[redacted]") if key else message) from None
+    for attempt in range(2):
+        if cancel_check is not None and cancel_check():
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        try:
+            with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                raw_resp = resp.read().decode("utf-8", errors="replace")
+            break
+        except HTTPError as exc:
+            message = f"Máy chủ ASR HTTP {exc.code} ({url}): {http_error_detail(exc)}"
+            transient = exc.code in (408, 409, 429) or exc.code >= 500
+        except (URLError, TimeoutError, OSError) as exc:
+            message = f"Không thể kết nối máy chủ ASR ({url}): {exc}"
+            transient = True
+        if not transient or attempt == 1:
+            key = config.api_key.strip()
+            raise AsrError(message.replace(key, "[redacted]") if key else message) from None
 
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
@@ -864,6 +874,101 @@ def _run_openai_whisper_api(
     if progress_cb is not None:
         progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
     return out
+
+
+def _plan_api_chunks(wav_path: Path) -> list[tuple[int, int]]:
+    import soundfile as sf
+
+    info = sf.info(str(wav_path))
+    rate = int(info.samplerate)
+    total = int(info.frames)
+    limit = max(1, int(API_CHUNK_SECONDS * rate))
+    frame_size = max(1, int(rate * 0.2))
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    while total - start > limit:
+        boundary = start + limit
+        search_start = max(start, boundary - 15 * rate)
+        samples, _ = read_wav_range(wav_path, search_start, boundary)
+        count = len(samples) // frame_size
+        if count:
+            frames = samples[: count * frame_size].reshape(count, frame_size)
+            levels = np.mean(frames * frames, axis=1)
+            quietest = count - 1 - int(np.argmin(levels[::-1]))
+            cut = search_start + (quietest + 1) * frame_size
+        else:
+            cut = boundary
+        cut = max(start + 1, min(boundary, cut))
+        chunks.append((start, cut))
+        start = cut
+    if start < total:
+        chunks.append((start, total))
+    return chunks
+
+
+def _run_openai_whisper_api(
+    wav_path: Path,
+    config: AsrConfig,
+    *,
+    progress_cb: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[RawSegment]:
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+    chunks = _plan_api_chunks(wav_path)
+    if len(chunks) <= 1 and wav_path.stat().st_size < 24_900_000:
+        timeout = max(120.0, 0.5 * _wav_duration_s(wav_path))
+        return _upload_whisper_api(
+            wav_path, config, progress_cb=progress_cb, cancel_check=cancel_check, timeout=timeout
+        )
+
+    import soundfile as sf
+
+    rate = int(sf.info(str(wav_path)).samplerate)
+    result: list[RawSegment] = []
+    prompt = ""
+    with tempfile.TemporaryDirectory(prefix="vieneu-asr-") as directory:
+        for index, (start, stop) in enumerate(chunks):
+            if cancel_check is not None and cancel_check():
+                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+            path = Path(directory) / f"chunk_{index:04d}.wav"
+            with StreamingWavWriter(path, sample_rate=rate) as writer:
+                for position in range(start, stop, rate * 10):
+                    samples, _ = read_wav_range(wav_path, position, min(stop, position + rate * 10))
+                    writer.write(samples)
+            if progress_cb is not None:
+                progress_cb(index / len(chunks), "Đang gửi âm thanh tới máy chủ ASR…")
+            segments = _upload_whisper_api(
+                path,
+                config,
+                cancel_check=cancel_check,
+                prompt=prompt,
+                timeout=max(120.0, 0.5 * (stop - start) / rate),
+            )
+            prompt = " ".join(segment.text for segment in segments)[-200:]
+            offset = int(round(start * 1000 / rate))
+            result.extend(
+                replace(
+                    segment,
+                    start_ms=segment.start_ms + offset,
+                    end_ms=segment.end_ms + offset,
+                    words=tuple((a + offset, b + offset, text) for a, b, text in segment.words),
+                    speech_start_ms=(
+                        segment.speech_start_ms + offset
+                        if segment.speech_start_ms is not None
+                        else None
+                    ),
+                    speech_end_ms=(
+                        segment.speech_end_ms + offset
+                        if segment.speech_end_ms is not None
+                        else None
+                    ),
+                )
+                for segment in segments
+            )
+            if progress_cb is not None:
+                progress_cb((index + 1) / len(chunks), "Đang nhận diện giọng nói…")
+    return result
 
 
 def _is_16k_mono_wav(path: Path) -> bool:

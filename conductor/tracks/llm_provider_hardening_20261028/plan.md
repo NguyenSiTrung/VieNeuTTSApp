@@ -80,7 +80,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
   - Green implementation:
     - Add `AsrConfig.api_model`; use `http_error_detail` from `core/llm_client.py`; gate the auto-mode runner on a non-empty `api_base_url`; append sparse cache-key fields.
 
-- [ ] **Task 3.2: Silence-aware chunked upload for long audio**
+- [x] **Task 3.2: Silence-aware chunked upload for long audio**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   <!-- depends: task1 -->
   - Red tests (synthetic 16 kHz WAVs written with soundfile; mock `HTTPServer` echoing `verbose_json` per chunk):

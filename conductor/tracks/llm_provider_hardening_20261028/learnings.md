@@ -57,3 +57,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - API models are separate from local model names; local ASR cache keys remain byte-identical when the API URL is empty.
 - Explicit ASR URLs, including localhost, opt auto mode into the API; provider error details must redact echoed credentials.
 - Full gate: 1598 passed, 5 skipped and the same 6 documented ARM64 baseline failures.
+
+## 2026-10-28 - Phase 3 Task 3.2: Chunked Whisper uploads
+- The app's WAV writer produces float32 files: even a sub-600-second 16 kHz file can exceed 25 MB. Convert oversized single-request inputs to temporary PCM16 too.
+- Find quiet cuts with bounded range reads, prefer the latest equally quiet 200 ms frame, and offset word and speech bounds as well as segment times.
+- Full gate: 1600 passed, 5 skipped and the same 6 documented ARM64 baseline failures.

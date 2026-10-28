@@ -1113,3 +1113,37 @@ def test_renderer_trims_vocoder_silence_and_stretches_merged_units_uniformly(
     assert unit_fits[1].rate == pytest.approx(unit_fits[0].rate)
     assert unit_fits[2].rate == pytest.approx(unit_fits[0].rate)
     assert res_unit.fits[0].rate == res_unit.fits[1].rate == res_unit.fits[2].rate
+
+    # 3. FR-5.2: only the first piece anchors to its cue; later pieces follow
+    # contiguously (the unit gains no silence its synthesis didn't have) in both
+    # modes, and both split edges ramp over 5 ms.
+    cues_pair = (Cue(1, 0, 3_000, "Hello there my"), Cue(2, 3_100, 5_000, "good friend."))
+    for policy in (FitPolicy.dub(rate_cap=1.5, merge_sentences=True), FitPolicy.transcript()):
+        proj_pair = build_project(
+            tmp_path / f"pair-{policy.mode}.srt", cues_pair, policy, sample_rate=SR
+        )
+        with SubtitleTrackRenderer(store, proj_pair) as renderer:
+            head, tail = renderer.add_unit_clip((0, 1), clip(1_500, 0.5))
+            res_pair = renderer.finish()
+        assert head.start_ms == 0
+        assert tail.start_ms == head.end_ms
+        assert abs(head.end_ms - 656) <= 150  # the weighted split, within the snap window
+        assert res_pair.total_ms == 1_500
+        data, _ = read_wav(res_pair.wav_path)
+        cut = head.end_ms
+        assert np.all(np.diff(data[cut - 5 : cut]) < 0) and abs(data[cut - 1]) < 1e-3
+        assert np.all(np.diff(data[cut : cut + 5]) > 0) and abs(data[cut]) < 1e-3
+        assert data[cut - 6] == pytest.approx(0.5, abs=1e-3)
+        assert data[cut + 5] == pytest.approx(0.5, abs=1e-3)
+
+    # A 100 ms pause 80 ms past the weighted split is where the cut lands.
+    paused = clip(1_500, 0.5)
+    paused[686:786] = 0.0
+    proj_pause = build_project(
+        tmp_path / "pause.srt", cues_pair, FitPolicy.dub(merge_sentences=True), sample_rate=SR
+    )
+    with SubtitleTrackRenderer(store, proj_pause) as renderer:
+        head, tail = renderer.add_unit_clip((0, 1), paused)
+        renderer.finish()
+    assert 686 <= head.end_ms <= 786
+    assert tail.start_ms == head.end_ms

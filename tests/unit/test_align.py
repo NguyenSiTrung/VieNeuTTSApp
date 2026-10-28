@@ -107,8 +107,15 @@ def test_time_and_rate_helpers() -> None:
 
 
 def test_dub_policy() -> None:
-    # 3000 ms of speech in a 1500 ms window at cap 1.5 -> exactly 2000 ms.
-    fit = plan_cue(cue(2, 2_000, 3_500), 3_000, FitPolicy.dub(rate_cap=1.5), prev_end_ms=1_000)
+    # 3000 ms of speech in a 1500 ms window at cap 1.5 -> exactly 2000 ms (an
+    # adjacent next cue leaves no silence to borrow).
+    fit = plan_cue(
+        cue(2, 2_000, 3_500),
+        3_000,
+        FitPolicy.dub(rate_cap=1.5),
+        prev_end_ms=1_000,
+        next_start_ms=3_500,
+    )
     assert fit.rate == 1.5
     assert fit.compressed is True
     assert fit.start_ms == 2_000
@@ -164,6 +171,14 @@ def test_dub_policy() -> None:
     for previous, following in zip(fits, fits[1:], strict=False):
         assert following.start_ms >= previous.end_ms
 
+    # FR-5.3 drift: a pushed cue plans against what is left of its windows, so
+    # one overlong take is absorbed (up to rate_cap) instead of drifting every
+    # later cue by the same 333 ms.
+    adjacent = [cue(i + 1, i * 2_000, (i + 1) * 2_000) for i in range(4)]
+    fits = plan_alignment(adjacent, [3_500, 2_000, 2_000, 2_000], FitPolicy.dub(rate_cap=1.5))
+    assert fits[1].pushed_ms > 0 and fits[1].rate > 1.0
+    assert abs(fits[-1].end_ms - fits[-1].srt_end_ms) <= 150
+
 
 def test_offset_shifts_the_whole_file_and_clamps_at_zero():
     policy = FitPolicy.dub(offset_ms=-500)
@@ -218,7 +233,10 @@ def test_plan_alignment_contract() -> None:
         plan_alignment([cue(1, 0, 1_000)], [1_000, 2_000], FitPolicy.dub())
 
     fits = plan_alignment_for_clips(
-        [cue(1, 0, 2_000)], [clip(3_000)], FitPolicy.dub(rate_cap=1.5), SR
+        [cue(1, 0, 2_000), cue(2, 2_000, 3_000)],
+        [clip(3_000), clip(1_000)],
+        FitPolicy.dub(rate_cap=1.5),
+        SR,
     )
     assert fits[0].natural_ms == 3_000
     assert fits[0].rate == 1.5
@@ -252,7 +270,7 @@ def test_render_alignment_contract() -> None:
 
 
 def test_stretch_clip_contract() -> None:
-    long_fit = plan_cue(cue(1, 0, 1_000), 1_500, FitPolicy.dub())
+    long_fit = plan_cue(cue(1, 0, 1_000), 1_500, FitPolicy.dub(), next_start_ms=1_000)
     trimmed = stretch_clip_to(clip(1_500), long_fit, SR)
     assert trimmed.size == long_fit.duration_ms  # 1000, not the clip's 1500
     padded_fit = plan_cue(cue(1, 0, 1_000), 1_000, FitPolicy.dub())
@@ -263,7 +281,7 @@ def test_stretch_clip_contract() -> None:
     empty = plan_cue(cue(1, 0, 0), 0, FitPolicy.dub())
     assert stretch_clip_to(clip(10), empty, SR).size == 0
 
-    fit = plan_cue(cue(1, 0, 1_000), 2_000, FitPolicy.dub(rate_cap=2.0))
+    fit = plan_cue(cue(1, 0, 1_000), 2_000, FitPolicy.dub(rate_cap=2.0), next_start_ms=1_000)
     assert fit.compressed is True
     stretched = stretch_clip_to(clip(2_000), fit, SR)
     assert stretched.size == fit.duration_ms == 1_000
@@ -313,7 +331,8 @@ def test_adjusted_cues_contract() -> None:
     cues = [cue(1, 0, 1_000, "a"), cue(2, 2_000, 3_500, "b")]
     fits = plan_alignment(cues, [1_000, 3_000], FitPolicy.dub(rate_cap=1.5))
     retimed = adjusted_cues(cues, fits)
-    assert [(c.start_ms, c.end_ms) for c in retimed] == [(0, 1_000), (2_000, 4_000)]
+    # The last cue borrows trailing silence at comfort rate (no next cue).
+    assert [(c.start_ms, c.end_ms) for c in retimed] == [(0, 1_000), (2_000, 4_609)]
     assert [c.text for c in retimed] == ["a", "b"]
     assert [c.index for c in retimed] == [1, 2]
 
@@ -324,6 +343,23 @@ def test_adjusted_cues_contract() -> None:
 
     with pytest.raises(AlignmentError):
         adjusted_cues([cue(1, 0, 1_000)], [])
+
+    # FR-5.3: silent cues take the offset and stay between their neighbours,
+    # so the exported SRT keeps its order (they used to keep their raw times).
+    cues = [cue(1, 0, 1_000), cue(2, 1_000, 2_000), cue(3, 2_500, 3_500), cue(4, 4_000, 5_000)]
+    fits = plan_alignment(cues, [1_000, 0, 1_000, 0], FitPolicy.dub(offset_ms=5_000))
+    retimed = adjusted_cues(cues, fits)
+    assert [(c.start_ms, c.end_ms) for c in retimed] == [
+        (5_000, 6_000),
+        (6_000, 7_000),
+        (7_500, 8_500),
+        (9_000, 10_000),
+    ]
+    # An overrun into a silent cue's window squeezes it, never reorders it.
+    fits = plan_alignment(cues, [2_500, 0, 1_000, 0], FitPolicy.dub(rate_cap=1.0, offset_ms=5_000))
+    retimed = adjusted_cues(cues, fits)
+    for previous, following in zip(retimed, retimed[1:], strict=False):
+        assert following.start_ms >= previous.end_ms >= previous.start_ms >= 5_000
 
 
 def test_two_stage_elastic_fit_speech_bounds_and_caption_hold() -> None:
@@ -382,6 +418,21 @@ def test_two_stage_elastic_fit_speech_bounds_and_caption_hold() -> None:
     ]
     retimed_pushed = adjusted_cues(pushed_cues, pushed_fits)
     assert (retimed_pushed[0].start_ms, retimed_pushed[0].end_ms) == (300, 2_200 - 80)
+
+    # 5. FR-5.3 borrow: a take that fits the cue's own caption window plays at
+    # 1.0x even when the detected speech is short; the window up to srt_end is
+    # never capped by the 1.2 s borrow allowance.
+    short_speech = Cue(1, 1_000, 4_000, "Long line", speech_start_ms=1_000, speech_end_ms=1_300)
+    fit = plan_cue(short_speech, 2_500, FitPolicy.dub(rate_cap=1.5), next_start_ms=6_000)
+    assert fit.rate == 1.0
+    assert (fit.start_ms, fit.end_ms, fit.overflow_ms) == (1_000, 3_500, 0)
+    # ...but never into the next cue's speech when the captions overlap it.
+    overlapping = plan_cue(short_speech, 2_500, FitPolicy.dub(rate_cap=1.5), next_start_ms=2_000)
+    assert overlapping.rate == 1.5
+    # No next cue: the archived max(srt_end, speech_end + MAX_SLACK_BORROW_MS).
+    last = plan_cue(Cue(1, 0, 1_000, "Tail"), 1_400, FitPolicy.dub(rate_cap=1.5))
+    assert last.rate == pytest.approx(1.15)
+    assert (last.end_ms, last.overflow_ms) == (1_217, 0)
 
 
 # ── speech units (merge_sentences) ───────────────────────────────────────────
@@ -456,6 +507,26 @@ def test_split_unit_audio_contract() -> None:
     # Both cues have 7 characters, but cue 1 has a comma pause so it receives > 50% of frames
     assert punct_pieces[0].size > punct_pieces[1].size
     assert sum(p.size for p in punct_pieces) == 1_000
+
+    # FR-5.2: each weighted split snaps to the quietest 10 ms frame within
+    # ±150 ms. Flat audio has no quieter frame, so the split stays put.
+    unit_cues = [cue(1, 0, 3_000, "Hello there my"), cue(2, 3_100, 5_000, "good friend.")]
+    weighted = split_unit_audio(clip(1_500, 0.5), [0, 1], unit_cues, SR)[0].size
+    assert weighted == 656
+    paused = clip(1_500, 0.5)
+    paused[weighted + 30 : weighted + 130] = 0.0  # a 100 ms pause centred 80 ms away
+    head, tail = split_unit_audio(paused, [0, 1], unit_cues, SR)
+    assert weighted + 30 <= head.size <= weighted + 130
+    assert head.size + tail.size == 1_500
+    far = clip(1_500, 0.5)
+    far[weighted + 200 : weighted + 300] = 0.0  # out of reach
+    assert split_unit_audio(far, [0, 1], unit_cues, SR)[0].size == weighted
+    # A snap is bounded by its neighbours: the pause just past the second
+    # split belongs to that split, never to the first one.
+    trio = [cue(1, 0, 1_000, "a" * 10), cue(2, 1_000, 2_000, "b"), cue(3, 2_000, 3_000, "c" * 10)]
+    audio = clip(1_050, 0.5)
+    audio[560:600] = 0.0
+    assert [p.size for p in split_unit_audio(audio, [0, 1, 2], trio, SR)] == [500, 70, 480]
 
     # AC-1: Pre-fit edge-silence trimming in render_alignment / plan_alignment_for_clips
     # A 1.0 s speech take with 300 ms of vocoder silence (150 ms head + 150 ms tail)

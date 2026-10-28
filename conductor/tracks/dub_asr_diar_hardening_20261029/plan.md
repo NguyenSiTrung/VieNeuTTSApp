@@ -293,7 +293,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [~] **Task 6.1: Alignment fixes + contiguous merged-unit placement with snapped, faded splits (FR-5.2, FR-5.3)**
+- [x] **Task 6.1: Alignment fixes + contiguous merged-unit placement with snapped, faded splits (FR-5.2, FR-5.3)**
   <!-- files: src/vienetts_app/core/align.py, src/vienetts_app/core/subtitle_project.py, tests/unit/test_align.py, tests/unit/test_subtitle_project.py -->
   - Red tests (the reviewer repros become regression tests):
     - **Drift:** 4 adjacent 2 s cues with natural `[3500, 2000, 2000, 2000]` and cap 1.5 end within 150 ms of the last anchor.

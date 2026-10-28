@@ -60,6 +60,10 @@ MIN_BORROW_GAP_MS = 250
 MAX_SLACK_BORROW_MS = 1200
 MAX_RATE_STEP = 0.20
 MIN_SUBTITLE_GAP_MS = 80
+#: Merged-unit splits snap to the quietest ``SPLIT_FRAME_MS`` frame within
+#: ``±SPLIT_SNAP_MS`` of the weighted estimate (a cut inside a pause, not a word).
+SPLIT_FRAME_MS = 10
+SPLIT_SNAP_MS = 150
 #: Speech-unit grouping (``merge_sentences``). Subtitle cues frequently omit
 #: terminal punctuation entirely, so a sentence test alone would merge a whole
 #: movie into one unit; the char and gap guards keep units sentence-sized.
@@ -228,6 +232,24 @@ def ms_for_frames(frames: int, sample_rate: int = DEFAULT_SAMPLE_RATE) -> int:
     return int(round(max(0, int(frames)) * 1000 / sample_rate))
 
 
+def _extended_end(speech_end: int, srt_end: int, next_start_ms: int | None) -> int:
+    """Latest end a dub take may reach before it counts as an overflow.
+
+    A cue owns its caption window up to ``srt_end``. Past it, the silence before
+    the next cue is borrowed up to ``MAX_SLACK_BORROW_MS`` beyond the speech
+    end — but never into the next cue's speech (``MIN_BREATH_GAP_MS`` short of
+    it). With no next cue, the archived rule ``max(srt_end, speech_end +
+    MAX_SLACK_BORROW_MS)`` applies.
+    """
+    if next_start_ms is None:
+        return max(srt_end, speech_end + MAX_SLACK_BORROW_MS)
+    breath_limit = int(next_start_ms) - MIN_BREATH_GAP_MS
+    if int(next_start_ms) - speech_end >= MIN_BORROW_GAP_MS:
+        borrow_cap = min(speech_end + MAX_SLACK_BORROW_MS, breath_limit)
+        return min(max(srt_end, borrow_cap), breath_limit)
+    return max(speech_end, min(srt_end, breath_limit))
+
+
 def plan_cue(
     cue: Cue,
     natural_ms: int,
@@ -236,6 +258,8 @@ def plan_cue(
     *,
     next_start_ms: int | None = None,
     prev_rate: float | None = None,
+    start_ms: int | None = None,
+    forced_rate: float | None = None,
 ) -> CueFit:
     """Place one cue given the previous cue's end (``None`` = first cue).
 
@@ -243,41 +267,53 @@ def plan_cue(
     would silently drop spoken text. ``prev_end_ms`` is what keeps cues from
     overlapping — an overlong take pushes its successors instead of covering
     them.
+
+    A pushed cue (placed after its subtitle start) plans its rate against what
+    is left of its windows, so the drift is absorbed — up to ``rate_cap`` —
+    instead of being carried into every later cue.
+
+    ``start_ms`` places the cue exactly there instead of anchoring it (a merged
+    unit's later pieces follow the previous piece contiguously), and
+    ``forced_rate`` replaces rate planning (a merged unit's one uniform rate).
+    Overflow is still measured against the cue's own windows.
     """
     srt_start = max(0, int(cue.effective_speech_start_ms) + policy.offset_ms)
     speech_end = max(srt_start, int(cue.effective_speech_end_ms) + policy.offset_ms)
     srt_end = max(speech_end, int(cue.end_ms) + policy.offset_ms)
-    window_ms = max(1, speech_end - srt_start)
     natural = max(0, int(natural_ms))
 
-    if prev_end_ms is None:
-        start_ms = srt_start
+    if start_ms is not None:
+        start = max(0, int(start_ms))
+    elif prev_end_ms is None:
+        start = srt_start
     elif policy.max_gap_ms > 0:
         # Anchor at the subtitle time when the pause fits, push when the
         # previous take overran, and cap a long silent gap.
-        start_ms = max(int(prev_end_ms), min(srt_start, int(prev_end_ms) + policy.max_gap_ms))
+        start = max(int(prev_end_ms), min(srt_start, int(prev_end_ms) + policy.max_gap_ms))
     else:
-        start_ms = max(int(prev_end_ms), srt_start)
+        start = max(int(prev_end_ms), srt_start)
 
     if policy.mode == MODE_TRANSCRIPT:
         extended_end = srt_end
-        rate = MIN_RATE
+        rate = MIN_RATE if forced_rate is None else float(forced_rate)
     else:
-        if next_start_ms is not None and int(next_start_ms) - speech_end >= MIN_BORROW_GAP_MS:
-            borrow_cap = min(
-                speech_end + MAX_SLACK_BORROW_MS,
-                int(next_start_ms) - MIN_BREATH_GAP_MS,
-            )
-            extended_end = max(speech_end, borrow_cap)
-        else:
-            extended_end = max(speech_end, min(speech_end + MAX_SLACK_BORROW_MS, srt_end))
-        extended_window = max(window_ms, extended_end - start_ms)
+        extended_end = _extended_end(speech_end, srt_end, next_start_ms)
+        # Windows are measured from where the take actually starts once pushed.
+        anchor = max(start, srt_start)
+        window_ms = max(1, speech_end - anchor)
+        own_window = max(window_ms, min(srt_end, extended_end) - anchor)
+        extended_window = max(own_window, extended_end - start)
         comfort_cap = min(float(policy.rate_cap), COMFORT_RATE)
-        if natural <= window_ms:
+        if forced_rate is not None:
+            rate = float(forced_rate)
+        elif natural <= window_ms:
             rate = MIN_RATE
         elif natural / window_ms <= comfort_cap:
             rate = max(MIN_RATE, natural / window_ms)
-        elif extended_window > window_ms and natural / comfort_cap <= extended_window:
+        elif natural <= own_window:
+            # Fits the cue's own (silent) caption hold at natural pace.
+            rate = MIN_RATE
+        elif natural / comfort_cap <= extended_window:
             rate = max(MIN_RATE, comfort_cap)
         else:
             rate = min(float(policy.rate_cap), max(comfort_cap, natural / extended_window))
@@ -288,22 +324,22 @@ def plan_cue(
                 )
                 if next_start_ms is not None:
                     max_slack_end = int(next_start_ms) - MIN_BREATH_GAP_MS
-                    if start_ms + int(round(natural / clamped_rate)) <= max_slack_end:
+                    if start + int(round(natural / clamped_rate)) <= max_slack_end:
                         rate = clamped_rate
                         extended_end = max(
                             extended_end,
-                            start_ms + int(round(natural / rate)),
+                            start + int(round(natural / rate)),
                         )
                 else:
                     rate = clamped_rate
 
     duration_ms = int(round(natural / rate)) if rate > 0 else natural
-    end_ms = start_ms + duration_ms
+    end_ms = start + duration_ms
     overflow_limit = max(srt_end, extended_end) if policy.mode == MODE_DUB else srt_end
     overflow_ms = max(0, end_ms - srt_end) if end_ms > overflow_limit else 0
     return CueFit(
         index=cue.index,
-        start_ms=start_ms,
+        start_ms=start,
         end_ms=end_ms,
         rate=rate,
         srt_start_ms=srt_start,
@@ -465,31 +501,26 @@ def alignment_stats(fits: Sequence[CueFit]) -> AlignmentStats:
 def adjusted_cues(cues: Sequence[Cue], fits: Sequence[CueFit]) -> list[Cue]:
     """Cues retimed to the rendered audio — the SRT that matches the export.
 
-    Dub mode's whole point is that this file lines up with ``track.wav``; a
-    zero-length fit (a cue whose synthesis produced nothing) keeps its original
-    window rather than emitting an unreadable ``00:00:00,000 --> 00:00:00,000``.
+    Dub mode's whole point is that this file lines up with ``track.wav``. Each
+    caption starts with its audio and holds until its (offset, push-shifted)
+    subtitle end, stopping ``MIN_SUBTITLE_GAP_MS`` short of the next caption.
+
+    A zero-length fit (a cue whose synthesis produced nothing) is retimed the
+    same way: its fit already carries the offset (clamped at 0) and sits after
+    the previous take, so it keeps a readable window on the rendered clock and
+    the file stays in order — keeping its raw SRT times would not.
     """
     if len(cues) != len(fits):
         raise AlignmentError(f"cues ({len(cues)}) and fits ({len(fits)}) must have the same length")
     retimed: list[Cue] = []
     for i, (cue, fit) in enumerate(zip(cues, fits, strict=True)):
-        if fit.end_ms <= fit.start_ms:
-            start = cue.start_ms
-            end = cue.end_ms
+        start = fit.start_ms
+        desired_end = max(fit.end_ms, fit.srt_end_ms + max(0, fit.pushed_ms))
+        if i + 1 < len(fits):
+            next_start = fits[i + 1].start_ms
+            end = max(fit.end_ms, min(desired_end, next_start - MIN_SUBTITLE_GAP_MS))
         else:
-            start = fit.start_ms
-            pushed = max(0, fit.pushed_ms)
-            desired_end = max(fit.end_ms, fit.srt_end_ms + pushed)
-            if i + 1 < len(fits):
-                next_fit = fits[i + 1]
-                next_start = (
-                    next_fit.start_ms
-                    if next_fit.end_ms > next_fit.start_ms
-                    else cues[i + 1].start_ms
-                )
-                end = max(fit.end_ms, min(desired_end, next_start - MIN_SUBTITLE_GAP_MS))
-            else:
-                end = desired_end
+            end = desired_end
         retimed.append(Cue(cue.index, start, max(start, end), cue.text, speaker=cue.speaker))
     return retimed
 
@@ -563,7 +594,10 @@ def split_unit_audio(
 
     Approximate by nature (no per-word timing exists inside a merged take), but
     weighting clause/sentence punctuation alongside character length keeps pause
-    allocation realistic, and total length is exact.
+    allocation realistic, and total length is exact. Each weighted split then
+    snaps to the quietest ``SPLIT_FRAME_MS`` frame within ``±SPLIT_SNAP_MS``
+    (bounded by its neighbouring splits), so a cut lands in a pause rather than
+    mid-word whenever one is near.
     """
     mono = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).ravel())
     if not indices:
@@ -572,16 +606,50 @@ def split_unit_audio(
         return [mono]
     weights = [_cue_split_weight(cues[i].text) for i in indices]
     total = sum(weights)
-    pieces: list[np.ndarray] = []
+    targets: list[int] = []
     cursor = 0
-    for position, weight in enumerate(weights):
-        if position == len(weights) - 1:
-            end = mono.size
-        else:
-            end = min(mono.size, cursor + int(round(mono.size * weight / total)))
-        pieces.append(np.ascontiguousarray(mono[cursor:end], dtype=np.float32))
-        cursor = end
-    return pieces
+    for weight in weights[:-1]:
+        cursor = min(mono.size, cursor + int(round(mono.size * weight / total)))
+        targets.append(cursor)
+    frame = max(1, int(round(sample_rate * SPLIT_FRAME_MS / 1000)))
+    cuts: list[int] = []
+    previous = 0
+    for position, target in enumerate(targets):
+        following = targets[position + 1] if position + 1 < len(targets) else mono.size
+        cut = _snap_split(mono, target, previous + frame, following - frame, frame, sample_rate)
+        cut = min(max(cut, previous), mono.size)
+        cuts.append(cut)
+        previous = cut
+    bounds = [0, *cuts, mono.size]
+    return [
+        np.ascontiguousarray(mono[start:end], dtype=np.float32)
+        for start, end in zip(bounds, bounds[1:], strict=False)
+    ]
+
+
+def _snap_split(
+    mono: np.ndarray, target: int, low: int, high: int, frame: int, sample_rate: int
+) -> int:
+    """``target`` moved to the centre of the quietest frame in ``[low, high]``.
+
+    Candidates step one frame at a time out to ``SPLIT_SNAP_MS`` either side;
+    near-equal energies resolve to the candidate closest to ``target``, so flat
+    audio (or no quieter frame in reach) leaves the weighted split untouched.
+    """
+    reach = int(round(sample_rate * SPLIT_SNAP_MS / 1000)) // frame
+    offsets = np.arange(-reach, reach + 1)
+    centres = target + offsets * frame
+    keep = (centres >= low) & (centres <= high)
+    if not keep.any():
+        return target
+    offsets, centres = offsets[keep], centres[keep]
+    half = frame // 2
+    # low >= one frame and high <= size - one frame, so every slice is whole.
+    energies = np.array(
+        [np.mean(np.square(mono[c - half : c - half + frame], dtype=np.float64)) for c in centres]
+    )
+    quiet = energies <= energies.min() * (1.0 + 1e-3) + 1e-12
+    return int(centres[quiet][np.argmin(np.abs(offsets[quiet]))])
 
 
 def policy_summary(policy: FitPolicy) -> dict[str, Any]:

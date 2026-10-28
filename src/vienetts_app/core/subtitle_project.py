@@ -755,6 +755,12 @@ class SubtitleTrackRenderer:
         self._cursor = 0
         self._last_index = -1
         self._done = False
+        # Per-piece state while add_unit_clip feeds a merged unit through
+        # add_clip (kept as state so spies on add_clip still see every cue).
+        self._unit_pretrimmed = False
+        self._unit_forced_rate: float | None = None
+        self._unit_follow = False
+        self._unit_split_edges = (False, False)
 
     @property
     def fits(self) -> tuple[CueFit, ...]:
@@ -779,13 +785,13 @@ class SubtitleTrackRenderer:
         """Place one cue's synthesized audio and write it to the track."""
         if clip is None or np.asarray(clip).size == 0:
             return self.add_silent_cue(cue_index)
-        trim = not getattr(self, "_unit_pretrimmed", False)
-        forced_rate = getattr(self, "_unit_forced_rate", None)
         return self._place(
             cue_index,
             np.asarray(clip, dtype=np.float32).ravel(),
-            trim=trim,
-            forced_rate=forced_rate,
+            trim=not self._unit_pretrimmed,
+            forced_rate=self._unit_forced_rate,
+            follow=self._unit_follow,
+            split_edges=self._unit_split_edges,
         )
 
     def add_unit_clip(
@@ -795,7 +801,13 @@ class SubtitleTrackRenderer:
         *,
         split_fn: Any = split_unit_audio,
     ) -> list[CueFit]:
-        """Place a merged speech unit across ``unit_indices`` at a uniform rate."""
+        """Place a merged speech unit across ``unit_indices`` at a uniform rate.
+
+        Only the first piece anchors to its cue's subtitle start; every later
+        piece follows the previous one contiguously, so the unit never gains
+        silence its synthesis didn't have. Each split edge gets a 5 ms
+        micro-fade (the split itself snaps to a quiet frame in ``split_fn``).
+        """
         if not unit_indices:
             return []
         if clip is None or np.asarray(clip).size == 0:
@@ -855,19 +867,29 @@ class SubtitleTrackRenderer:
                 prev_rate=prev_rate,
             )
             forced_rate = unit_fit.rate
+        last = len(unit_indices) - 1
         self._unit_pretrimmed = True
         self._unit_forced_rate = forced_rate
         try:
-            return [
-                self.add_clip(idx, piece) for idx, piece in zip(unit_indices, pieces, strict=True)
-            ]
+            fits: list[CueFit] = []
+            for position, (idx, piece) in enumerate(zip(unit_indices, pieces, strict=True)):
+                self._unit_follow = position > 0
+                self._unit_split_edges = (position > 0, position < last)
+                fits.append(self.add_clip(idx, piece))
+            return fits
         finally:
             self._unit_pretrimmed = False
             self._unit_forced_rate = None
+            self._unit_follow = False
+            self._unit_split_edges = (False, False)
 
     def add_silent_cue(self, cue_index: int) -> CueFit:
-        """Keep a cue's slot when its synthesis produced nothing (never drop text)."""
-        return self._place(cue_index, None)
+        """Keep a cue's slot when its synthesis produced nothing (never drop text).
+
+        An empty piece inside a merged unit still follows the previous piece,
+        so it cannot open a gap before the rest of the unit.
+        """
+        return self._place(cue_index, None, follow=self._unit_follow)
 
     def _place(
         self,
@@ -876,6 +898,8 @@ class SubtitleTrackRenderer:
         *,
         trim: bool = True,
         forced_rate: float | None = None,
+        follow: bool = False,
+        split_edges: tuple[bool, bool] = (False, False),
     ) -> CueFit:
         self.open()
         if cue_index != self._last_index + 1:
@@ -902,35 +926,16 @@ class SubtitleTrackRenderer:
             if self._fits and cue.speaker and cue.speaker == project.cues[cue_index - 1].speaker
             else None
         )
-        base_fit = plan_cue(
+        fit = plan_cue(
             cue,
             natural_ms,
             project.policy,
             self._prev_end,
             next_start_ms=next_start,
             prev_rate=prev_rate,
+            start_ms=self._prev_end if follow else None,
+            forced_rate=forced_rate if clip is not None else None,
         )
-        if forced_rate is not None and clip is not None:
-            rate = float(forced_rate)
-            duration_ms = int(round(natural_ms / rate)) if rate > 0 else natural_ms
-            end_ms = base_fit.start_ms + duration_ms
-            overflow_limit = (
-                max(base_fit.srt_end_ms, next_start - 120)
-                if next_start is not None and project.policy.mode == MODE_DUB
-                else base_fit.srt_end_ms
-            )
-            fit = CueFit(
-                index=base_fit.index,
-                start_ms=base_fit.start_ms,
-                end_ms=end_ms,
-                rate=rate,
-                srt_start_ms=base_fit.srt_start_ms,
-                srt_end_ms=base_fit.srt_end_ms,
-                natural_ms=natural_ms,
-                overflow_ms=max(0, end_ms - base_fit.srt_end_ms) if end_ms > overflow_limit else 0,
-            )
-        else:
-            fit = base_fit
         if clip is not None:
             block = stretch_clip_to(clip, fit, project.sample_rate)
         else:
@@ -940,13 +945,14 @@ class SubtitleTrackRenderer:
             butt_joined = (
                 self._prev_end is not None and self._cursor > 0 and start_frame == self._cursor
             )
-            truncated = fit.overflow_ms > 0
-            if butt_joined or truncated:
+            fade_in = butt_joined or split_edges[0]
+            fade_out = fit.overflow_ms > 0 or split_edges[1]
+            if fade_in or fade_out:
                 block = apply_micro_fade(
                     block,
                     project.sample_rate,
-                    fade_in=butt_joined,
-                    fade_out=truncated,
+                    fade_in=fade_in,
+                    fade_out=fade_out,
                 )
         if start_frame > self._cursor:
             self._writer.write_silence(start_frame - self._cursor)

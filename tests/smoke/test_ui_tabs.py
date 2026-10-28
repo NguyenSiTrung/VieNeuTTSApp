@@ -2628,6 +2628,15 @@ DRIVER = textwrap.dedent(
                         self.positionMsChanged.emit()
                         self.videoSeekRequested.emit(target_ms)
 
+                @Slot(int, result=int)
+                def cueIndexAt(self, ms):
+                    # The real controller bisects; a scan of 50 rows is fine here.
+                    pos = int(ms)
+                    for i, cue in enumerate(self._cues):
+                        if cue["startMs"] <= pos < cue["endMs"]:
+                            return i
+                    return -1
+
                 @Slot(int)
                 def seek(self, ms):
                     self._position_ms = int(ms)

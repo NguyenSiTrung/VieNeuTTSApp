@@ -31,7 +31,12 @@ from vienetts_app.core.subtitle_project import (
     render_fingerprint,
 )
 from vienetts_app.core.subtitles import parse_cues
-from vienetts_app.core.transcribe_pipeline import TranscriptionResult
+from vienetts_app.core.transcribe_pipeline import (
+    ACOUSTIC_FALLBACK_NOTE,
+    DIAR_CANCELLED_NOTE,
+    DIAR_FAILED_NOTE,
+    TranscriptionResult,
+)
 from vienetts_app.ui.bg_ops import SyncOrderedExecutor, run_sync
 from vienetts_app.ui.subtitle_controller import API_ONLY_PROPERTIES, SubtitleController
 
@@ -1782,6 +1787,38 @@ def test_transcription_runs_the_pipeline_and_surfaces_its_notes(qcoreapp, tmp_pa
     assert released == ["idle"]
     controller.shutdown()
     assert timer.isActive() is False and released == ["idle", "all"]
+
+
+def test_pipeline_notes_are_shown_in_the_ui_language(qcoreapp, tmp_path, monkeypatch):
+    # The pipeline's diarization notes are Vietnamese literals; the known ones
+    # reach the UI through self.tr (the error text kept), others unchanged.
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    monkeypatch.setattr(controller, "tr", lambda text: f"[en] {text}")
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    notes = [
+        DIAR_FAILED_NOTE.format(error="model exploded"),
+        DIAR_CANCELLED_NOTE,
+        ACOUSTIC_FALLBACK_NOTE,
+        "Đã dùng Whisper API (đám mây)",
+    ]
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed([Cue(1, 0, 1500, "Xin chào.")], *notes),
+    )
+    assert controller.transcribeVideo(True) is True
+    work, done, _ = runner.calls[-1]
+    done(work())
+    assert controller.errorText.splitlines() == [
+        "[en] " + DIAR_FAILED_NOTE.format(error="model exploded"),
+        "[en] " + DIAR_CANCELLED_NOTE,
+        "[en] " + ACOUSTIC_FALLBACK_NOTE,
+        "Đã dùng Whisper API (đám mây)",
+    ]
 
 
 def test_rediarization_remaps_labels_to_existing_speaker_voices(env, tmp_path, monkeypatch):

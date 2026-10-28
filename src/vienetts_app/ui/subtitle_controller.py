@@ -141,7 +141,15 @@ from vienetts_app.core.timeline import (
     locate_segment,
     word_spans,
 )
-from vienetts_app.core.transcribe_pipeline import ASR_TEXT, DIAR_TEXT, run_transcription
+from vienetts_app.core.transcribe_pipeline import (
+    ACOUSTIC_FALLBACK_NOTE,
+    ASR_TEXT,
+    DIAR_CANCELLED_NOTE,
+    DIAR_FAILED_NOTE,
+    DIAR_TEXT,
+    NEMOTRON_UNAVAILABLE_NOTE,
+    run_transcription,
+)
 from vienetts_app.core.video_dub import (
     VideoDubCancelled,
     build_duck_spans,
@@ -205,6 +213,21 @@ _ASR_IDLE_TICK_MS: Final = 60_000
 def _auto_asr_threads() -> int:
     """The host's automatic ASR thread count, probed (sysctl) once per process."""
     return default_asr_threads()
+
+
+def _localize_note(note: str, translated: dict[str, str]) -> str:
+    """``note`` in the UI language when it matches a template in ``translated``.
+
+    Templates may end in ``{error}``; the error text after the fixed part is
+    carried over into the translation.
+    """
+    for source, target in translated.items():
+        head, marker, _ = source.partition("{error}")
+        if note == source:
+            return target
+        if marker and note.startswith(head):
+            return target.replace("{error}", note[len(head) :])
+    return note
 
 
 #: FR-6.3: ``subtitles/_media_cache`` (one entry per video: ``source_16k.wav``,
@@ -3647,6 +3670,16 @@ class SubtitleController(QObject):
         asr_text = self.tr("Đang nhận diện giọng nói (ASR)…")
         # The pipeline names its two stages in Vietnamese; show them translated.
         stage_text = {ASR_TEXT: asr_text, DIAR_TEXT: self.tr("Đang phân tách người nói…")}
+        # So are its diarization notes.
+        note_text = {
+            DIAR_CANCELLED_NOTE: self.tr("Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên."),
+            DIAR_FAILED_NOTE: self.tr("Không phân tách được người nói: {error}"),
+            NEMOTRON_UNAVAILABLE_NOTE: self.tr("Không dùng được mô hình Nemotron-3: {error}"),
+            ACOUSTIC_FALLBACK_NOTE: self.tr(
+                "Nhãn người nói được tạo bằng phương pháp dự phòng (âm học), "
+                "độ chính xác thấp hơn mô hình Nemotron-3."
+            ),
+        }
         gen = self._begin_ai_op(asr_text, 0.05)
         project_id = self._active_project_id()
         relay = self._ai_progress_relay
@@ -3668,7 +3701,7 @@ class SubtitleController(QObject):
                 progress=lambda p, t: relay.report(gen, p, stage_text.get(t, t) or asr_text),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
-            notes = [note for note in (backend_note, *res.notes) if note]
+            notes = [_localize_note(note, note_text) for note in (backend_note, *res.notes) if note]
             _mark_media_used(self._media_cache_dir(vpath))  # FR-6.3 LRU stamp
             return list(res.cues), "\n".join(notes)
 

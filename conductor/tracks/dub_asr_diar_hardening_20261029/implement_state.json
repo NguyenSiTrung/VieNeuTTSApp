@@ -1,7 +1,7 @@
 {
   "current_phase": "Phase 8: Settings UI, hints, i18n & docs",
   "current_phase_index": 7,
-  "current_task_index": 1,
+  "current_task_index": 0,
   "completed_phases": [
     "Phase 1: Foundations \u2014 process helpers, background-op hygiene, shared 16 kHz prep",
     "Phase 2: Controller concurrency, lifecycle & persistence safety",
@@ -16,6 +16,6 @@
     "phase8_task1",
     "phase8_task2"
   ],
-  "last_updated": "2026-10-28T20:07:14Z",
+  "last_updated": "2026-10-28T20:14:16Z",
   "status": "in_progress"
 }

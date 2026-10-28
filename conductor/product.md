@@ -301,6 +301,25 @@ short snippet to a full document, fully offline.
       muxing or workspace deletion. Sits below `SubtitleSourcePanel` in
       `Source`, and above the timing panel in the two-column
       `Prepare`/`Produce` grid (narrow layouts stack it).
+    - **OpenAI-compatible LLM & Whisper API provider hardening (track
+      `llm_provider_hardening_20261028`, epic `VieNeuTTSApp-f783`, archived
+      2026-10-28)**: shared `core/llm_client.py` transport with structured error
+      taxonomy, API-key redaction (`http_error_detail`), `Retry-After` backoff,
+      and session capability downgrade cache for HTTP 400 rejections of
+      `temperature` or `response_format`; `<think>`/fence-tolerant `raw_decode`
+      reply scanner with strict index matching, `allowedSpeakers` whitelist in
+      `refine_asr`, slim JSON request envelope carrying per-project
+      `llmGlossary` (up to 4,000 chars, excluded from `render_fingerprint` and
+      staged render invalidation) and read-only neighbouring context; per-batch
+      transient failure isolation with summary notes, `finish_reason="length"`
+      bisection, missing-cue follow-up, verified `fit_timing`, and bounded
+      `ThreadPoolExecutor` concurrency; per-task model overrides
+      (`llmModelRefine`/`llmModelTranslate`/`llmModelFit`), separate Whisper API
+      settings (`asrApiBaseUrl`/`asrApiModel`/`asrApiKey`) that never leak the
+      LLM API key to a different ASR host, silence-aware 600 s PCM16 chunked
+      cloud ASR uploads with 200-char prompt continuity and offset timestamps,
+      owner-only `0600` `settings.json` on POSIX, and QML controls in
+      `SettingsModels.qml` and `SubtitlePreparePanel.qml`.
 12. **Optional multilingual Qwen engines (track `qwen_multiengine_20260920`,
     released in v0.2.0)** — two opt-in engine profiles beside VieNeu, which
     stays the fresh-install and migrated-settings default:
@@ -503,9 +522,11 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1614 collected / 1596 selected (18
+linux-aarch64. Suite at this refresh: 1630 collected / 1612 selected (18
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), and +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596), and +1 in track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `e2d9492..52e4f25`, → 1615/1597)).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596), +1 in track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `e2d9492..52e4f25`, → 1615/1597), and +15 in track `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `d6a5ab0..16f8e28`, → 1630/1612)).
+
+<!-- refreshed 2026-10-28 (3): track `llm_provider_hardening_20261028` (epic `VieNeuTTSApp-f783`, closed) implemented (`d6a5ab0..16f8e28`) and archived. Feature 11 gains hardened OpenAI-compatible LLM & Whisper API provider support (`core/llm_client.py`, `core/llm_refine.py`, `core/asr.py`, `core/models.py`, `core/settings.py`, `core/subtitle_project.py`, `ui/controller.py`, `ui/subtitle_controller.py`, `SettingsModels.qml`, `SubtitlePreparePanel.qml`, `README.md`). Zero `pyproject.toml`/`uv.lock` dep drift (stdlib only); 16 archived tracks, `conductor/tracks/` empty; suite 1630 collected / 1612 selected (18 benchmark deselected, +15 items; `-m "not slow"` → 1590, `-m "not slow and not benchmark"` → 1572), ruff check + format --check green (216 files), i18n 1216 messages / 0 unfinished (+26 strings). -->
 
 <!-- refreshed 2026-10-28 (2): 9 commits since the 2026-10-28 no-drift refresh (`4ddf6f8..2e96c3a`) — track `video_preview_panel_20261028` (epic `VieNeuTTSApp-t80a`, closed; audit finding 3.6 resolved) implemented and archived in `2faa30a`. Feature 11 gains the in-app video preview panel (`SubtitleVideoPreview.qml`: `MediaPlayer` + `VideoOutput` + `Loader`-wrapped `AudioOutput`, source/dub audio exclusivity, `videoSeekRequested` unrendered cue seeking, `syncActiveCueFromVideo` scrub highlight, caption overlay, 560 px auto-collapse, codec fallback notice, `videoReleaseRequested` handle release) wired through `ui/subtitle_controller.py` (`videoPath`/`videoUrl`, `notifyVideoPreviewPlaying`, `syncActiveCueFromVideo`, `API_ONLY_PROPERTIES` reconciliation) and placed in `SubtitleCard`'s all-stage layout (1- and 2-column). No `pyproject.toml`/`uv.lock` dep drift (QtMultimedia already resident via the `PySide6` meta-package's `PySide6-Addons` 6.11.2; frozen-build multimedia plugins already collected since `e15bfa3`); 15 archived tracks, `conductor/tracks/` empty; suite 1615 collected / 1597 selected (18 benchmark deselected, +1 item; `-m "not slow"` → 1575, `-m "not slow and not benchmark"` → 1557), ruff check + format --check green (214 files), i18n 1190 messages / 0 unfinished (+15 strings), beads 539 total / 0 open / 1 blocked (`nqx.2.3`) / 40 deferred / 498 closed. -->
 <!-- refreshed 2026-10-28: no drift — 1 commit since the 2026-10-26 refresh (`c0c482d` synced `.beads/issues.jsonl` and `vienetts_en.ts` `<location>` line offsets only; zero translation-string changes). No feature/behavior changes, no `pyproject.toml`/`uv.lock` dep drift, all 14 tracks still archived under `conductor/archive/` with `conductor/tracks/` empty. Re-verified live 2026-10-28: suite 1614 collected / 1596 selected (18 benchmark deselected), ruff check + format --check green (214 files), i18n 1175/1175 finished (0 unfinished), beads 532 total / 1 open (`t80a`) / 1 blocked (`nqx.2.4`) / 40 deferred / 490 closed. -->

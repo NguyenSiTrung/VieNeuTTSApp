@@ -369,7 +369,7 @@ Test seams and fakes:
     - **Zero samples:** a 0-sample artifact becomes `add_silent_cue` and the render completes.
   - Green implementation: consult `UnitClipCache` before submitting; feed cached audio to the renderer; replace the samples ≤ 0 failure at `:1953`.
 
-- [~] **Task 7.3: Off-thread work, `cueIndexAt` bisect, media-cache eviction (FR-6.1, FR-6.2, FR-6.3)**
+- [x] **Task 7.3: Off-thread work, `cueIndexAt` bisect, media-cache eviction (FR-6.1, FR-6.2, FR-6.3)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleVideoPreview.qml, src/vienetts_app/ui/qml/SubtitlesTab.qml, tests/unit/test_subtitle_controller.py, tests/unit/test_subtitle_components.py -->
   - Red tests:
     - **Off-thread work:** `_activate_cues_project`/`importVideo` run `refine_cues_speech_bounds` off the GUI thread (thread-recording spy) and apply by generation.

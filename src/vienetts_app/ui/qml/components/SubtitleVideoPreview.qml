@@ -141,29 +141,12 @@ AppCard {
         return null;
     }
 
+    // FR-6.2: one bisect in the controller per position tick, then at most one
+    // row read — never a scan of every cue row.
     function cueAtTime(ms) {
-        if (!root.available)
+        if (!root.available || typeof subtitleController.cueIndexAt !== "function")
             return null;
-        const m = subtitleController.cueModel;
-        if (!m)
-            return null;
-        if (typeof m.get === "function") {
-            const count = m.count !== undefined ? m.count : 0;
-            for (let i = 0; i < count; ++i) {
-                const row = m.get(i);
-                if (row && ms >= Number(row.startMs || 0) && ms < Number(row.endMs || 0))
-                    return row;
-            }
-            return null;
-        }
-        if (m.length !== undefined) {
-            for (let i = 0; i < m.length; ++i) {
-                const row = m[i];
-                if (row && ms >= Number(row.startMs || 0) && ms < Number(row.endMs || 0))
-                    return row;
-            }
-        }
-        return null;
+        return root.cueAt(subtitleController.cueIndexAt(Math.max(0, Math.round(Number(ms || 0)))));
     }
 
     readonly property var activeCueRow: {

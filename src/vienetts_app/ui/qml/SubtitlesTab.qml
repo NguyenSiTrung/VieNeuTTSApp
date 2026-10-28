@@ -180,6 +180,13 @@ Pane {
         width: Math.min((Overlay.overlay ? Overlay.overlay.width : 560) - Theme.spacingXl * 2, 560)
         padding: Theme.spacingLg
 
+        // FR-6.1: the rows are a cache keyed by each project.json's stat;
+        // opening the picker rescans on a worker (only changed files parse).
+        onAboutToShow: {
+            if (root.subtitleAvailable)
+                subtitleController.refreshProjects();
+        }
+
         header: Label {
             text: qsTr("Dự án phụ đề đã lưu")
             color: Theme.text

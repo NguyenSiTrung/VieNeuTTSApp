@@ -165,6 +165,7 @@ def transcribed(cues: Any, *notes: str, labelled: Any = None) -> Any:
     """A ``run_transcription`` stand-in: ``labelled`` when speakers are asked for."""
 
     def run(media: Any, asr_cfg: Any, diar_cfg: Any = None, **kw: Any) -> TranscriptionResult:
+        Path(kw["work_dir"]).mkdir(parents=True, exist_ok=True)  # as the 16 kHz prep does
         out = labelled if diar_cfg is not None and labelled is not None else cues
         return TranscriptionResult(list(out), list(notes))
 
@@ -694,7 +695,7 @@ def numbered_srt(count: int) -> str:
     )
 
 
-def test_a_rerender_synthesizes_only_units_missing_from_the_clip_cache(tmp_path):
+def test_a_rerender_synthesizes_only_units_missing_from_the_clip_cache(tmp_path, monkeypatch):
     # FR-5.1: each synthesized unit's raw clip is cached under its inputs, so
     # a re-render synthesizes only what changed and re-places the rest.
     controller, fake, _ = identified_env(tmp_path)
@@ -724,10 +725,19 @@ def test_a_rerender_synthesizes_only_units_missing_from_the_clip_cache(tmp_path)
     assert controller.updateCue(4, "Câu đã sửa.", "") is True
     controller.confirmRenderInvalidation()
     assert rerender() == ["Câu đã sửa."]
-    # Offset and rate cap only move placement: nothing is synthesized.
+    # Offset and rate cap only move placement: nothing is synthesized, and
+    # the engine identity is hashed once per voice, not once per unit.
+    from vienetts_app.core.synthesis_context import SynthesisContext
+
+    hashed: list[int] = []
+    fingerprint = SynthesisContext.fingerprint
+    monkeypatch.setattr(
+        SynthesisContext, "fingerprint", lambda ctx: hashed.append(1) or fingerprint(ctx)
+    )
     duration = controller.durationMs
     stage("offsetMs", 120)
     assert rerender() == []
+    assert len(hashed) == 1
     assert controller.durationMs == duration + 120
     stage("rateCap", 1.2)
     assert rerender() == []
@@ -1721,8 +1731,17 @@ def test_transcription_runs_the_pipeline_and_surfaces_its_notes(qcoreapp, tmp_pa
         work, done, _ = runner.calls[-1]
         return work, done
 
+    unused = _media_entry(tmp_path / "subtitles" / "_media_cache", "unused", 10, 45)
+    in_use = controller._media_cache_dir(video)  # noqa: SLF001
+    _media_entry(in_use.parent, in_use.name, 10, 45)
     work, done = start(True)
     done(work())
+    # FR-6.3: each transcription is followed by a sweep on a worker, which
+    # spares the active project's entry however old it is.
+    sweep, sweep_done, _ = runner.calls[-1]
+    assert unused.is_dir()
+    sweep_done(_on_thread(sweep))
+    assert not unused.exists() and in_use.is_dir()
     call = calls[-1]
     assert (call["media"], call["asr"], call["diar"]) == (
         video,
@@ -1896,6 +1915,7 @@ def test_managed_srt_disambiguates_same_stem_videos_and_persists_media_cache_and
     def _fake_transcribe(path, cfg, diar_cfg=None, *, work_dir=None, **kw):
         assert work_dir is not None
         seen_work_dirs.append(Path(work_dir))
+        Path(work_dir).mkdir(parents=True, exist_ok=True)  # the pipeline creates it
         (Path(work_dir) / "source_16k.wav").write_bytes(b"cached_wav")
         return TranscriptionResult(
             [Cue(1, 0, 1500, f"Phụ đề từ {Path(path).parent.name}")],
@@ -2343,12 +2363,24 @@ def test_project_lifecycle_lists_opens_and_removes(tmp_path, monkeypatch):
     render_all(controller, fake, tmp_path)
     assert controller.rendered is True and changed_once()  # render complete
     assert controller.projectId != first_id
+    # FR-6.1: the rows are served from a cache keyed by each project.json's
+    # stat — every read after the scan parses nothing.
+    parsed: list[str] = []
+    store_load = controller._store.load  # noqa: SLF001
+    monkeypatch.setattr(
+        controller._store,  # noqa: SLF001
+        "load",
+        lambda pid: parsed.append(pid) or store_load(pid),
+    )
     assert controller.projectCount == 2
     rows = controller.projects
     ids = {row["id"] for row in rows}
     assert ids == {first_id, controller.projectId}
     assert {row["title"] for row in rows} == {"movie", "other"}
     assert all(row["modifiedAt"] for row in rows)
+    assert controller.projects == rows and controller.projectCount == 2
+    assert sorted(parsed) == sorted(ids)
+    assert changes == []  # a scan answered inline is not announced again
 
     assert controller.openProject(first_id) is True
     assert controller.projectId == first_id
@@ -2367,6 +2399,12 @@ def test_project_lifecycle_lists_opens_and_removes(tmp_path, monkeypatch):
     assert controller.openProject(first_id) is True
     assert controller.rendered is False and controller.durationMs == 0
     assert controller.canExportTrack is False
+    # The picker row agrees with openProject, and only the rewritten
+    # project.json is parsed again.
+    parsed.clear()
+    row = next(row for row in controller.projects if row["id"] == first_id)
+    assert (row["rendered"], row["durationMs"], row["active"]) == (False, 0, True)
+    assert parsed == [first_id]
     changes.clear()
 
     assert controller.removeProject(first_id) is True
@@ -2686,6 +2724,15 @@ class _DeferredRunner:
 
     def __call__(self, work, done, owner, on_error=None):
         self.calls.append((work, done, on_error))
+
+
+def _on_thread(work: Any) -> Any:
+    """Run a queued ``work`` on a real worker thread (for thread-recording spies)."""
+    box: list[Any] = []
+    thread = threading.Thread(target=lambda: box.append(work()))
+    thread.start()
+    thread.join()
+    return box[0]
 
 
 def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path, monkeypatch):
@@ -3127,6 +3174,8 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
         for start in (6000, 6400)
     }
     assert len(keys) == 2
+    # FR-6.3: handing the cache dir over creates nothing (the core fills it).
+    assert not controller._media_cache_dir(video).exists()  # noqa: SLF001
     # Each extraction writes its own temp file, renamed over the clip only
     # when complete: two in flight never write one file.
     assert len(set(targets)) == 3 and Path(ref) not in targets
@@ -3163,30 +3212,88 @@ def test_notice_level_separates_errors_from_info(env, tmp_path):
     assert controller.noticeLevel == "info"
 
 
-def test_video_overrun_is_probed_once_per_render(tmp_path, monkeypatch):
-    calls: list[int] = []
+def test_video_overrun_is_probed_off_thread_once_per_track_and_video(tmp_path, monkeypatch):
+    # FR-6.1: the property answers at once; ffprobe runs on a worker, keyed
+    # by the track's and the video's stat (not by the mix/gain/embed knobs).
+    calls: list[bool] = []
 
     def _fake_overrun(*args, **kwargs):
-        calls.append(1)
+        calls.append(threading.current_thread() is threading.main_thread())
         return 4200
 
     monkeypatch.setattr("vienetts_app.ui.subtitle_controller.dub_overrun_ms", _fake_overrun)
-    controller, _, _ = _rendered_controller(tmp_path)
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"fake_mp4")
-    controller._project = replace(controller._project, video_path=str(video))  # noqa: SLF001
-    controller.videoChanged.emit()
+    assert controller.attachVideo(str(video)) is True and controller.rendered is True
+    changed: list[int] = []
+    controller.overrunChanged.connect(lambda: changed.append(1))
 
+    queued = len(runner.calls)
+    assert controller.videoOverrunMs == 0
+    assert controller.videoOverrunMs == 0  # one probe in flight, not one per read
+    assert calls == [] and len(runner.calls) == queued + 1
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
+    assert calls == [False] and changed == [1]
     assert controller.videoOverrunMs == 4200
-    assert controller.videoOverrunMs == 4200
-    assert calls == [1]
 
-    # The two events that can change the answer each drop the cache.
+    controller.videoMixMode = "replace"
+    controller.videoBgGainDb = -10.0
+    controller.embedSubtitles = False
     controller.renderedChanged.emit()
     assert controller.videoOverrunMs == 4200
+    assert len(runner.calls) == queued + 1 and changed == [1]
+
+    # A changed video (or track) is probed again.
+    video.write_bytes(b"fake_mp4, re-encoded longer")
     controller.videoChanged.emit()
-    assert controller.videoOverrunMs == 4200
-    assert calls == [1, 1, 1]
+    assert changed == [1, 1]
+    assert controller.videoOverrunMs == 0 and len(runner.calls) == queued + 2
+
+
+def _media_entry(root: Path, name: str, size: int, age_days: float) -> Path:
+    """A media-cache entry last used ``age_days`` ago (its sidecar's mtime)."""
+    import os
+    import time
+
+    entry = root / name
+    entry.mkdir(parents=True)
+    (entry / "source_16k.wav").write_bytes(b"\0" * size)
+    sidecar = entry / "source_16k.wav.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    stamp = time.time() - age_days * 86_400
+    os.utime(sidecar, (stamp, stamp))
+    return entry
+
+
+def test_media_cache_eviction_keeps_the_active_entry_and_drops_the_oldest(tmp_path):
+    # FR-6.3: entries unused for 30 days go, then the least recently used
+    # (sidecar mtime) until the cache fits its cap — never the active entry.
+    from vienetts_app.ui.subtitle_controller import evict_media_cache
+
+    root = tmp_path / "subtitles" / "_media_cache"
+    active = _media_entry(root, "active", 400, 90)
+    _media_entry(root, "stale", 10, 31)
+    _media_entry(root, "old", 300, 3)
+    _media_entry(root, "mid", 300, 2)
+    _media_entry(root, "new", 300, 1)
+    removed = evict_media_cache(root, keep={active}, cap_bytes=1_100)
+    assert sorted(path.name for path in removed) == ["old", "stale"]
+    assert sorted(path.name for path in root.iterdir()) == ["active", "mid", "new"]
+
+    # The sweep runs on a worker at startup, under the 30-day/5 GB defaults.
+    _media_entry(root, "unused", 10, 45)
+    runner = _DeferredRunner()
+    make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    assert len(runner.calls) == 1 and (root / "unused").is_dir()
+    work, done, _ = runner.calls[0]
+    done(_on_thread(work))
+    assert sorted(path.name for path in root.iterdir()) == ["mid", "new"]
 
 
 QML_COMPONENTS = Path(__file__).resolve().parents[2] / "src" / "vienetts_app" / "ui" / "qml"
@@ -3219,21 +3326,27 @@ def test_every_property_is_consumed_or_api_only() -> None:
     }
 
 
-def test_video_speech_bounds_refinement_and_uniform_unit_render(env, tmp_path: Path) -> None:
+def test_video_speech_bounds_are_refined_off_thread_by_generation_then_render_uniformly(
+    tmp_path: Path, monkeypatch
+) -> None:
     from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.ui import subtitle_controller as module
 
-    controller, fake, _ = env
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
     video = tmp_path / "speech_lesson.mp4"
     video.write_bytes(b"fake_video")
-    srt = tmp_path / "speech_lesson.srt"
-    srt.write_text(
+    srt_text = (
         "1\n00:00:00,000 --> 00:00:01,500\nMệnh đề đầu tiên,\n\n"
-        "2\n00:00:01,600 --> 00:00:03,000\nmệnh đề thứ hai.\n",
-        encoding="utf-8",
+        "2\n00:00:01,600 --> 00:00:03,000\nmệnh đề thứ hai.\n"
     )
+    (tmp_path / "speech_lesson.srt").write_text(srt_text, encoding="utf-8")
 
-    # Populate cached 16 kHz WAV with active speech only in 200..1100 ms and 1700..2700 ms
+    # FR-6.3: a media-cache lookup creates nothing (the core fills it).
     cache_dir = controller._media_cache_dir(video)  # noqa: SLF001
+    assert not cache_dir.exists()
+    # Cached 16 kHz WAV with active speech only in 200..1100 ms and 1700..2700 ms
     sr16 = 16_000
     wav_16k = np.zeros(sr16 * 3, dtype=np.float32)
     t1 = np.linspace(0.0, 0.9, int(sr16 * 0.9), endpoint=False, dtype=np.float32)
@@ -3244,15 +3357,58 @@ def test_video_speech_bounds_refinement_and_uniform_unit_render(env, tmp_path: P
     wav_16k[int(sr16 * 1.7) : int(sr16 * 2.7)] = (0.3 * np.sin(2.0 * np.pi * 260.0 * t2)).astype(
         np.float32
     )
+    cache_dir.mkdir(parents=True)
     write_wav_file(wav_16k, cache_dir / "source_16k.wav", sample_rate=sr16)
+    real_refine = module.refine_cues_speech_bounds
+    seen: list[tuple[bool, Any]] = []
 
+    def spy(cues, wav, **kw):
+        seen.append((threading.current_thread() is threading.main_thread(), kw.get("data_dir")))
+        return real_refine(cues, wav, **kw)
+
+    monkeypatch.setattr(module, "refine_cues_speech_bounds", spy)
+
+    def unrefined() -> bool:
+        return all(cue.speech_start_ms is None for cue in controller._project.cues)  # noqa: SLF001
+
+    # FR-6.1: the import lands at once; the WAV is read on a worker, with
+    # Silero when installed (data_dir), and applied by generation.
     assert controller.importVideo(str(video)) is True
-    assert controller.loaded is True
+    assert controller.loaded is True and unrefined() and seen == []
+    stale_work, stale_done, _ = runner.calls[-1]
+    assert controller.importVideo(str(video)) is True  # a newer import supersedes it
+    work, done, _ = runner.calls[-1]
+    stale_done(_on_thread(stale_work))
+    assert unrefined()
+    done(_on_thread(work))
+    assert seen == [(False, tmp_path), (False, tmp_path)]
     proj_cues = controller._project.cues  # noqa: SLF001
     assert proj_cues[0].speech_start_ms is not None and 150 <= proj_cues[0].speech_start_ms <= 220
     assert proj_cues[0].speech_end_ms is not None and 1080 <= proj_cues[0].speech_end_ms <= 1150
     assert proj_cues[1].speech_start_ms is not None and 1650 <= proj_cues[1].speech_start_ms <= 1720
     assert proj_cues[1].speech_end_ms is not None and 2680 <= proj_cues[1].speech_end_ms <= 2750
+    assert controller._store.require(controller.projectId).cues == proj_cues  # noqa: SLF001
+
+    # Attaching a video to a loaded project refines it the same way.
+    controller.clear()
+    plain = tmp_path / "notes" / "plain.srt"
+    plain.parent.mkdir()
+    plain.write_text(srt_text, encoding="utf-8")
+    other = tmp_path / "clips" / "lesson_b.mp4"
+    other.parent.mkdir()
+    other.write_bytes(b"fake_video_b")
+    other_cache = controller._media_cache_dir(other)  # noqa: SLF001
+    other_cache.mkdir(parents=True)
+    write_wav_file(wav_16k, other_cache / "source_16k.wav", sample_rate=sr16)
+    assert controller.importSrt(str(plain)) is True and unrefined()
+    queued = len(runner.calls)
+    assert controller.attachVideo(str(other)) is True
+    assert controller.videoPath == str(other) and unrefined()
+    assert len(runner.calls) == queued + 1
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
+    assert controller._project.cues == proj_cues  # noqa: SLF001
+    assert seen[-1] == (False, tmp_path)
 
     # Enable mergeSentences in dub mode and render a merged 2-cue unit; both cues get the same rate
     controller.mergeSentences = True
@@ -3278,6 +3434,48 @@ def test_video_speech_bounds_refinement_and_uniform_unit_render(env, tmp_path: P
     assert len(rates) == 2
     assert rates[0] > 1.0
     assert rates[0] == pytest.approx(rates[1])
+
+    # Re-importing the SRT keeps the stored render on disk until the refined
+    # cues land, which then adopt it instead of re-synthesizing.
+    assert controller.importSrt(str(plain)) is True
+    assert controller.rendered is False and unrefined()
+    assert controller._store.require(controller.projectId).rendered is True  # noqa: SLF001
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
+    assert controller.rendered is True and controller._project.cue_rates == rates  # noqa: SLF001
+    assert fake.pending == []
+
+
+def test_cue_lookup_bisects_to_the_linear_scan_answer(env, tmp_path: Path) -> None:
+    # FR-6.2: cueIndexAt and the video sync answer like the first-match scan
+    # they replace — unsorted, overlapping and zero-length cues included.
+    controller, _, _ = env
+    srt = (
+        "1\n00:00:03,000 --> 00:00:05,000\nCâu B\n\n"
+        "2\n00:00:00,000 --> 00:00:04,000\nCâu A\n\n"
+        "3\n00:00:01,000 --> 00:00:01,000\nCâu rỗng\n\n"
+        "4\n00:00:01,500 --> 00:00:02,000\nCâu C\n\n"
+        "5\n00:00:07,000 --> 00:00:08,000\nCâu D\n"
+    )
+    assert controller.importSrt(load_srt(tmp_path, srt)) is True
+    cues = controller._project.cues  # noqa: SLF001
+
+    def oracle(ms: int) -> int:
+        return next((i for i, cue in enumerate(cues) if cue.start_ms <= ms < cue.end_ms), -1)
+
+    bounds = {t for cue in cues for t in (cue.start_ms, cue.end_ms)}
+    edges = sorted({-1, 0, 10_000} | {t + d for t in bounds for d in (-1, 0, 1)})
+    expected = [oracle(ms) for ms in edges]
+    assert [controller.cueIndexAt(ms) for ms in edges] == expected
+    synced = []
+    for ms in edges:
+        controller.syncActiveCueFromVideo(ms)
+        synced.append(controller.activeCue)
+    assert synced == [oracle(max(0, ms)) for ms in edges]
+    # The index is rebuilt with the cues.
+    assert controller.cueIndexAt(7_500) == 4
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert (controller.cueIndexAt(7_500), controller.cueIndexAt(3_400)) == (-1, 1)
 
 
 def test_video_preview_url_release_unrendered_seek_and_audio_exclusivity(

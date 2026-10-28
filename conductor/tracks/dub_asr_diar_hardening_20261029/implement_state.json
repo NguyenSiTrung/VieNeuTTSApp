@@ -8,13 +8,14 @@
     "Phase 3: Native runtime & model provisioning",
     "Phase 4: ASR quality & throughput",
     "Phase 5: Diarization quality & throughput",
-    "Phase 6: Render, alignment & mux core"
+    "Phase 6: Render, alignment & mux core",
+    "Phase 7: Controller integration & GUI responsiveness"
   ],
   "in_flight_tasks": [
     "phase7_task3",
     "phase8_task1",
     "phase8_task2"
   ],
-  "last_updated": "2026-10-28T19:43:20Z",
+  "last_updated": "2026-10-28T20:05:23Z",
   "status": "in_progress"
 }

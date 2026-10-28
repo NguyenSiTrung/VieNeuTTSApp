@@ -54,6 +54,7 @@ messages surface verbatim.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import datetime as _dt
 import hashlib
@@ -62,8 +63,9 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -203,6 +205,180 @@ _ASR_IDLE_TICK_MS: Final = 60_000
 def _auto_asr_threads() -> int:
     """The host's automatic ASR thread count, probed (sysctl) once per process."""
     return default_asr_threads()
+
+
+#: FR-6.3: ``subtitles/_media_cache`` (one entry per video: ``source_16k.wav``,
+#: its sidecar, the ASR and diarization caches) is capped at 5 GiB, and an
+#: entry unused for 30 days goes. "Used" is its sidecar's mtime, bumped
+#: whenever the controller reads the entry (transcription, speech bounds).
+MEDIA_CACHE_CAP_BYTES: Final = 5 * 1024**3
+MEDIA_CACHE_MAX_AGE_S: Final = 30 * 24 * 60 * 60
+_MEDIA_CACHE_DIRNAME: Final = "_media_cache"
+_SOURCE_16K: Final = "source_16k.wav"
+_SOURCE_16K_SIDECAR: Final = _SOURCE_16K + ".json"
+
+
+def _mark_media_used(cache_dir: Path) -> None:
+    """Bump ``cache_dir``'s last-use stamp (its sidecar's mtime); worker thread."""
+    with contextlib.suppress(OSError):
+        os.utime(cache_dir / _SOURCE_16K_SIDECAR)
+
+
+def _media_entry_usage(entry: Path) -> tuple[float, int]:
+    """``(last use, bytes)`` of one media-cache entry.
+
+    The last use is the sidecar's mtime; an entry without one (older caches,
+    an interrupted conversion) falls back to its newest file.
+    """
+    size = 0
+    newest = 0.0
+    for folder, _dirs, files in os.walk(entry):
+        for name in files:
+            with contextlib.suppress(OSError):
+                stat = os.stat(os.path.join(folder, name))
+                size += stat.st_size
+                newest = max(newest, stat.st_mtime)
+    try:
+        last_use = (entry / _SOURCE_16K_SIDECAR).stat().st_mtime
+    except OSError:
+        last_use = newest
+        if not last_use:
+            with contextlib.suppress(OSError):
+                last_use = entry.stat().st_mtime
+    return last_use, size
+
+
+def evict_media_cache(
+    root: Path,
+    *,
+    keep: Collection[Path] = (),
+    cap_bytes: int = MEDIA_CACHE_CAP_BYTES,
+    max_age_s: float = MEDIA_CACHE_MAX_AGE_S,
+    now: float | None = None,
+) -> list[Path]:
+    """Evict media-cache entries under ``root``; returns the removed dirs.
+
+    Worker thread only (it walks every entry). Entries unused for
+    ``max_age_s`` go first; then the least recently used go until the whole
+    cache — ``keep`` included — fits ``cap_bytes``. Nothing in ``keep`` (the
+    active project's entry) is ever removed.
+    """
+    try:
+        children = [child for child in Path(root).iterdir() if child.is_dir()]
+    except OSError:
+        return []
+    clock = time.time() if now is None else float(now)
+    usage = [(child, *_media_entry_usage(child)) for child in children]
+    total = sum(size for _child, _used, size in usage)
+    kept = {Path(path) for path in keep}
+    removed: list[Path] = []
+    for child, last_use, size in sorted(usage, key=lambda item: item[1]):
+        if child in kept:
+            continue
+        if clock - last_use <= max_age_s and total <= cap_bytes:
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        if child.exists():
+            continue  # held open (Windows): the next sweep retries it
+        removed.append(child)
+        total -= size
+    return removed
+
+
+class _CueLookup:
+    """First cue (in list order) spanning a time, by bisect (FR-6.2).
+
+    Cues are indexed by start; ``_reach[k]`` is the latest end among the
+    first ``k + 1`` starts, so a lookup walks back from the bisect point only
+    while an earlier cue can still span the time — one step for ordinary
+    non-overlapping subtitles. Overlapping and unsorted cues answer exactly
+    like the linear first-match scan this replaces.
+    """
+
+    __slots__ = ("_ends", "_order", "_reach", "_starts")
+
+    def __init__(self, cues: Sequence[Cue]) -> None:
+        order = sorted(range(len(cues)), key=lambda i: (cues[i].start_ms, i))
+        self._order = order
+        self._starts = [cues[i].start_ms for i in order]
+        self._ends = [cues[i].end_ms for i in order]
+        reach: list[int] = []
+        latest = 0
+        for end in self._ends:
+            latest = max(latest, end)
+            reach.append(latest)
+        self._reach = reach
+
+    def index_at(self, ms: int) -> int:
+        pos = bisect.bisect_right(self._starts, ms) - 1
+        found = -1
+        while pos >= 0 and self._reach[pos] > ms:
+            if self._ends[pos] > ms and (found < 0 or self._order[pos] < found):
+                found = self._order[pos]
+            pos -= 1
+        return found
+
+
+#: A project.json's identity for the picker cache: (mtime, size, inode) of
+#: project.json and of the render stamp the "rendered" flag is checked against.
+_ProjectStamp = tuple[int, ...]
+
+
+def _file_stamp(path: Path) -> tuple[int, ...]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return ()
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def _scan_project_rows(
+    store: SubtitleProjectStore,
+    known: dict[str, tuple[_ProjectStamp, dict[str, Any] | None]],
+) -> tuple[list[dict[str, Any]], dict[str, tuple[_ProjectStamp, dict[str, Any] | None]]]:
+    """The picker rows, newest first, parsing only project.json files whose
+    stat changed since ``known`` (FR-6.1). Worker thread only."""
+    try:
+        children = sorted(child for child in store.root.iterdir() if child.is_dir())
+    except OSError:
+        return [], {}
+    rows: list[dict[str, Any]] = []
+    stamps: dict[str, tuple[_ProjectStamp, dict[str, Any] | None]] = {}
+    for child in children:
+        pid = child.name
+        stamp = _file_stamp(store.project_path(pid))
+        if not stamp:
+            continue
+        stamp += (-1, *_file_stamp(store.render_stamp_path(pid)))
+        hit = known.get(pid)
+        row = hit[1] if hit is not None and hit[0] == stamp else _project_row(store, pid, stamp[0])
+        stamps[pid] = (stamp, row)  # an unreadable file is not parsed again either
+        if row is not None:
+            rows.append(row)
+    rows.sort(key=lambda row: str(row["createdAt"]), reverse=True)
+    return rows, stamps
+
+
+def _project_row(store: SubtitleProjectStore, pid: str, mtime_ns: int) -> dict[str, Any] | None:
+    project = store.load(pid)
+    if project is None:
+        return None
+    # FR-5.7: a commit cut off between project.json and the track promote
+    # left another render's track.wav — the row is unrendered, as openProject.
+    rendered = project.rendered and project.render_id == store.track_render_id(pid)
+    modified_at = (
+        _dt.datetime.fromtimestamp(mtime_ns / 1e9).astimezone().isoformat(timespec="seconds")
+    )
+    return {
+        "id": project.id,
+        "title": project.title,
+        "cueCount": project.cue_count,
+        "durationMs": project.total_ms if rendered else 0,
+        "rendered": rendered,
+        "hasVideo": bool(project.video_path),
+        "createdAt": project.created_at,
+        "modifiedAt": modified_at,
+    }
 
 
 def _default_player_factory() -> PlaybackController:
@@ -508,6 +684,9 @@ class SubtitleController(QObject):
         self._render_cache: UnitClipCache | None = None
         self._unit_key = ""
         self._render_voice_stamps: dict[str, str] = {}
+        # Engine-identity hashes of the running render, per context (7.2):
+        # a fully cached render keys thousands of units with a few contexts.
+        self._render_fingerprints: dict[SynthesisContext, str] = {}
         self._units: list[tuple[int, ...]] = []
         self._unit_index = 0
         self._job_id: str | None = None
@@ -583,15 +762,33 @@ class SubtitleController(QObject):
 
         self._player_state = "stopped"
         self._position_ms = 0
-        # FR-4.6: probing ffprobe on every QML read (property bindings re-run
-        # per frame in a few cases) blocked the GUI thread. Cache the answer
-        # under a key that includes the wav's identity; invalidate on the two
-        # events that can change it.
+        # FR-4.6 / FR-6.1: the overrun is probed (ffprobe) on a worker, once
+        # per key — the track's and the video's stat, never the mix, gain or
+        # embed knobs. The property answers from the cache at once; the probe
+        # in flight is named by its key, so a newer key drops its result.
         self._overrun_cache: tuple[tuple[Any, ...], int] | None = None
+        self._overrun_probe: tuple[Any, ...] | None = None
+        self._overrun_seen: tuple[Any, ...] | None = None
+        self._overrun_reading = False
         self._cues_cache: list[dict[str, Any]] | None = None
         # Row-level mirror of `cues` for the QML cue list (perf 6.4): a
         # re-import diffs by cue index instead of rebuilding every row.
         self._cue_list = DictListModel(CUE_ROLES, key="index", parent=self)
+        # FR-6.2: start-sorted index behind cueIndexAt/syncActiveCueFromVideo,
+        # rebuilt whenever the cues it was built from are replaced.
+        self._cue_lookup_cues: tuple[Cue, ...] | None = None
+        self._cue_lookup_index = _CueLookup(())
+        # FR-6.1: speech-bound refinement reads the 16 kHz WAV on a worker; a
+        # newer refinement, a project switch or an owner cancel drops a result.
+        self._bounds_generation = 0
+        # FR-6.1: the picker rows, cached per project.json stat stamp and
+        # scanned on a worker when marked dirty (one scan in flight).
+        self._project_rows: list[dict[str, Any]] = []
+        self._project_stamps: dict[str, tuple[_ProjectStamp, dict[str, Any] | None]] = {}
+        self._projects_dirty = True
+        self._projects_scanning = False
+        self._projects_generation = 0
+        self._projects_reading = False
 
         # FR-2.2: one derived state drives every control's gating. It is
         # recomputed from the existing axes whenever one of them notifies.
@@ -614,6 +811,7 @@ class SubtitleController(QObject):
         self.loadedChanged.connect(self.llmGlossaryChanged.emit)
 
         self._wire_player()
+        self._sweep_media_cache()  # FR-6.3: at startup, on a worker
 
     # ── player wiring ────────────────────────────────────────────────────────
 
@@ -710,7 +908,16 @@ class SubtitleController(QObject):
     def _emit_cues(self) -> None:
         self._cues_cache = None
         self._cue_list.sync(self._cues_model())
+        self._cue_lookup()  # rebuilt here, not on the first position tick
         self.cuesChanged.emit()
+
+    def _cue_lookup(self) -> _CueLookup:
+        """The bisect index of the current cues (rebuilt when they change)."""
+        cues = self._project.cues if self._project is not None else ()
+        if cues is not self._cue_lookup_cues:
+            self._cue_lookup_index = _CueLookup(cues)
+            self._cue_lookup_cues = cues
+        return self._cue_lookup_index
 
     def _set_error(self, message: str) -> None:
         if message != self._error_text:
@@ -1435,29 +1642,67 @@ class SubtitleController(QObject):
         The exporter deliberately keeps every spoken word, so an overrun shows
         as a frozen tail; the card warns instead of shipping a surprise.
         """
+        key = self._overrun_key()
+        self._overrun_seen = key
+        if key is None:
+            return 0
+        if self._overrun_probe != key and (
+            self._overrun_cache is None or self._overrun_cache[0] != key
+        ):
+            self._overrun_reading = True
+            try:
+                self._probe_overrun(key)  # a synchronous runner answers inline
+            finally:
+                self._overrun_reading = False
+        cached = self._overrun_cache
+        return cached[1] if cached is not None and cached[0] == key else 0
+
+    def _overrun_key(self) -> tuple[Any, ...] | None:
+        """What the overrun depends on: the video's and the track's stat."""
         project = self._project
         vp = self.videoPath
         if project is None or not vp or not project.rendered:
-            return 0
+            return None
         wav = self._store.wav_path(project.id)
-        if not wav.is_file():
-            return 0
-        with contextlib.suppress(OSError):
-            stat = wav.stat()
-            key = (str(vp), str(wav), stat.st_mtime_ns, stat.st_size)
-            if self._overrun_cache is not None and self._overrun_cache[0] == key:
-                return self._overrun_cache[1]
-            with contextlib.suppress(Exception):
-                value = dub_overrun_ms(vp, wav, data_dir=self._data_dir)
-                self._overrun_cache = (key, value)
-                return value
-        return 0
+        video, track = _file_stamp(Path(vp)), _file_stamp(wav)
+        if not video or not track:
+            return None
+        return (str(vp), *video, str(wav), *track)
+
+    def _probe_overrun(self, key: tuple[Any, ...]) -> None:
+        """ffprobe the video and the track on a worker (FR-6.1)."""
+        self._overrun_probe = key
+        video, track = key[0], key[4]
+        data_dir = self._data_dir
+
+        def work() -> int:
+            return int(dub_overrun_ms(video, track, data_dir=data_dir))
+
+        def settle(value: int) -> None:
+            if self._overrun_probe != key:
+                return  # a newer key took over
+            self._overrun_probe = None
+            self._overrun_cache = (key, value)
+            if not self._overrun_reading:
+                self.overrunChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            logger.debug("overrun probe failed: %s", exc)
+            settle(0)  # not retried until the video or the track changes
+
+        try:
+            self._run_bg(work, settle, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
 
     def _invalidate_overrun(self) -> None:
-        if self._overrun_cache is None:
-            return
-        self._overrun_cache = None
-        self.overrunChanged.emit()
+        """Re-announce the overrun only when its inputs really changed.
+
+        ``videoChanged`` also fires for the mix, gain and embed knobs; those
+        leave both stats alone, so the cached answer stands.
+        """
+        if self._overrun_key() != self._overrun_seen:
+            self.overrunChanged.emit()
 
     @Property("QVariantList", notify=speakersChanged)
     def speakers(self) -> list[dict[str, Any]]:
@@ -1658,10 +1903,35 @@ class SubtitleController(QObject):
         return self._store.root / "_media_cache" / f"{stem}_{self._video_path_digest(video)}"
 
     def _media_cache_dir(self, video: Path) -> Path:
-        cache_dir = self._media_cache_path(video)
-        with contextlib.suppress(OSError):
-            cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir
+        """``video``'s media-cache entry — a lookup: it creates nothing (FR-6.3).
+
+        The core creates it when it writes there (ASR, diarization, the
+        reference-clip scorer); a WAV source never needs one.
+        """
+        return self._media_cache_path(video)
+
+    def _sweep_media_cache(self) -> None:
+        """Evict old media-cache entries on a worker (FR-6.3), sparing the
+        active project's (or the staged video's) entry."""
+        root = self._store.root / _MEDIA_CACHE_DIRNAME
+        if not root.is_dir():
+            return
+        keep = {self._media_cache_path(Path(video)) for video in (self.videoPath,) if video}
+
+        def work() -> list[Path]:
+            return evict_media_cache(root, keep=keep)
+
+        def done(removed: list[Path]) -> None:
+            if removed:
+                logger.info("media cache: evicted %d entries", len(removed))
+
+        def failed(exc: BaseException) -> None:
+            logger.warning("media cache sweep failed: %s", exc)
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
 
     def _activate_cues_project(
         self,
@@ -1730,29 +2000,20 @@ class SubtitleController(QObject):
                 llm_glossary=stored.llm_glossary if stored is not None else "",
             )
             cached = None if refused else self._store.cached_render(base_project)
+            # FR-6.1: speech bounds come from the cached 16 kHz WAV, read on a
+            # worker once the import has landed (see _refine_bounds_later).
+            refine_wav: Path | None = None
             if cached is None and eff_video:
-                wav_16k = self._media_cache_dir(Path(eff_video)) / "source_16k.wav"
+                wav_16k = self._media_cache_dir(Path(eff_video)) / _SOURCE_16K
                 if wav_16k.is_file() and any(
                     c.speech_start_ms is None or c.speech_end_ms is None for c in cues
                 ):
-                    cues = refine_cues_speech_bounds(cues, wav_16k)
-                    base_project = build_project(
-                        source,
-                        cues,
-                        self._fit_policy(),
-                        sample_rate=DEFAULT_SAMPLE_RATE,
-                        voice_key=self._effective_voice(),
-                        title=title,
-                        context=context,
-                        video_path=eff_video,
-                        speaker_voices=speaker_voices,
-                        video_mix_mode=mix_mode,
-                        video_bg_gain_db=bg_gain,
-                        embed_subtitles=embed_subs,
-                        subtitle_embed_mode=embed_mode,
-                        llm_glossary=stored.llm_glossary if stored is not None else "",
-                    )
-                    cached = None if refused else self._store.cached_render(base_project)
+                    refine_wav = wav_16k
+            # A stored render may be the refined cues' own: it stays on disk
+            # until the refinement lands and decides (adopt it, or save over).
+            save_later = (
+                refine_wav is not None and not refused and stored is not None and stored.rendered
+            )
             project = base_project
             if cached is not None:
                 project = replace(
@@ -1764,7 +2025,7 @@ class SubtitleController(QObject):
                     embed_subtitles=self._embed_subtitles,
                     subtitle_embed_mode=self._subtitle_embed_mode,
                 )
-            elif not refused:
+            elif not refused and not save_later:
                 self._save_imported(stored, project)
         except SubtitleProjectError as exc:
             self._set_error(str(exc))
@@ -1789,8 +2050,105 @@ class SubtitleController(QObject):
         self.durationChanged.emit()
         self.statsChanged.emit()
         self.renderProgressChanged.emit()
-        self.projectsChanged.emit()  # FR-1.9: import and ASR import
+        self._projects_changed()  # FR-1.9: import and ASR import
+        if refine_wav is not None:
+            self._refine_bounds_later(project, refine_wav, adopt=not refused, persist=save_later)
         return True
+
+    def _refine_bounds_later(
+        self, project: SubtitleProject, wav_16k: Path, *, adopt: bool, persist: bool
+    ) -> None:
+        """Refine ``project``'s speech bounds from ``wav_16k`` on a worker (FR-6.1).
+
+        Reading the WAV (Silero when installed under the data dir, else an
+        energy VAD) blocked the GUI thread for seconds per hour of video. The
+        result applies by generation: a newer refinement, a project switch or
+        an owner cancel drops it, and so does any change to the cues meanwhile
+        (an edit, an AI op) or a render started on them.
+        """
+        self._bounds_generation += 1
+        generation = self._bounds_generation
+        pid, original = project.id, project.cues
+        data_dir = self._data_dir
+
+        def work() -> tuple[Cue, ...]:
+            refined = tuple(refine_cues_speech_bounds(original, wav_16k, data_dir=data_dir))
+            _mark_media_used(wav_16k.parent)
+            return refined
+
+        def done(refined: tuple[Cue, ...]) -> None:
+            self._apply_refined_bounds(generation, pid, original, refined, adopt, persist)
+
+        def failed(exc: BaseException) -> None:
+            logger.warning("speech-bound refinement failed: %s", exc)
+            done(original)  # the import stands as it was
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+
+    def _apply_refined_bounds(
+        self,
+        generation: int,
+        pid: str,
+        original: tuple[Cue, ...],
+        refined: tuple[Cue, ...],
+        adopt: bool,
+        persist: bool,
+    ) -> None:
+        """Land a refinement on the project it was started for (GUI thread)."""
+        project = self._project
+        if (
+            generation != self._bounds_generation
+            or project is None
+            or project.id != pid
+            or project.cues != original
+            or self._rendering
+        ):
+            return
+        refined = tuple(refined)
+        if refined == original and not persist:
+            return
+        if refined != original:
+            project = replace(
+                project,
+                cues=refined,
+                fingerprint=render_fingerprint(
+                    refined,
+                    project.policy,
+                    project.sample_rate,
+                    project.voice_key,
+                    project.context,
+                    speaker_voices=project.speaker_voices,
+                ),
+            )
+        cached = self._store.cached_render(project) if adopt else None
+        if cached is not None:
+            project = replace(
+                cached,
+                video_path=project.video_path or cached.video_path,
+                speaker_voices=project.speaker_voices or cached.speaker_voices,
+                video_mix_mode=project.video_mix_mode,
+                video_bg_gain_db=project.video_bg_gain_db,
+                embed_subtitles=project.embed_subtitles,
+                subtitle_embed_mode=project.subtitle_embed_mode,
+            )
+        elif adopt:
+            try:
+                self._save_imported(self._store.load(pid), project)
+            except SubtitleProjectError as exc:
+                self._set_error(str(exc))
+                return
+        if project is self._project:
+            return
+        self._project = project
+        self._load_reader()
+        self._emit_cues()
+        self.renderedChanged.emit()
+        self.durationChanged.emit()
+        self.statsChanged.emit()
+        self._projects_changed()
 
     def _save_imported(self, stored: SubtitleProject | None, project: SubtitleProject) -> None:
         """Persist an import that adopted no render (raises SubtitleProjectError).
@@ -1878,32 +2236,14 @@ class SubtitleController(QObject):
             if cues:
                 return self._activate_with_notes(companion, cues, notes, video_path=str(source))
         if self._project is not None:
-            updated_cues = self._project.cues
-            wav_16k = self._media_cache_dir(source) / "source_16k.wav"
-            if not self.rendered and wav_16k.is_file():
-                updated_cues = tuple(refine_cues_speech_bounds(updated_cues, wav_16k))
-            if updated_cues == self._project.cues:
-                # Only the video changes: the stored render stays (FR-1.6).
-                self._save_field(video_path=str(source))
-            else:
-                self._project = replace(
-                    self._project,
-                    cues=updated_cues,
-                    video_path=str(source),
-                    fingerprint=render_fingerprint(
-                        updated_cues,
-                        self._project.policy,
-                        self._project.sample_rate,
-                        self._project.voice_key,
-                        self._project.context,
-                        speaker_voices=self._project.speaker_voices,
-                    ),
-                )
-                with contextlib.suppress(SubtitleProjectError):
-                    self._store.save(self._project)
-            if wav_16k.is_file():
-                self._emit_cues()
-            self.projectsChanged.emit()  # the row's hasVideo
+            wav_16k = self._media_cache_dir(source) / _SOURCE_16K
+            refine = not self.rendered and wav_16k.is_file()
+            # Only the video changes now: the stored render stays (FR-1.6).
+            # Its speech bounds follow from a worker (FR-6.1).
+            self._save_field(video_path=str(source))
+            self._projects_changed()  # the row's hasVideo
+            if refine and self._project is not None:
+                self._refine_bounds_later(self._project, wav_16k, adopt=True, persist=False)
         self.videoChanged.emit()
         return True
 
@@ -1977,34 +2317,66 @@ class SubtitleController(QObject):
 
     @Property("QVariantList", notify=projectsChanged)
     def projects(self) -> list[dict[str, Any]]:
-        """Every stored workspace, newest first (FR-1.3 picker)."""
-        rows: list[dict[str, Any]] = []
-        for project in self._store.list_projects():
-            modified_at = project.created_at
-            with contextlib.suppress(OSError):
-                modified_at = (
-                    _dt.datetime.fromtimestamp(self._store.project_path(project.id).stat().st_mtime)
-                    .astimezone()
-                    .isoformat(timespec="seconds")
-                )
-            rows.append(
-                {
-                    "id": project.id,
-                    "title": project.title,
-                    "cueCount": project.cue_count,
-                    "durationMs": project.total_ms,
-                    "rendered": project.rendered,
-                    "hasVideo": bool(project.video_path),
-                    "createdAt": project.created_at,
-                    "modifiedAt": modified_at,
-                    "active": self._project is not None and self._project.id == project.id,
-                }
-            )
-        return rows
+        """Every stored workspace, newest first (FR-1.3 picker).
+
+        FR-6.1: served from the scan cache — a read never parses a file. A
+        stale cache starts one scan on a worker and answers with the rows it
+        has; ``projectsChanged`` follows when the scan changes them.
+        """
+        active = self._project.id if self._project is not None else ""
+        return [{**row, "active": row["id"] == active} for row in self._current_project_rows()]
 
     @Property(int, notify=projectsChanged)
     def projectCount(self) -> int:
-        return len(self._store.list_projects())
+        return len(self._current_project_rows())
+
+    def _projects_changed(self) -> None:
+        """The picker list may have changed: announce it and rescan on demand."""
+        self._projects_dirty = True
+        self.projectsChanged.emit()
+
+    def _current_project_rows(self) -> list[dict[str, Any]]:
+        if self._projects_dirty and not self._projects_scanning:
+            self._projects_reading = True
+            try:
+                self._scan_projects()  # a synchronous runner answers inline
+            finally:
+                self._projects_reading = False
+        return self._project_rows
+
+    def _scan_projects(self) -> None:
+        """Rescan the workspaces on a worker, parsing only changed project.json."""
+        self._projects_dirty = False
+        self._projects_scanning = True
+        self._projects_generation += 1
+        generation = self._projects_generation
+        store = self._store
+        known = dict(self._project_stamps)
+
+        def work() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            return _scan_project_rows(store, known)
+
+        def done(result: tuple[list[dict[str, Any]], dict[str, Any]]) -> None:
+            if generation != self._projects_generation:
+                return
+            self._projects_scanning = False
+            rows, stamps = result
+            changed = rows != self._project_rows
+            self._project_rows, self._project_stamps = rows, stamps
+            # A scan answered inside the read needs no second announcement;
+            # one finished later does, and so does a change made meanwhile.
+            if (changed or self._projects_dirty) and not self._projects_reading:
+                self.projectsChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            if generation == self._projects_generation:
+                self._projects_scanning = False
+            logger.warning("subtitle project scan failed: %s", exc)
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
 
     @Slot(str, result=bool)
     def openProject(self, project_id: str) -> bool:
@@ -2058,7 +2430,7 @@ class SubtitleController(QObject):
         self.durationChanged.emit()
         self.statsChanged.emit()
         self.renderProgressChanged.emit()
-        self.projectsChanged.emit()
+        self._projects_changed()
         return True
 
     @Slot(str, result=bool)
@@ -2083,11 +2455,11 @@ class SubtitleController(QObject):
             self._store.remove(pid)
         except SubtitleProjectError as exc:
             self._set_error(str(exc))
-            self.projectsChanged.emit()
+            self._projects_changed()
             return False
         if removed is not None:
             self._prune_unreferenced_media(removed)
-        self.projectsChanged.emit()
+        self._projects_changed()
         return True
 
     def _prune_unreferenced_media(self, removed: SubtitleProject) -> None:
@@ -2110,7 +2482,8 @@ class SubtitleController(QObject):
 
     @Slot()
     def refreshProjects(self) -> None:
-        self.projectsChanged.emit()
+        """Rescan on the picker's request (a file another window changed)."""
+        self._projects_changed()
 
     # ── rendering ────────────────────────────────────────────────────────────
 
@@ -2216,6 +2589,7 @@ class SubtitleController(QObject):
         # the same inputs are re-placed from it instead of re-synthesized.
         self._render_cache = self._store.unit_cache(project.id)
         self._render_voice_stamps = {}
+        self._render_fingerprints = {}
         self._rendering = True
         self._set_error("")
         self.renderingChanged.emit()
@@ -2246,6 +2620,7 @@ class SubtitleController(QObject):
         self._stop_render()
         self.cancelAiTask()
         self.cancelExport()
+        self._bounds_generation += 1  # a pending speech-bound refinement
 
     @Slot()
     def cancelExport(self) -> None:
@@ -2347,6 +2722,9 @@ class SubtitleController(QObject):
                 stamp = self._render_voice_stamps[unit_voice] = _voice_stamp(
                     voices_file, unit_voice
                 )
+            fingerprint = self._render_fingerprints.get(context)
+            if fingerprint is None:
+                fingerprint = self._render_fingerprints[context] = context.fingerprint()
             key = UnitClipCache.key(
                 text,
                 voice_id=unit_voice,
@@ -2354,7 +2732,7 @@ class SubtitleController(QObject):
                 profile=context.profile,
                 model_revision=context.model_revision,
                 speed=context.generation.speed,
-                context_fingerprint=context.fingerprint(),
+                context_fingerprint=fingerprint,
             )
         return _UnitRequest(text, unit_voice, context, key)
 
@@ -2617,7 +2995,7 @@ class SubtitleController(QObject):
             if self._apply_deferred_invalidation():
                 # A change confirmed mid-render already outdated this track.
                 self._play_after_render = False
-            self.projectsChanged.emit()  # the row's rendered/duration (FR-1.9)
+            self._projects_changed()  # the row's rendered/duration (FR-1.9)
             self._after_render_ready()
 
         def failed(exc: BaseException) -> None:
@@ -2782,6 +3160,12 @@ class SubtitleController(QObject):
         ):
             self._stop_playback()
 
+    @Slot(int, result=int)
+    def cueIndexAt(self, ms: int) -> int:
+        """Index of the first cue spanning ``ms`` (``-1`` in silence) — a bisect
+        (FR-6.2), so the video preview never scans rows per position tick."""
+        return self._cue_lookup().index_at(int(ms))
+
     @Slot(int)
     def syncActiveCueFromVideo(self, ms: int) -> None:
         """Highlight the cue spanning ``ms`` during source-video playback/scrubbing."""
@@ -2792,11 +3176,7 @@ class SubtitleController(QObject):
         if pos != self._position_ms:
             self._position_ms = pos
             self.positionMsChanged.emit()
-        matched = -1
-        for i, cue in enumerate(project.cues):
-            if cue.start_ms <= pos < cue.end_ms:
-                matched = i
-                break
+        matched = self._cue_lookup().index_at(pos)
         if matched != self._active_cue:
             self._active_cue = matched
             self.activeCueChanged.emit()
@@ -3289,6 +3669,7 @@ class SubtitleController(QObject):
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
             notes = [note for note in (backend_note, *res.notes) if note]
+            _mark_media_used(self._media_cache_dir(vpath))  # FR-6.3 LRU stamp
             return list(res.cues), "\n".join(notes)
 
         def done(res: tuple[list[Cue], str]) -> None:
@@ -3306,6 +3687,7 @@ class SubtitleController(QObject):
             self._activate_cues_project(srt_target, cues, video_path=str(vpath), title=vpath.stem)
             if warn:
                 self._set_warning(warn)
+            self._sweep_media_cache()  # FR-6.3: after ASR, sparing this video's entry
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
@@ -3498,7 +3880,7 @@ class SubtitleController(QObject):
             )
             self._emit_cues()
             self.speakersChanged.emit()
-        self.projectsChanged.emit()  # the row's rendered flag
+        self._projects_changed()  # the row's rendered flag
 
     @Slot(int, str, str, result=bool)
     @Slot(int, str, result=bool)
@@ -3892,7 +4274,7 @@ class SubtitleController(QObject):
     @Slot()
     def clear(self) -> None:
         self._clear_workspace()
-        self.projectsChanged.emit()  # no row is active any more (FR-1.9)
+        self._projects_changed()  # no row is active any more (FR-1.9)
 
     def _clear_workspace(self, *, release_video: bool = True) -> None:
         if release_video:
@@ -3954,6 +4336,10 @@ class SubtitleController(QObject):
         self.cancelAiTask()
         # A running export's callback is void and its ffmpeg told to stop.
         self._export_generation += 1
+        # Late speech bounds, project scans and overrun probes are void too.
+        self._bounds_generation += 1
+        self._projects_generation += 1
+        self._overrun_probe = None
         # Queued placements are already no-ops; let the abort run (bounded).
         self._units_exec.flush()
         # FR-3.7: free the Whisper model now (a run still using it keeps its

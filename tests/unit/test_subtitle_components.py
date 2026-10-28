@@ -54,8 +54,23 @@ _DRIVER = textwrap.dedent(
     from PySide6.QtQml import QQmlComponent, QQmlEngine
     from PySide6.QtQuick import QQuickItem  # noqa: F401 - registers the item converter
 
+    from vienetts_app.ui.list_models import DictListModel
+
     qml_dir, files = sys.argv[1], sys.argv[2:]
     DOCK_BUTTONS = ("subtitleRenderButton", "subtitlePlayButton", "subtitleExportMenuButton")
+
+
+    class CountingCueModel(DictListModel):
+        # The real cue model's shape; counts the row reads QML makes.
+        def __init__(self, rows):
+            super().__init__(tuple(rows[0]), key="index")
+            self.sync(rows)
+            self.gets = 0
+
+        @Slot(int, result="QVariantMap")
+        def get(self, row):
+            self.gets += 1
+            return super().get(row)
 
 
     class StubController(QObject):
@@ -115,6 +130,8 @@ _DRIVER = textwrap.dedent(
                     "speaker": "",
                 },
             ]
+            self._cue_model = CountingCueModel(self._cues)
+            self.index_lookups = 0
             self._speakers = []
             self._active_cue = 0
             self._ai_progress = 0.0
@@ -254,9 +271,15 @@ _DRIVER = textwrap.dedent(
         def speakers(self):
             return self._speakers
 
-        @Property("QVariantList", notify=cueModelChanged)
+        @Property(QObject, constant=True)
         def cueModel(self):
-            return self._cues
+            return self._cue_model
+
+        @Slot(int, result=int)
+        def cueIndexAt(self, ms):
+            self.index_lookups += 1
+            spans = [(row["startMs"], row["endMs"]) for row in self._cues]
+            return next((i for i, (a, b) in enumerate(spans) if a <= ms < b), -1)
 
         @Property(int, notify=activeCueChanged)
         def activeCue(self):
@@ -330,6 +353,10 @@ _DRIVER = textwrap.dedent(
         @Slot(int)
         def syncActiveCueFromVideo(self, ms):
             self.synced_positions.append(int(ms))
+
+        @Slot()
+        def refreshProjects(self):
+            pass
 
         @Slot()
         def pause(self):
@@ -487,6 +514,22 @@ _DRIVER = textwrap.dedent(
                 controller.playerState = "stopped"
                 app.processEvents()
 
+                # FR-6.2: a source-video position tick asks the controller for
+                # the cue (one bisect), then reads at most that one row.
+                controller.activeCue = -1
+                model = controller._cue_model
+                gets_before, lookups_before = model.gets, controller.index_lookups
+                tick_captions = []
+                ticks = (500, 2500, 3500, 6000)
+                for ms in ticks:
+                    item.setProperty("_lastRequestedPositionMs", ms)
+                    app.processEvents()
+                    tick_captions.append(str(item.property("activeCaptionText")))
+                extra["tick_captions"] = tick_captions
+                extra["tick_row_reads"] = model.gets - gets_before
+                extra["tick_lookups"] = controller.index_lookups - lookups_before
+                extra["tick_count"] = len(ticks)
+
                 # Seek and release signals
                 controller.videoSeekRequested.emit(4200)
                 app.processEvents()
@@ -583,6 +626,9 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     assert vp["dub_playing_mode"] == "dub"
     assert vp["dub_playing_muted"] is True
     assert vp["caption_text_1"] == "Câu thứ hai"
+    assert vp["tick_captions"] == ["Xin chào thế giới", "", "Câu thứ hai", ""]
+    assert vp["tick_lookups"] >= vp["tick_count"]
+    assert vp["tick_row_reads"] <= 2  # one per tick inside a cue, none in silence
     assert vp["seek_position_ms"] == 4200
     assert vp["released_source"] == ""
     assert vp["fallback_error_active"] is True

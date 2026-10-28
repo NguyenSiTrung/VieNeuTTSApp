@@ -187,3 +187,14 @@ Reviewer repros for the alignment and merged-unit fixes are written as the Task 
   - Gotchas: any new `@Property` fails `test_every_property_is_consumed_or_api_only` until QML binds it or it joins `API_ONLY_PROPERTIES`.
   - Context: H1 root cause — `_rebuild_for_policy` returns early while `_rendering`, so a knob applied mid-render was silently never rebuilt.
   - Follow-ups (routed): `_update_project_cues` still saves project.json mid-render and `finished` overwrites `self._project` (Task 2.4 merge); `on_enrolled → setSpeakerVoice` can now be refused if an owner starts during enrollment (Task 2.3 project_id capture); optional SubtitleCard.qml knobs could grey out on `aiBusy` instead of snapping back (Task 7.3 / UI polish).
+
+> Coordinator note (2026-10-29): Phase 5 Tasks 5.1–5.3 start before Phase 3 completes — they touch only `core/diarization.py` and its tests and need nothing from the catalog. Task 5.4 (ONNX models) still waits for Task 3.1.
+
+## 2026-10-29 - Phase 5 Task 5.1: `split_segments_at_turns` with word timings
+- **Implemented:** pure `diarization.split_segments_at_turns(segments, turns, *, min_part_ms=600, min_words=2)`: each word is labelled by max turn overlap (ties keep the previous label, unlabelled words inherit a neighbour), runs of same-speaker words become parts, the weakest too-short run (< `min_words` words or < `min_part_ms`) folds into its closer neighbour until all parts qualify; inner part edges are word bounds, outer parts keep the segment edges; parts are labelled by max overlap with speech bounds from their words. Input type is a structural `WordTimedSegment` Protocol (diarization cannot import asr); parts are built with `dataclasses.replace`, so `asr.RawSegment` works directly. Not wired yet (Task 7.1).
+- **Files changed:** `core/diarization.py`, `tests/unit/test_diarization.py`.
+- **Learnings:**
+  - Context: the word shape is exactly `asr.RawSegment.words` — `tuple[tuple[int, int, str], ...]`, `(start_ms, end_ms, text)` in absolute media ms (`WordTiming`); `_extract_words` already fills it for faster-whisper/dict/tuple input. Task 4.1 only has to fill it from whisper.cpp JSON-full in the same form.
+  - Deviation: unsplit segments come back unchanged (speaker untouched) — labelling them stays with `assign_speakers_from_turns`; only split parts get a speaker here. Gaps between words stay gaps between parts.
+  - Patterns: per-word majority labelling gives the nearest-word-boundary cut for free and tolerates overlapping turns (Nemotron emits them); "fold the weakest short run into the nearer neighbour, repeat" handles A-B-A interjections and short edge runs with one rule.
+  - Context: Task 7.1 should call it before `normalize_asr_segments_to_cues` (that only merges same-speaker micro-fragments, so differently labelled parts survive).

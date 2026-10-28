@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 
@@ -293,6 +293,189 @@ def assign_speakers_from_turns(
             best_spk = nearest.speaker
         out.append(replace(cue, speaker=best_spk))
     return refine_cues_speech_bounds(out, wav_path, turns=turns)
+
+
+#: One timed word: ``(start_ms, end_ms, text)`` in absolute media time — the
+#: shape of ``asr.RawSegment.words``.
+WordTiming = tuple[int, int, str]
+
+
+class WordTimedSegment(Protocol):
+    """What :func:`split_segments_at_turns` reads; ``asr.RawSegment`` satisfies it.
+
+    Parts are built with ``dataclasses.replace(..., start_ms, end_ms, text,
+    speaker, words, speech_start_ms, speech_end_ms)``, so a segment type must
+    be a dataclass with those fields.
+    """
+
+    @property
+    def start_ms(self) -> int: ...
+
+    @property
+    def end_ms(self) -> int: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def words(self) -> tuple[WordTiming, ...]: ...
+
+
+_SegmentT = TypeVar("_SegmentT", bound=WordTimedSegment)
+
+
+def split_segments_at_turns(
+    segments: Sequence[_SegmentT],
+    turns: Sequence[RttmTurn],
+    *,
+    min_part_ms: int = 600,
+    min_words: int = 2,
+) -> list[_SegmentT]:
+    """Split ASR segments at mid-segment speaker changes, on word boundaries.
+
+    Each word is labelled with the speaker it overlaps most, so a word that
+    straddles a turn change goes to the side holding most of it — the cut
+    lands on the word boundary nearest the change. Runs of same-speaker words
+    become parts; a run shorter than ``min_part_ms`` or with fewer than
+    ``min_words`` words is folded into its closer neighbour, so a one-word
+    interjection never fragments a sentence. Parts are labelled by max
+    overlap, take their speech bounds from their words, and the outer parts
+    keep the segment's own edges.
+
+    A segment without words, without a speaker change, or that cannot split
+    with every part long enough is returned unchanged; its label stays with
+    :func:`assign_speakers_from_turns` (the max-overlap rule).
+    """
+    if not turns:
+        return list(segments)
+    ordered = sorted(turns, key=lambda t: (t.start_ms, t.end_ms))
+    out: list[_SegmentT] = []
+    for seg in segments:
+        out.extend(_split_segment_at_turns(seg, ordered, min_part_ms, max(1, min_words)))
+    return out
+
+
+def _split_segment_at_turns(
+    seg: _SegmentT, turns: Sequence[RttmTurn], min_part_ms: int, min_words: int
+) -> list[_SegmentT]:
+    words = tuple(seg.words or ())
+    if len(words) < 2 * min_words:
+        return [seg]
+    near = [t for t in turns if t.end_ms > seg.start_ms and t.start_ms < seg.end_ms]
+    if len({t.speaker for t in near}) < 2:
+        return [seg]
+    labels = _label_words(words, near)
+    if labels is None:
+        return [seg]
+
+    # Runs of consecutive same-speaker words: [first, stop, speaker].
+    runs: list[list[Any]] = []
+    for idx, label in enumerate(labels):
+        if runs and runs[-1][2] == label:
+            runs[-1][1] = idx + 1
+        else:
+            runs.append([idx, idx + 1, label])
+
+    def bounds(k: int) -> tuple[int, int]:
+        first, stop, _ = runs[k]
+        start = seg.start_ms if k == 0 else words[first][0]
+        end = seg.end_ms if k == len(runs) - 1 else words[stop - 1][1]
+        return start, end
+
+    def too_short(k: int) -> bool:
+        start, end = bounds(k)
+        return runs[k][1] - runs[k][0] < min_words or end - start < min_part_ms
+
+    while len(runs) > 1:
+        weak = [k for k in range(len(runs)) if too_short(k)]
+        if not weak:
+            break
+        k = min(weak, key=lambda i: (runs[i][1] - runs[i][0], bounds(i)[1] - bounds(i)[0]))
+        if k == 0:
+            into = 1
+        elif k == len(runs) - 1:
+            into = k - 1
+        else:
+            gap_prev = words[runs[k][0]][0] - words[runs[k - 1][1] - 1][1]
+            gap_next = words[runs[k + 1][0]][0] - words[runs[k][1] - 1][1]
+            into = k - 1 if gap_prev <= gap_next else k + 1
+        lo, hi = min(k, into), max(k, into)
+        runs[lo : hi + 1] = [[runs[lo][0], runs[hi][1], runs[into][2]]]
+        coalesced: list[list[Any]] = []
+        for run in runs:
+            if coalesced and coalesced[-1][2] == run[2]:
+                coalesced[-1][1] = run[1]
+            else:
+                coalesced.append(run)
+        runs = coalesced
+    if len(runs) < 2:
+        return [seg]
+
+    tokens = seg.text.split()
+    same_tokens = len(tokens) == len(words)
+    parts: list[_SegmentT] = []
+    for k, (first, stop, label) in enumerate(runs):
+        start, end = bounds(k)
+        part_words = words[first:stop]
+        # Keep the segment's own spelling when its tokens map 1:1 onto the words.
+        part_tokens = tokens[first:stop] if same_tokens else [w[2] for w in part_words]
+        text = " ".join(part_tokens)
+        speech_start = max(start, min(end, part_words[0][0]))
+        speech_end = max(speech_start, min(end, part_words[-1][1]))
+        parts.append(
+            replace(
+                seg,  # type: ignore[type-var]
+                start_ms=start,
+                end_ms=end,
+                text=text,
+                speaker=_max_overlap_speaker(start, end, turns) or label,
+                words=part_words,
+                speech_start_ms=speech_start,
+                speech_end_ms=speech_end,
+            )
+        )
+    return parts
+
+
+def _label_words(words: Sequence[WordTiming], turns: Sequence[RttmTurn]) -> list[str] | None:
+    """Speaker per word by max overlap; ties keep the previous word's speaker.
+
+    Words outside every turn inherit their neighbour's label. ``None`` when no
+    word overlaps any turn.
+    """
+    labels: list[str | None] = []
+    prev: str | None = None
+    for w_start, w_end, _ in words:
+        w_stop = max(w_end, w_start + 1)
+        overlap: dict[str, int] = {}
+        for turn in turns:
+            ov = min(w_stop, turn.end_ms) - max(w_start, turn.start_ms)
+            if ov > 0:
+                overlap[turn.speaker] = overlap.get(turn.speaker, 0) + ov
+        if overlap:
+            best = max(overlap.values())
+            leaders = [spk for spk, ov in overlap.items() if ov == best]
+            prev = prev if prev in leaders else leaders[0]
+            labels.append(prev)
+        else:
+            labels.append(None)
+    known = next((label for label in labels if label is not None), None)
+    if known is None:
+        return None
+    filled: list[str] = []
+    for label in labels:
+        known = label if label is not None else known
+        filled.append(known)
+    return filled
+
+
+def _max_overlap_speaker(start_ms: int, end_ms: int, turns: Sequence[RttmTurn]) -> str:
+    overlap: dict[str, int] = {}
+    for turn in turns:
+        ov = min(end_ms, turn.end_ms) - max(start_ms, turn.start_ms)
+        if ov > 0:
+            overlap[turn.speaker] = overlap.get(turn.speaker, 0) + ov
+    return max(overlap.items(), key=lambda kv: kv[1])[0] if overlap else ""
 
 
 #: Nemotron-3-Diarization supports at most eight speakers; the UI ceiling is

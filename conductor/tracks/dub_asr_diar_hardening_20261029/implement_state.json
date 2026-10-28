@@ -1,16 +1,17 @@
 {
-  "current_phase": "Phase 2: Controller concurrency, lifecycle & persistence safety",
-  "current_phase_index": 1,
-  "current_task_index": 0,
+  "current_phase": "Phase 5: Diarization quality & throughput",
+  "current_phase_index": 4,
+  "current_task_index": 1,
   "completed_phases": [
     "Phase 1: Foundations \u2014 process helpers, background-op hygiene, shared 16 kHz prep"
   ],
   "in_flight_tasks": [
     "phase2_task2",
     "phase3_task1",
+    "phase5_task2",
     "phase6_task2",
     "phase6_task3"
   ],
-  "last_updated": "2026-10-28T18:18:55Z",
+  "last_updated": "2026-10-28T18:23:54Z",
   "status": "in_progress"
 }

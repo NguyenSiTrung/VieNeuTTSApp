@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from vienetts_app.core.asr import RawSegment
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.diarization import (
     DiarizationConfig,
@@ -17,6 +18,7 @@ from vienetts_app.core.diarization import (
     parse_rttm_turns,
     refine_cues_speech_bounds,
     select_speaker_reference_clip,
+    split_segments_at_turns,
 )
 from vienetts_app.core.subtitles import Cue
 
@@ -50,6 +52,98 @@ def test_parse_rttm_and_assign_speakers_from_turns() -> None:
     ]
     tagged = assign_speakers_from_turns(cues, turns)
     assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01"]
+
+
+def test_split_segments_at_turns_cuts_at_the_nearest_word_boundary() -> None:
+    words = (
+        (100, 400, "Xin"),
+        (450, 800, "chào"),
+        (850, 1300, "các"),
+        (1350, 1900, "bạn."),  # the A→B change at 1700 is past this word's midpoint
+        (1950, 2500, "Tôi"),
+        (2550, 3000, "là"),
+        (3050, 3600, "Lan."),
+    )
+    seg = RawSegment(0, 3700, "Xin chào các bạn. Tôi là Lan.", words=words)
+    two = [RttmTurn(0, 1700, "SPEAKER_01"), RttmTurn(1700, 3700, "SPEAKER_02")]
+    untouched = RawSegment(4000, 5000, "Không có từ.")
+
+    assert split_segments_at_turns([seg, untouched], two) == [
+        RawSegment(
+            0,
+            1900,
+            "Xin chào các bạn.",
+            "SPEAKER_01",
+            words=words[:4],
+            speech_start_ms=100,
+            speech_end_ms=1900,
+        ),
+        RawSegment(
+            1950,
+            3700,
+            "Tôi là Lan.",
+            "SPEAKER_02",
+            words=words[4:],
+            speech_start_ms=1950,
+            speech_end_ms=3600,
+        ),
+        untouched,
+    ]
+
+    # Three turns → three parts, each labelled and bounded by its own words.
+    words3 = (
+        (100, 400, "Một"),
+        (450, 1100, "hai."),
+        (1250, 1700, "Ba"),
+        (1750, 2500, "bốn."),
+        (2650, 3100, "Năm"),
+        (3150, 3900, "sáu."),
+    )
+    seg3 = RawSegment(0, 4000, "Một hai. Ba bốn. Năm sáu.", words=words3)
+    three = [
+        RttmTurn(0, 1200, "SPEAKER_01"),
+        RttmTurn(1200, 2600, "SPEAKER_02"),
+        RttmTurn(2600, 4000, "SPEAKER_03"),
+    ]
+    parts = split_segments_at_turns([seg3], three)
+    assert [(p.start_ms, p.end_ms, p.text, p.speaker) for p in parts] == [
+        (0, 1100, "Một hai.", "SPEAKER_01"),
+        (1250, 2500, "Ba bốn.", "SPEAKER_02"),
+        (2650, 4000, "Năm sáu.", "SPEAKER_03"),
+    ]
+    assert [(p.speech_start_ms, p.speech_end_ms) for p in parts] == [
+        (100, 1100),
+        (1250, 2500),
+        (2650, 3900),
+    ]
+    assert [len(p.words) for p in parts] == [2, 2, 2]
+
+
+def test_split_segments_at_turns_keeps_segments_it_cannot_split_safely() -> None:
+    words = (
+        (100, 600, "Vâng"),
+        (650, 1200, "tôi"),
+        (1250, 1800, "hiểu"),
+        (1850, 2400, "rồi"),
+        (2450, 2700, "ạ"),
+        (2750, 2990, "nhé."),
+    )
+    seg = RawSegment(0, 3000, "Vâng tôi hiểu rồi ạ nhé.", words=words)
+    # The B side would be 2 words but only 550 ms long.
+    short_tail = [RttmTurn(0, 2430, "SPEAKER_01"), RttmTurn(2430, 3000, "SPEAKER_02")]
+    # The B side would be a single word.
+    one_word = [RttmTurn(0, 2730, "SPEAKER_01"), RttmTurn(2730, 3000, "SPEAKER_02")]
+    # A one-word interjection inside A's turn.
+    interjection = [
+        RttmTurn(0, 1220, "SPEAKER_01"),
+        RttmTurn(1220, 1830, "SPEAKER_02"),
+        RttmTurn(1830, 3000, "SPEAKER_01"),
+    ]
+    no_words = RawSegment(0, 3000, "Vâng tôi hiểu rồi ạ nhé.")
+    for turns in (short_tail, one_word, interjection):
+        assert split_segments_at_turns([seg], turns) == [seg]
+    assert split_segments_at_turns([no_words], short_tail) == [no_words]
+    assert split_segments_at_turns([seg], []) == [seg]
 
 
 def test_acoustic_diarization_separates_two_distinct_speakers(tmp_path: Path) -> None:

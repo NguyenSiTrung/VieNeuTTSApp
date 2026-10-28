@@ -100,7 +100,7 @@ Test seams and fakes:
     - Make `_can_apply_now()` render-aware.
     - Add the QML `enabled` bindings: Render, Play and Export at `SubtitleActionDock.qml:107`, `:146` and `:170`; the delete button at `SubtitlesTab.qml:266`.
 
-- [ ] **Task 2.2: GUI-thread, generation-checked AI progress; per-op generations; guarded sample playback (FR-1.2, FR-1.3, H2, L6)**
+- [~] **Task 2.2: GUI-thread, generation-checked AI progress; per-op generations; guarded sample playback (FR-1.2, FR-1.3, H2, L6)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - An LLM `progress_cb` invoked from a worker thread after `cancelAiTask()` leaves `aiBusy` False.
@@ -243,7 +243,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase1, phase3 -->
 
-- [ ] **Task 5.1: `split_segments_at_turns` with word timings (FR-4.1)**
+- [x] **Task 5.1: `split_segments_at_turns` with word timings (FR-4.1)**
   <!-- files: src/vienetts_app/core/diarization.py, tests/unit/test_diarization.py -->
   - Red tests:
     - A segment whose words span A→B, with each part ≥ 600 ms and ≥ 2 words, splits at the nearest word boundary into two parts labelled A and B.
@@ -253,7 +253,7 @@ Test seams and fakes:
     - The parts' speech bounds come from their words.
   - Green implementation: add the pure function (wired in Task 7.1).
 
-- [ ] **Task 5.2: Clustering, speech-bound sweep and Nemotron progress (FR-4.3)**
+- [~] **Task 5.2: Clustering, speech-bound sweep and Nemotron progress (FR-4.3)**
   <!-- files: src/vienetts_app/core/diarization.py, tests/unit/test_diarization.py, tests/unit/diarization_reference.py -->
   - Red tests:
     - **Clustering oracle:** new `_cluster_embeddings` labels equal the oracle's (`diarization_reference.py`, a verbatim copy of today's implementation) on 50 seeded sets with n ≤ 60, kept short because of float near-ties.
@@ -309,7 +309,7 @@ Test seams and fakes:
     - Add the `split_unit_audio` snap (lowest-RMS 10 ms within ±150 ms).
     - Place contiguous pieces in `add_unit_clip`, with `apply_micro_fade` at every split.
 
-- [ ] **Task 6.2: Per-unit clip cache, crash-consistent commit, fingerprint hygiene (FR-5.1 core, FR-5.7)**
+- [~] **Task 6.2: Per-unit clip cache, crash-consistent commit, fingerprint hygiene (FR-5.1 core, FR-5.7)**
   <!-- files: src/vienetts_app/core/subtitle_project.py, tests/unit/test_subtitle_project.py -->
   <!-- depends: task1 -->
   - Red tests:

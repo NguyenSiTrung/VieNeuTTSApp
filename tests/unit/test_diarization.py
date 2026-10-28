@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
+import pytest
+import soundfile
+from tests.unit.diarization_reference import (
+    reference_cluster_embeddings,
+    reference_refine_cues_speech_bounds,
+)
 
 from vienetts_app.core.asr import RawSegment
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.diarization import (
+    DiarizationCancelled,
     DiarizationConfig,
     RttmTurn,
+    _cluster_embeddings,
     assign_speakers_from_turns,
     diarize_cues,
     extract_speaker_reference_wav,
@@ -353,3 +362,111 @@ def test_refine_cues_speech_bounds_vad_and_turn_intersection(tmp_path: Path) -> 
     fallback = refine_cues_speech_bounds([cues[0]], wav_path, turns=disjoint_turns)
     assert fallback[0].speech_start_ms == refined[0].speech_start_ms
     assert fallback[0].speech_end_ms == refined[0].speech_end_ms
+
+
+def _speaker_embeddings(
+    rng: np.random.Generator, n: int, speakers: int, noise: float
+) -> np.ndarray:
+    centers = rng.normal(size=(speakers, 24))
+    emb = centers[rng.integers(0, speakers, size=n)] + noise * rng.normal(size=(n, 24))
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    return emb.astype(np.float32)
+
+
+def test_cluster_embeddings_matches_the_reference_implementation() -> None:
+    # n stays small: float near-ties in large sets could legitimately break
+    # either way, and the point is label parity with the O(n^3) original.
+    rng = np.random.default_rng(20261029)
+    for case in range(50):
+        n = int(rng.integers(2, 61))
+        emb = _speaker_embeddings(
+            rng, n, int(rng.integers(1, 6)), float(rng.choice([0.05, 0.3, 0.8, 2.0]))
+        )
+        max_speakers = int(rng.choice([0, 0, 2, 3, 8]))
+        assert _cluster_embeddings(emb, max_speakers) == reference_cluster_embeddings(
+            emb, max_speakers
+        ), (case, n, max_speakers)
+
+    with pytest.raises(DiarizationCancelled):
+        _cluster_embeddings(emb, cancel_check=lambda: True)
+
+
+@pytest.mark.benchmark
+def test_cluster_embeddings_handles_2000_cues_within_budget() -> None:
+    emb = _speaker_embeddings(np.random.default_rng(7), 2000, 4, 0.5)
+    start = time.perf_counter()
+    labels = _cluster_embeddings(emb)
+    elapsed = time.perf_counter() - start
+    assert len(labels) == 2000
+    assert elapsed < 2.0, f"{elapsed:.2f}s"
+
+
+def _bursty_speech(rng: np.random.Generator, sr: int, seconds: float) -> np.ndarray:
+    """Noise bursts of varying level separated by silences of varying length."""
+    out = np.zeros(int(sr * seconds), dtype=np.float32)
+    pos = 0
+    while pos < out.size:
+        gap = int(sr * rng.uniform(0.05, 0.6))
+        burst = int(sr * rng.uniform(0.1, 1.5))
+        level = float(rng.choice([0.002, 0.05, 0.3]))
+        seg = out[pos + gap : pos + gap + burst]
+        seg[:] = level * rng.standard_normal(seg.size).astype(np.float32)
+        pos += gap + burst
+    return out
+
+
+def test_refine_cues_speech_bounds_opens_the_wav_once_and_matches_the_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sr = 16_000
+    rng = np.random.default_rng(5)
+    wav = write_wav_file(_bursty_speech(rng, sr, 20.0), tmp_path / "source_16k.wav", sr)
+    speakers = ["SPEAKER_01", "SPEAKER_02", "SPEAKER_03", ""]
+    cues = []
+    for i in range(40):  # unsorted, overlapping, some past the end of the WAV
+        start = int(rng.integers(0, 21_000))
+        cues.append(
+            Cue(i + 1, start, start + int(rng.integers(0, 2500)), f"c{i}", speaker=speakers[i % 4])
+        )
+    cues.append(Cue(41, 3000, 4000, "giữ", speech_start_ms=3100, speech_end_ms=3900))
+    turns = []
+    for _ in range(25):
+        start = int(rng.integers(0, 20_000))
+        turns.append(RttmTurn(start, start + int(rng.integers(1, 3000)), speakers[_ % 3]))
+    expected = {
+        "vad": reference_refine_cues_speech_bounds(cues, wav),
+        "vad+turns": reference_refine_cues_speech_bounds(cues, wav, turns=turns),
+        "turns": reference_refine_cues_speech_bounds(cues, None, turns=turns),
+    }
+
+    opened: list[str] = []
+
+    class CountingSoundFile(soundfile.SoundFile):
+        def __init__(self, file, *args, **kwargs) -> None:
+            opened.append(str(file))
+            super().__init__(file, *args, **kwargs)
+
+    monkeypatch.setattr(soundfile, "SoundFile", CountingSoundFile)
+    assert refine_cues_speech_bounds(cues, wav) == expected["vad"]
+    assert len(opened) == 1, opened
+    assert refine_cues_speech_bounds(cues, wav, turns=turns) == expected["vad+turns"]
+    assert refine_cues_speech_bounds(cues, None, turns=turns) == expected["turns"]
+    assert len(opened) == 2, opened
+
+
+@pytest.mark.benchmark
+def test_refine_cues_speech_bounds_sweeps_an_hour_within_budget(tmp_path: Path) -> None:
+    sr = 16_000
+    rng = np.random.default_rng(11)
+    block = _bursty_speech(rng, sr, 60.0)
+    wav = tmp_path / "hour_16k.wav"
+    with soundfile.SoundFile(wav, "w", samplerate=sr, channels=1, subtype="PCM_16") as fh:
+        for _ in range(60):
+            fh.write(block)
+    cues = [Cue(i + 1, i * 2400, i * 2400 + 2000, f"c{i}") for i in range(1500)]
+    turns = [RttmTurn(i * 1200, i * 1200 + 1100, f"SPEAKER_0{i % 3 + 1}") for i in range(3000)]
+    start = time.perf_counter()
+    refined = refine_cues_speech_bounds(cues, wav, turns=turns)
+    elapsed = time.perf_counter() - start
+    assert len(refined) == 1500
+    assert elapsed < 3.0, f"{elapsed:.2f}s"

@@ -253,7 +253,7 @@ Test seams and fakes:
     - The parts' speech bounds come from their words.
   - Green implementation: add the pure function (wired in Task 7.1).
 
-- [~] **Task 5.2: Clustering, speech-bound sweep and Nemotron progress (FR-4.3)**
+- [x] **Task 5.2: Clustering, speech-bound sweep and Nemotron progress (FR-4.3)**
   <!-- files: src/vienetts_app/core/diarization.py, tests/unit/test_diarization.py, tests/unit/diarization_reference.py -->
   - Red tests:
     - **Clustering oracle:** new `_cluster_embeddings` labels equal the oracle's (`diarization_reference.py`, a verbatim copy of today's implementation) on 50 seeded sets with n ≤ 60, kept short because of float near-ties.
@@ -266,7 +266,7 @@ Test seams and fakes:
     - A single-open, two-pointer sweep.
     - Stdout progress parsing with the estimate fallback.
 
-- [ ] **Task 5.3: Reference-clip scoring (FR-4.4)**
+- [~] **Task 5.3: Reference-clip scoring (FR-4.4)**
   <!-- files: src/vienetts_app/core/diarization.py, tests/unit/test_diarization_hardening.py -->
   - Red tests:
     - From four candidates — a 2 s clean clip, an 8 s clean clip, a 10 s clip with 5 % clipped samples, and a 9 s clip overlapping another speaker's turn — the 8 s clean clip wins.

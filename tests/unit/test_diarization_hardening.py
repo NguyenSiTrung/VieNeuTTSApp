@@ -20,6 +20,7 @@ from vienetts_app.core.diarization import (
     DiarizationCancelled,
     DiarizationConfig,
     DiarizationError,
+    _CliProgress,
     apply_speaker_ceiling,
     diarize_cues,
     remap_speakers_to_previous,
@@ -122,6 +123,79 @@ def test_missing_turns_file_means_no_speech_not_failure(tmp_path: Path) -> None:
     )
     assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_01"]
     assert any("Không phát hiện giọng nói" in note for note in notes), notes
+
+
+def test_nemotron_progress_is_relayed_in_monotonic_steps(tmp_path: Path) -> None:
+    # Parsed: percent, "[i/n]" and "chunk i of n" lines on both pipes, with
+    # noise lines (and a lower, out-of-order value) that must not move the bar.
+    _install_fake_cli(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "print('loading model with 16 threads', flush=True)\n"
+        "for i in range(1, 9):\n"
+        "    print(f'diarize: {i * 5}%', flush=True)\n"
+        "    print('frame 2024/10/29 noise', flush=True)\n"
+        "for i in range(9, 15):\n"
+        "    print(f'[{i}/20] window', file=sys.stderr, flush=True)\n"
+        "print('diarize: 3%', flush=True)\n"
+        "for i in range(15, 21):\n"
+        "    print(f'chunk {i} of 20 done', flush=True)\n"
+        "out = args[args.index('--turns-out') + 1]\n"
+        f"Path(out).write_text({TURNS_TWO_SPEAKERS!r}, encoding='utf-8')\n",
+    )
+    wav = write_wav_file(
+        np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "prog.wav", sample_rate=16_000
+    )
+    seen: list[float] = []
+    diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+        data_dir=tmp_path,
+        progress_cb=seen.append,
+    )
+    assert len(seen) >= 10, seen
+    assert seen == sorted(seen), seen
+    assert seen[-1] == 1.0
+    assert max(seen[:-1]) <= 0.95, seen
+
+    # A model that fails after reporting progress: the acoustic fallback
+    # resumes from there instead of moving the bar back.
+    _install_fake_cli(
+        tmp_path,
+        "#!/usr/bin/env python3\nimport sys\nprint('60%', flush=True)\nsys.exit(3)\n",
+    )
+    fallback: list[float] = []
+    diarize_cues(
+        wav,
+        _cues(),
+        DiarizationConfig(backend="auto", device="cpu"),
+        data_dir=tmp_path,
+        progress_cb=fallback.append,
+    )
+    assert fallback == sorted(fallback), fallback
+    assert fallback[-1] == 1.0
+
+    # Unparseable output: the estimate follows elapsed time against the
+    # expected run time, read from the injected clock.
+    now = [100.0]
+    estimated: list[float] = []
+    meter = _CliProgress(
+        estimated.append, start=0.1, end=0.95, expected_s=20.0, clock=lambda: now[0]
+    )
+    meter.on_line("audiocpp: session ready\n")
+    meter.tick()
+    assert estimated == []
+    for _ in range(30):
+        now[0] += 1.0
+        meter.tick()
+    assert len(estimated) >= 10, estimated
+    assert estimated == sorted(estimated), estimated
+    assert estimated[0] == pytest.approx(0.1 + 0.85 / 20)
+    assert estimated[-1] == pytest.approx(0.95)
 
 
 def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:

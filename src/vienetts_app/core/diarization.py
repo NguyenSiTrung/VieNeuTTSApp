@@ -20,8 +20,11 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -161,104 +164,129 @@ def refine_cues_speech_bounds(
     with ``turns`` when provided. Keeps ``Cue.start_ms`` and ``Cue.end_ms``
     untouched, and leaves existing bounds unchanged when the WAV slice is
     silent or unreadable and no overlapping turns apply.
+
+    The WAV is opened once, and cues and turns are swept in start order with
+    two pointers. Opening the file per cue and scanning every turn per cue
+    made a long video's pass O(C * T) plus C file opens.
     """
     if not cues:
         return []
 
-    wav_p: Path | None = None
-    sr = 0
-    total_frames = 0
-    if wav_path is not None:
-        cand = Path(wav_path)
-        if cand.is_file():
-            try:
-                import soundfile as sf
-
-                info = sf.info(str(cand))
-                sr = int(info.samplerate)
-                total_frames = int(info.frames)
-                if sr > 0 and total_frames > 0:
-                    wav_p = cand
-            except Exception:  # noqa: BLE001
-                wav_p = None
-
     abs_thresh = float(10.0 ** (float(threshold_db) / 20.0))
     pad = max(0, int(pad_ms))
-    win_frames = max(1, int(round(sr * 0.010))) if sr > 0 else 1
+    wav_file = _open_wav_for_vad(wav_path)
+    order = sorted(range(len(cues)), key=lambda i: cues[i].start_ms)
+    pending = sorted(turns or (), key=lambda t: t.start_ms)
+    next_turn = 0
+    live: list[RttmTurn] = []
+    out = list(cues)
+    try:
+        for i in order:
+            cue = cues[i]
+            # Cues come in start order, so a turn that ended before this cue
+            # starts can overlap no later cue either.
+            while next_turn < len(pending) and pending[next_turn].start_ms < cue.end_ms:
+                live.append(pending[next_turn])
+                next_turn += 1
+            live = [t for t in live if t.end_ms > cue.start_ms]
 
-    out: list[Cue] = []
-    for cue in cues:
-        vad_bounds: tuple[int, int] | None = None
-        if wav_p is not None and sr > 0 and total_frames > 0:
-            start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
-            stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
-            if stop_f > start_f:
-                try:
-                    samples, _ = read_wav_range(wav_p, start_f, stop_f)
-                    mono = np.asarray(samples, dtype=np.float32).ravel()
-                except Exception:  # noqa: BLE001
-                    mono = np.empty(0, dtype=np.float32)
-                if mono.size > 0:
-                    n_wins = mono.size // win_frames
-                    if n_wins > 0:
-                        framed = mono[: n_wins * win_frames].reshape(n_wins, win_frames)
-                        rms = np.sqrt(np.mean(framed * framed, axis=1, dtype=np.float64))
-                        rem = mono[n_wins * win_frames :]
-                        if rem.size > 0:
-                            rem_rms = np.sqrt(np.mean(rem * rem, dtype=np.float64))
-                            rms = np.append(rms, rem_rms)
-                    else:
-                        rms = np.array(
-                            [float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))],
-                            dtype=np.float64,
-                        )
-                    peak_rms = float(np.max(rms)) if rms.size > 0 else 0.0
-                    if peak_rms > abs_thresh:
-                        gate = max(abs_thresh, peak_rms * 0.10)
-                        active = np.flatnonzero(rms >= gate)
-                        if active.size > 0:
-                            first_idx = int(active[0])
-                            last_idx = int(active[-1])
-                            onset_samples = first_idx * win_frames
-                            offset_samples = min(mono.size, (last_idx + 1) * win_frames)
-                            raw_start_ms = cue.start_ms + int(round(onset_samples * 1000.0 / sr))
-                            raw_end_ms = cue.start_ms + int(round(offset_samples * 1000.0 / sr))
-                            v_start = max(cue.start_ms, min(cue.end_ms, raw_start_ms - pad))
-                            v_end = max(v_start, min(cue.end_ms, raw_end_ms + pad))
-                            if v_end > v_start:
-                                vad_bounds = (v_start, v_end)
+            vad_bounds = (
+                None if wav_file is None else _cue_vad_bounds(wav_file, cue, abs_thresh, pad)
+            )
+            turn_bounds = _cue_turn_bounds(cue, live)
+            chosen_bounds: tuple[int, int] | None = None
+            if vad_bounds is not None and turn_bounds is not None:
+                inter_start = max(vad_bounds[0], turn_bounds[0])
+                inter_end = min(vad_bounds[1], turn_bounds[1])
+                chosen_bounds = (inter_start, inter_end) if inter_end > inter_start else vad_bounds
+            elif vad_bounds is not None:
+                chosen_bounds = vad_bounds
+            elif turn_bounds is not None:
+                chosen_bounds = turn_bounds
 
-        turn_bounds: tuple[int, int] | None = None
-        if turns:
-            overlapping = [
-                t for t in turns if min(cue.end_ms, t.end_ms) > max(cue.start_ms, t.start_ms)
-            ]
-            if overlapping:
-                spk = (cue.speaker or "").strip()
-                spk_turns = [t for t in overlapping if t.speaker == spk] if spk else []
-                chosen_turns = spk_turns if spk_turns else overlapping
-                t_start = max(cue.start_ms, min(t.start_ms for t in chosen_turns))
-                t_end = min(cue.end_ms, max(t.end_ms for t in chosen_turns))
-                if t_end > t_start:
-                    turn_bounds = (t_start, t_end)
-
-        chosen_bounds: tuple[int, int] | None = None
-        if vad_bounds is not None and turn_bounds is not None:
-            inter_start = max(vad_bounds[0], turn_bounds[0])
-            inter_end = min(vad_bounds[1], turn_bounds[1])
-            chosen_bounds = (inter_start, inter_end) if inter_end > inter_start else vad_bounds
-        elif vad_bounds is not None:
-            chosen_bounds = vad_bounds
-        elif turn_bounds is not None:
-            chosen_bounds = turn_bounds
-
-        if chosen_bounds is not None:
-            s_ms = max(cue.start_ms, min(cue.end_ms, int(chosen_bounds[0])))
-            e_ms = max(s_ms, min(cue.end_ms, int(chosen_bounds[1])))
-            out.append(replace(cue, speech_start_ms=s_ms, speech_end_ms=e_ms))
-        else:
-            out.append(cue)
+            if chosen_bounds is not None:
+                s_ms = max(cue.start_ms, min(cue.end_ms, int(chosen_bounds[0])))
+                e_ms = max(s_ms, min(cue.end_ms, int(chosen_bounds[1])))
+                out[i] = replace(cue, speech_start_ms=s_ms, speech_end_ms=e_ms)
+    finally:
+        if wav_file is not None:
+            with contextlib.suppress(Exception):
+                wav_file.close()
     return out
+
+
+def _open_wav_for_vad(wav_path: str | Path | None) -> Any | None:
+    """An open ``soundfile.SoundFile`` with audio in it, or ``None`` (no VAD)."""
+    if wav_path is None or not Path(wav_path).is_file():
+        return None
+    try:
+        import soundfile as sf
+
+        wav_file = sf.SoundFile(str(wav_path))
+    except Exception:  # noqa: BLE001 - an unreadable WAV only disables the VAD
+        return None
+    if int(wav_file.samplerate) > 0 and int(wav_file.frames) > 0:
+        return wav_file
+    wav_file.close()
+    return None
+
+
+def _cue_vad_bounds(wav_file: Any, cue: Cue, abs_thresh: float, pad: int) -> tuple[int, int] | None:
+    """Energy-VAD speech span of ``cue`` (padded, clamped to the cue), or ``None``."""
+    sr = int(wav_file.samplerate)
+    total_frames = int(wav_file.frames)
+    win_frames = max(1, int(round(sr * 0.010)))
+    start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
+    stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
+    if stop_f <= start_f:
+        return None
+    try:
+        wav_file.seek(start_f)
+        block = wav_file.read(stop_f - start_f, dtype="float32", always_2d=True)
+    except Exception:  # noqa: BLE001 - a bad slice only disables this cue's VAD
+        return None
+    # Downmix: the shared 16 kHz input is mono, but a caller's stereo WAV used
+    # to be flattened frame-interleaved, doubling every offset.
+    mono = np.ascontiguousarray(block[:, 0] if block.shape[1] == 1 else block.mean(axis=1))
+    if mono.size == 0:
+        return None
+    n_wins = mono.size // win_frames
+    if n_wins > 0:
+        framed = mono[: n_wins * win_frames].reshape(n_wins, win_frames)
+        rms = np.sqrt(np.mean(framed * framed, axis=1, dtype=np.float64))
+        rem = mono[n_wins * win_frames :]
+        if rem.size > 0:
+            rem_rms = np.sqrt(np.mean(rem * rem, dtype=np.float64))
+            rms = np.append(rms, rem_rms)
+    else:
+        rms = np.array([float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))], dtype=np.float64)
+    peak_rms = float(np.max(rms)) if rms.size > 0 else 0.0
+    if peak_rms <= abs_thresh:
+        return None
+    gate = max(abs_thresh, peak_rms * 0.10)
+    active = np.flatnonzero(rms >= gate)
+    if active.size == 0:
+        return None
+    onset_samples = int(active[0]) * win_frames
+    offset_samples = min(mono.size, (int(active[-1]) + 1) * win_frames)
+    raw_start_ms = cue.start_ms + int(round(onset_samples * 1000.0 / sr))
+    raw_end_ms = cue.start_ms + int(round(offset_samples * 1000.0 / sr))
+    v_start = max(cue.start_ms, min(cue.end_ms, raw_start_ms - pad))
+    v_end = max(v_start, min(cue.end_ms, raw_end_ms + pad))
+    return (v_start, v_end) if v_end > v_start else None
+
+
+def _cue_turn_bounds(cue: Cue, turns: Sequence[RttmTurn]) -> tuple[int, int] | None:
+    """Span of the turns overlapping ``cue`` (its own speaker's when any), clamped."""
+    overlapping = [t for t in turns if min(cue.end_ms, t.end_ms) > max(cue.start_ms, t.start_ms)]
+    if not overlapping:
+        return None
+    spk = (cue.speaker or "").strip()
+    spk_turns = [t for t in overlapping if t.speaker == spk] if spk else []
+    chosen_turns = spk_turns if spk_turns else overlapping
+    t_start = max(cue.start_ms, min(t.start_ms for t in chosen_turns))
+    t_end = min(cue.end_ms, max(t.end_ms for t in chosen_turns))
+    return (t_start, t_end) if t_end > t_start else None
 
 
 def assign_speakers_from_turns(
@@ -713,6 +741,91 @@ def _cue_acoustic_embedding(samples: np.ndarray, sample_rate: int) -> np.ndarray
     return feat / norm if norm > 1e-6 else feat
 
 
+def _average_linkage_partitions(
+    dist: np.ndarray,
+    max_k: int,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[int, list[int]]:
+    """Average-linkage merge tree of ``dist``, as labels for every k <= ``max_k``.
+
+    Merges the same pair as recomputing the full average-distance matrix each
+    step and taking its row-major ``argmin``, which was O(n^3) overall (11 s
+    for 2,000 cues). Here the summed distances are updated in place
+    (Lance–Williams) and each row caches its nearest neighbour, so a merge
+    rescans only row ``a`` and the rows whose nearest neighbour was ``a`` or
+    ``b``. Slots stay in place (the merged cluster keeps the lower slot), so
+    the order of active slots is the order of the compacted matrix and every
+    tie breaks the same way.
+    """
+    n = dist.shape[0]
+    cluster_sum = dist.astype(np.float64, copy=True)
+    sizes = np.ones(n, dtype=np.float64)
+    active = np.ones(n, dtype=bool)
+    members: list[list[int]] = [[i] for i in range(n)]
+
+    def _rows(rows: np.ndarray) -> np.ndarray:
+        avg = cluster_sum[rows] / (sizes[rows, None] * sizes[None, :])
+        avg[:, ~active] = np.inf
+        avg[np.arange(rows.size), rows] = np.inf
+        return avg
+
+    def _rescan(rows: np.ndarray) -> None:
+        for lo in range(0, rows.size, 1024):  # bounded temporaries for long videos
+            chunk = rows[lo : lo + 1024]
+            avg = _rows(chunk)
+            nearest[chunk] = np.argmin(avg, axis=1)
+            nearest_dist[chunk] = avg[np.arange(chunk.size), nearest[chunk]]
+
+    nearest = np.zeros(n, dtype=np.int64)
+    nearest_dist = np.full(n, np.inf, dtype=np.float64)
+    _rescan(np.arange(n))
+
+    def _snapshot() -> list[int]:
+        lbls = [0] * n
+        for cid, slot in enumerate(np.flatnonzero(active)):
+            for idx in members[slot]:
+                lbls[idx] = cid
+        return lbls
+
+    partitions: dict[int, list[int]] = {}
+    remaining = n
+    if remaining <= max_k:
+        partitions[remaining] = _snapshot()
+
+    while remaining > 1:
+        if cancel_check is not None and cancel_check():
+            raise DiarizationCancelled("Đã hủy phân tách người nói.")
+        a = int(np.argmin(nearest_dist))
+        b = int(nearest[a])
+        if a > b:
+            a, b = b, a
+        cluster_sum[a, :] += cluster_sum[b, :]
+        cluster_sum[:, a] = cluster_sum[a, :]
+        cluster_sum[a, a] = 0.0
+        sizes[a] += sizes[b]
+        active[b] = False
+        nearest_dist[b] = np.inf
+        members[a].extend(members[b])
+        members[b] = []
+        remaining -= 1
+
+        # Row a changed everywhere; a row whose nearest was a or b must rescan.
+        stale = active & ((nearest == a) | (nearest == b))
+        stale[a] = True
+        _rescan(np.flatnonzero(stale))
+        # Every other row only gained a new value at column a.
+        others = active & ~stale
+        to_a = cluster_sum[a] / (sizes[a] * sizes)
+        closer = others & ((to_a < nearest_dist) | ((to_a == nearest_dist) & (a < nearest)))
+        nearest[closer] = a
+        nearest_dist[closer] = to_a[closer]
+
+        if remaining <= max_k:
+            partitions[remaining] = _snapshot()
+    return partitions
+
+
 def _cluster_embeddings(
     embeddings: np.ndarray,
     max_speakers: int = 0,
@@ -743,41 +856,7 @@ def _cluster_embeddings(
         return [0] * n
 
     max_k = min(n, cap) if cap else min(6, n)
-    clusters: list[list[int]] = [[i] for i in range(n)]
-    cluster_sum = dist.astype(np.float64, copy=True)
-    sizes = np.ones(n, dtype=np.float64)
-    partitions: dict[int, list[int]] = {}
-
-    def _snapshot() -> list[int]:
-        lbls = [0] * n
-        for cid, members in enumerate(clusters):
-            for idx in members:
-                lbls[idx] = cid
-        return lbls
-
-    if len(clusters) <= max_k:
-        partitions[len(clusters)] = _snapshot()
-
-    while len(clusters) > 1:
-        if cancel_check is not None and cancel_check():
-            raise DiarizationCancelled("Đã hủy phân tách người nói.")
-        m = len(clusters)
-        avg_dist = cluster_sum / np.outer(sizes, sizes)
-        np.fill_diagonal(avg_dist, np.inf)
-        flat_idx = int(np.argmin(avg_dist))
-        a, b = divmod(flat_idx, m)
-        if a > b:
-            a, b = b, a
-        cluster_sum[a, :] += cluster_sum[b, :]
-        cluster_sum[:, a] = cluster_sum[a, :]
-        cluster_sum[a, a] = 0.0
-        keep = [idx for idx in range(m) if idx != b]
-        cluster_sum = cluster_sum[np.ix_(keep, keep)]
-        sizes[a] += sizes[b]
-        sizes = sizes[keep]
-        clusters[a].extend(clusters.pop(b))
-        if len(clusters) <= max_k:
-            partitions[len(clusters)] = _snapshot()
+    partitions = _average_linkage_partitions(dist, max_k, cancel_check=cancel_check)
 
     best_k = 1
     best_score = 0.12  # minimum silhouette threshold to split into >=2 speakers
@@ -960,6 +1039,104 @@ def _ensure_16k_wav(
     return wav, temp_dir
 
 
+#: The CLI run owns this slice of the Nemotron backend's progress; the turns
+#: are parsed and cached in the rest.
+_CLI_PROGRESS_START = 0.1
+_CLI_PROGRESS_END = 0.95
+#: Elapsed-time estimate when the CLI prints nothing parseable: model load plus
+#: a CPU f32 real-time factor. Deliberately rough; it only paces the bar.
+_NEMOTRON_ESTIMATE_SETUP_S = 5.0
+_NEMOTRON_ESTIMATE_RTF = 0.1
+_NEMOTRON_ESTIMATE_UNKNOWN_DURATION_S = 600.0
+
+_PERCENT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s*%")
+_STEP_RE = re.compile(
+    r"\[\s*(\d+)\s*/\s*(\d+)\s*\]"
+    r"|\b(?:chunk|window|segment|block|step|batch|frame)s?\b\D{0,3}?(\d+)\s*(?:/|of)\s*(\d+)",
+    re.IGNORECASE,
+)
+_FRACTION_RE = re.compile(
+    r"\bprogress\b\s*[=:]?\s*(0(?:\.\d+)?|1(?:\.0*)?)(?![\d.%])", re.IGNORECASE
+)
+
+
+def _parse_cli_progress(line: str) -> float | None:
+    """Completed fraction reported by one CLI output line, or ``None``.
+
+    Accepts ``42%``, ``[3/20]``, ``chunk 3 of 20`` and ``progress=0.42``.
+    """
+    match = _PERCENT_RE.search(line)
+    if match is not None:
+        percent = float(match.group(1))
+        return percent / 100.0 if percent <= 100.0 else None
+    match = _STEP_RE.search(line)
+    if match is not None:
+        done, total = (int(g) for g in match.groups() if g is not None)
+        return done / total if 0 <= done <= total and total > 0 else None
+    match = _FRACTION_RE.search(line)
+    return float(match.group(1)) if match is not None else None
+
+
+class _CliProgress:
+    """Relay a native CLI's progress to ``progress_cb`` in ``[start, end]``.
+
+    ``on_line`` (called from the pipe reader threads) maps any line that
+    reports progress; once one has, those lines alone drive the bar. Until
+    then ``tick`` (polled on the calling thread) estimates from the time on
+    ``clock`` against ``expected_s``. Callbacks are serialized, monotonic and
+    at least 1 % apart, so two pipes and the poll can never move the bar back;
+    after ``close`` (the caller is about to report completion) nothing is.
+    """
+
+    def __init__(
+        self,
+        progress_cb: Callable[[float], None],
+        *,
+        start: float,
+        end: float,
+        expected_s: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._progress_cb = progress_cb
+        self._start = float(start)
+        self._end = float(end)
+        self._expected_s = max(1e-3, float(expected_s))
+        self._clock = clock
+        self._started_at = clock()
+        self._lock = threading.Lock()
+        self._last = self._start
+        self._parsed = False
+        self._closed = False
+
+    def on_line(self, line: str) -> None:
+        fraction = _parse_cli_progress(line)
+        if fraction is None:
+            return
+        with self._lock:
+            self._parsed = True
+            self._report(fraction)
+
+    def tick(self) -> None:
+        with self._lock:
+            if not self._parsed:
+                self._report((self._clock() - self._started_at) / self._expected_s)
+
+    def close(self) -> None:
+        # A pipe reader can outlive run_cli's join (a grandchild holding the
+        # pipe); its late lines must not land after the caller's 1.0.
+        with self._lock:
+            self._closed = True
+
+    def _report(self, fraction: float) -> None:
+        if self._closed:
+            return
+        value = self._start + (self._end - self._start) * min(1.0, max(0.0, fraction))
+        if value <= self._last or (value - self._last < 0.01 and value < self._end):
+            return
+        self._last = value
+        self._progress_cb(value)
+
+
 def _run_nemotron_gguf_diarization(
     wav_path: Path,
     cues: Sequence[Cue],
@@ -999,7 +1176,7 @@ def _run_nemotron_gguf_diarization(
         return assign_speakers_from_turns(cues, cached, wav_path=wav_path)
 
     if progress_cb is not None:
-        progress_cb(0.1)
+        progress_cb(_CLI_PROGRESS_START)
     backend_dev = _resolve_cli_backend(config, data_dir)
     threads = _resolve_threads(config)
     turns_temp = tempfile.TemporaryDirectory(prefix="vienetts_turns_")
@@ -1039,9 +1216,30 @@ def _run_nemotron_gguf_diarization(
         if float(config.timeout_s) > 0
         else max(180.0, duration_s * 6.0 + 60.0)
     )
+    meter: _CliProgress | None = None
+    if progress_cb is not None:
+        expected_s = _NEMOTRON_ESTIMATE_SETUP_S + _NEMOTRON_ESTIMATE_RTF * (
+            duration_s if duration_s > 0 else _NEMOTRON_ESTIMATE_UNKNOWN_DURATION_S
+        )
+        meter = _CliProgress(
+            progress_cb, start=_CLI_PROGRESS_START, end=_CLI_PROGRESS_END, expected_s=expected_s
+        )
+
+    def _poll() -> bool:
+        # run_cli polls this every 50 ms on this thread: the estimate's clock.
+        if meter is not None:
+            meter.tick()
+        return cancel_check is not None and cancel_check()
+
     try:
         try:
-            res = run_cli(cmd, timeout=timeout_s, cancel_check=cancel_check)
+            res = run_cli(
+                cmd,
+                timeout=timeout_s,
+                cancel_check=_poll,
+                on_stdout_line=None if meter is None else meter.on_line,
+                on_stderr_line=None if meter is None else meter.on_line,
+            )
         except CliCancelled as exc:
             raise DiarizationCancelled("Đã hủy phân tách người nói.") from exc
         except CliTimeout as exc:
@@ -1053,6 +1251,9 @@ def _run_nemotron_gguf_diarization(
             # A runtime that cannot start (wrong architecture, no exec bit) is
             # a diarization failure the auto chain can fall back from.
             raise DiarizationError(f"Không thể chạy audiocpp_cli: {exc}") from exc
+        finally:
+            if meter is not None:
+                meter.close()
         if res.returncode != 0:
             detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["audiocpp_cli failed"]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
@@ -1168,6 +1369,15 @@ def diarize_cues(
         if backend == "nemo":  # legacy setting value; settings.py migrates it
             backend = "nemotron_gguf"
 
+        # Highest progress the model reported, so a fallback resumes from it
+        # instead of moving the bar back.
+        primary_progress = [0.1]
+
+        def _primary_progress(value: float) -> None:
+            primary_progress[0] = max(primary_progress[0], value)
+            if progress_cb is not None:
+                progress_cb(value)
+
         def _primary() -> list[Cue]:
             return _run_nemotron_gguf_diarization(
                 wav_path,
@@ -1175,7 +1385,7 @@ def diarize_cues(
                 cfg,
                 data_dir=data_dir,
                 work_dir=work_dir,
-                progress_cb=progress_cb,
+                progress_cb=None if progress_cb is None else _primary_progress,
                 cancel_check=cancel_check,
                 notes=notes,
             )
@@ -1203,7 +1413,7 @@ def diarize_cues(
                 if notes is not None:
                     notes.append(f"Không dùng được mô hình Nemotron-3: {exc}")
             try:
-                result = _acoustic(scale_from=0.1)
+                result = _acoustic(scale_from=primary_progress[0])
             except DiarizationCancelled:
                 raise
             if notes is not None:

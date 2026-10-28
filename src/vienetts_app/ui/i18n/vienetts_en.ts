@@ -5052,386 +5052,386 @@
 <context>
     <name>SubtitleController</name>
     <message>
-        <location filename="../subtitle_controller.py" line="787"/>
+        <location filename="../subtitle_controller.py" line="786"/>
         <source>{n} phụ đề</source>
         <translation>{n} subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="790"/>
+        <location filename="../subtitle_controller.py" line="789"/>
         <source>{n} nén (tối đa {rate}×)</source>
         <translation>{n} squeezed (max {rate}×)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="796"/>
+        <location filename="../subtitle_controller.py" line="795"/>
         <source>{n} tràn (tối đa {ms} ms)</source>
         <translation>{n} overflowing (max {ms} ms)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="801"/>
+        <location filename="../subtitle_controller.py" line="800"/>
         <source>{n} đẩy lùi</source>
         <translation>{n} pushed back</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1456"/>
+        <location filename="../subtitle_controller.py" line="1455"/>
         <source>Không tìm thấy tệp phụ đề: {name}</source>
         <translation>Subtitle file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1467"/>
+        <location filename="../subtitle_controller.py" line="1466"/>
         <source>Không đọc được tệp phụ đề &apos;{name}&apos;: {error}</source>
         <translation>Could not read subtitle file &apos;{name}&apos;: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1475"/>
+        <location filename="../subtitle_controller.py" line="1474"/>
         <source>Tệp &apos;{name}&apos; không có phụ đề nào đọc được. Hãy kiểm tra định dạng SubRip (.srt).</source>
         <translation>No readable cues in &apos;{name}&apos;. Check the SubRip (.srt) format.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1773"/>
+        <location filename="../subtitle_controller.py" line="1772"/>
         <source>Không thể mở tệp ghi phụ đề: {error}</source>
         <translation>Could not open the subtitle output file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1711"/>
-        <location filename="../subtitle_controller.py" line="1827"/>
-        <location filename="../subtitle_controller.py" line="1842"/>
-        <location filename="../subtitle_controller.py" line="1871"/>
+        <location filename="../subtitle_controller.py" line="1710"/>
+        <location filename="../subtitle_controller.py" line="1826"/>
+        <location filename="../subtitle_controller.py" line="1841"/>
+        <location filename="../subtitle_controller.py" line="1870"/>
         <source>Không thể tạo tác vụ tổng hợp.</source>
         <translation>Could not create a synthesis job.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="491"/>
+        <location filename="../subtitle_controller.py" line="490"/>
         <source>{action} sẽ xóa bản lồng tiếng đã tạo và tệp phụ đề đã căn chỉnh. Tiếp tục?</source>
         <extracomment>Transcript mode&apos;s real default: preserve pauses but cap them (FR-1.5). Burn-in re-encodes and can take minutes; this carries ffmpeg&apos;s fraction so the card shows a real bar instead of a silent freeze. A render-destroying change is staged and needs a user decision. True once the user set the gap explicitly; until then transcript mode uses its real default instead of &quot;uncapped&quot; (FR-1.5).</extracomment>
         <translation>{action} will delete the rendered dub and the retimed subtitle file. Continue?</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="603"/>
+        <location filename="../subtitle_controller.py" line="602"/>
         <source>Bản lồng tiếng và phụ đề đã căn chỉnh không còn khớp với thay đổi ({reason}). Hãy tạo lại để xuất.</source>
         <translation>The dub and retimed subtitles no longer match the change ({reason}). Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="607"/>
+        <location filename="../subtitle_controller.py" line="606"/>
         <source>Bản lồng tiếng đã lưu không khớp với cấu hình hiện tại. Hãy tạo lại để xuất.</source>
         <translation>The saved dub does not match the current settings. Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="612"/>
+        <location filename="../subtitle_controller.py" line="611"/>
         <source>đổi chế độ</source>
         <translation>mode change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="613"/>
+        <location filename="../subtitle_controller.py" line="612"/>
         <source>đổi mức nén</source>
         <translation>compression change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="614"/>
+        <location filename="../subtitle_controller.py" line="613"/>
         <source>đổi giới hạn khoảng lặng</source>
         <translation>pause-cap change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="615"/>
+        <location filename="../subtitle_controller.py" line="614"/>
         <source>đổi độ lệch</source>
         <translation>offset change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="616"/>
+        <location filename="../subtitle_controller.py" line="615"/>
         <source>đổi cách gộp câu</source>
         <translation>sentence-merge change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="617"/>
+        <location filename="../subtitle_controller.py" line="616"/>
         <source>đổi giọng đọc</source>
         <translation>voice change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="618"/>
+        <location filename="../subtitle_controller.py" line="617"/>
         <source>sửa phụ đề</source>
         <translation>cue edit</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="619"/>
+        <location filename="../subtitle_controller.py" line="618"/>
         <source>phân tách người nói</source>
         <translation>speaker diarization</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="620"/>
+        <location filename="../subtitle_controller.py" line="619"/>
         <source>tinh chỉnh bằng AI</source>
         <translation>AI refinement</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="621"/>
+        <location filename="../subtitle_controller.py" line="620"/>
         <source>nhận diện lại phụ đề</source>
         <translation>subtitle re-recognition</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="638"/>
+        <location filename="../subtitle_controller.py" line="637"/>
         <source>Chưa có dự án phụ đề nào. Hãy nhập tệp để bắt đầu.</source>
         <translation>No subtitle project yet. Import a file to start.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="642"/>
+        <location filename="../subtitle_controller.py" line="641"/>
         <source>Chưa có bản lồng tiếng để xuất. Hãy tạo âm thanh trước.</source>
         <translation>No dub to export yet. Render the audio first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="834"/>
+        <location filename="../subtitle_controller.py" line="833"/>
         <source>Đổi chế độ khớp thời gian</source>
         <translation>Change the timing mode</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="853"/>
+        <location filename="../subtitle_controller.py" line="852"/>
         <source>Đổi mức nén</source>
         <translation>Change the compression cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="880"/>
+        <location filename="../subtitle_controller.py" line="879"/>
         <source>Đổi giới hạn khoảng lặng</source>
         <translation>Change the pause cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="903"/>
+        <location filename="../subtitle_controller.py" line="902"/>
         <source>Đổi độ lệch thời gian</source>
         <translation>Change the time offset</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="923"/>
+        <location filename="../subtitle_controller.py" line="922"/>
         <source>Đổi cách gộp câu</source>
         <translation>Change sentence merging</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="942"/>
+        <location filename="../subtitle_controller.py" line="941"/>
         <source>Đổi giọng đọc</source>
         <translation>Change the voice</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1487"/>
+        <location filename="../subtitle_controller.py" line="1486"/>
         <source>Không tìm thấy tệp video: {name}</source>
         <translation>Video file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1626"/>
+        <location filename="../subtitle_controller.py" line="1625"/>
         <source>Không mở được dự án phụ đề đã chọn.</source>
         <translation>Could not open the selected subtitle project.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1727"/>
+        <location filename="../subtitle_controller.py" line="1726"/>
         <source>Giọng đọc &apos;{voice}&apos; của &apos;{speaker}&apos; không hợp lệ.</source>
         <translation>Voice &apos;{voice}&apos; for &apos;{speaker}&apos; is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1809"/>
-        <location filename="../subtitle_controller.py" line="2414"/>
+        <location filename="../subtitle_controller.py" line="1808"/>
+        <location filename="../subtitle_controller.py" line="2413"/>
         <source>Đã hủy xuất.</source>
         <translation>Export cancelled.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1855"/>
+        <location filename="../subtitle_controller.py" line="1854"/>
         <source>Giọng đọc &apos;{voice}&apos; không hợp lệ cho hồ sơ hiện tại.</source>
         <translation>Voice &apos;{voice}&apos; is invalid for the current profile.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1868"/>
+        <location filename="../subtitle_controller.py" line="1867"/>
         <source>Không thể tạo tác vụ tổng hợp: {error}</source>
         <translation>Could not create a synthesis job: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1904"/>
-        <location filename="../subtitle_controller.py" line="1991"/>
+        <location filename="../subtitle_controller.py" line="1903"/>
+        <location filename="../subtitle_controller.py" line="1990"/>
         <source>Tổng hợp thất bại.</source>
         <translation>Synthesis failed.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1922"/>
-        <location filename="../subtitle_controller.py" line="1955"/>
+        <location filename="../subtitle_controller.py" line="1921"/>
+        <location filename="../subtitle_controller.py" line="1954"/>
         <source>Tệp âm thanh vừa tạo không hợp lệ.</source>
         <translation>The generated audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1961"/>
+        <location filename="../subtitle_controller.py" line="1960"/>
         <source>Không đọc được âm thanh vừa tạo: {error}</source>
         <translation>Could not read the rendered audio: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1965"/>
+        <location filename="../subtitle_controller.py" line="1964"/>
         <source>Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).</source>
         <translation>The rendered audio has an unsupported sample rate ({rate} Hz).</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1976"/>
+        <location filename="../subtitle_controller.py" line="1975"/>
         <source>Không ghép được âm thanh vào phụ đề: {error}</source>
         <translation>Could not fit audio to subtitles: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2039"/>
+        <location filename="../subtitle_controller.py" line="2038"/>
         <source>Không thể hoàn tất tệp phụ đề âm thanh: {error}</source>
         <translation>Could not finalize the subtitle audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2116"/>
+        <location filename="../subtitle_controller.py" line="2115"/>
         <source>Chưa có bản âm thanh — đang tạo trước khi phát.</source>
         <translation>No audio yet — generating it before playback.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2130"/>
+        <location filename="../subtitle_controller.py" line="2129"/>
         <source>Chưa có tệp âm thanh để phát.</source>
         <translation>Nothing to play yet — generate it first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2137"/>
+        <location filename="../subtitle_controller.py" line="2136"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2199"/>
+        <location filename="../subtitle_controller.py" line="2198"/>
         <source>Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề.</source>
         <translation>No audio yet — generate audio before seeking through subtitles.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2279"/>
+        <location filename="../subtitle_controller.py" line="2278"/>
         <source>Chưa có tệp âm thanh để xuất.</source>
         <translation>There is no audio file to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2322"/>
+        <location filename="../subtitle_controller.py" line="2321"/>
         <source>Chưa có phụ đề đã chỉnh để xuất.</source>
         <translation>There are no retimed subtitles to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2363"/>
+        <location filename="../subtitle_controller.py" line="2362"/>
         <source>Chưa có tệp âm thanh để ghép video.</source>
         <translation>There is no audio file to mux into the video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2301"/>
+        <location filename="../subtitle_controller.py" line="2300"/>
         <source>Không thể xuất tệp âm thanh: {error}</source>
         <translation>Could not export the audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2345"/>
+        <location filename="../subtitle_controller.py" line="2344"/>
         <source>Không thể xuất tệp phụ đề: {error}</source>
         <translation>Could not export the subtitle file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2368"/>
+        <location filename="../subtitle_controller.py" line="2367"/>
         <source>Chưa chọn tệp video nguồn hợp lệ để ghép.</source>
         <translation>No valid source video file selected for muxing.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2447"/>
+        <location filename="../subtitle_controller.py" line="2446"/>
         <source>Không thể xuất video lồng tiếng: {error}</source>
         <translation>Could not export dubbed video: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2580"/>
-        <location filename="../subtitle_controller.py" line="2599"/>
+        <location filename="../subtitle_controller.py" line="2579"/>
+        <location filename="../subtitle_controller.py" line="2598"/>
         <source>Chưa có tệp video để nhận diện phụ đề.</source>
         <translation>No video file selected for subtitle transcription.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2583"/>
-        <location filename="../subtitle_controller.py" line="2699"/>
-        <location filename="../subtitle_controller.py" line="2954"/>
+        <location filename="../subtitle_controller.py" line="2582"/>
+        <location filename="../subtitle_controller.py" line="2698"/>
+        <location filename="../subtitle_controller.py" line="2953"/>
         <source>Đang bận — hãy chờ tác vụ hiện tại hoàn tất.</source>
         <translation>Busy — wait for the current task to finish.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2590"/>
+        <location filename="../subtitle_controller.py" line="2589"/>
         <source>Nhận diện lại phụ đề</source>
         <translation>Re-recognize subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2608"/>
-        <location filename="../subtitle_controller.py" line="2617"/>
+        <location filename="../subtitle_controller.py" line="2607"/>
+        <location filename="../subtitle_controller.py" line="2616"/>
         <source>Đang nhận diện giọng nói (ASR)…</source>
         <translation>Transcribing speech (ASR)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2624"/>
-        <location filename="../subtitle_controller.py" line="2726"/>
-        <location filename="../subtitle_controller.py" line="2731"/>
+        <location filename="../subtitle_controller.py" line="2623"/>
+        <location filename="../subtitle_controller.py" line="2725"/>
+        <location filename="../subtitle_controller.py" line="2730"/>
         <source>Đang phân tách người nói…</source>
         <translation>Diarizing speakers…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2653"/>
+        <location filename="../subtitle_controller.py" line="2652"/>
         <source>Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên.</source>
         <translation>Speaker diarization cancelled; the subtitles were kept.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2658"/>
+        <location filename="../subtitle_controller.py" line="2657"/>
         <source>Không phân tách được người nói: {error}</source>
         <translation>Could not separate speakers: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2671"/>
+        <location filename="../subtitle_controller.py" line="2670"/>
         <source>Không nhận diện được phụ đề nào trong video này.</source>
         <translation>No subtitles were recognized in this video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2703"/>
-        <location filename="../subtitle_controller.py" line="2717"/>
+        <location filename="../subtitle_controller.py" line="2702"/>
+        <location filename="../subtitle_controller.py" line="2716"/>
         <source>Cần đính kèm tệp video gốc trước khi phân tách người nói.</source>
         <translation>An original video file must be attached before running speaker diarization.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2707"/>
+        <location filename="../subtitle_controller.py" line="2706"/>
         <source>Phân tách người nói</source>
         <translation>Separate speakers</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2805"/>
+        <location filename="../subtitle_controller.py" line="2804"/>
         <source>Nội dung phụ đề không được để trống.</source>
         <translation>Subtitle text cannot be empty.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2816"/>
+        <location filename="../subtitle_controller.py" line="2815"/>
         <source>Sửa phụ đề</source>
         <translation>Edit subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2826"/>
+        <location filename="../subtitle_controller.py" line="2825"/>
         <source>Cần video nguồn để nghe mẫu giọng của người nói.</source>
         <translation>A source video is required to play a speaker voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2872"/>
+        <location filename="../subtitle_controller.py" line="2871"/>
         <source>Cần video nguồn và phân tách người nói để lấy mẫu giọng.</source>
         <translation>Source video and speaker diarization are required to extract a voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2876"/>
+        <location filename="../subtitle_controller.py" line="2875"/>
         <source>Hồ sơ mô hình hiện tại không hỗ trợ nhân bản giọng nói từ video.</source>
         <translation>The current model profile does not support voice cloning from video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2882"/>
+        <location filename="../subtitle_controller.py" line="2881"/>
         <source>Vui lòng xác nhận cam kết sử dụng giọng nhân bản trong thẻ Nhân bản giọng trước khi lấy mẫu.</source>
         <translation>Please accept the voice cloning consent in the Voices tab before extracting a sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2896"/>
+        <location filename="../subtitle_controller.py" line="2895"/>
         <source>Đang trích xuất mẫu giọng {spk}…</source>
         <translation>Extracting voice sample for {spk}…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2959"/>
+        <location filename="../subtitle_controller.py" line="2958"/>
         <source>Tinh chỉnh phụ đề bằng AI</source>
         <translation>Refine subtitles with AI</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2983"/>
+        <location filename="../subtitle_controller.py" line="2982"/>
         <source>Đang làm sạch phụ đề &amp; người nói (LLM)…</source>
         <translation>Cleaning subtitles &amp; speakers (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2984"/>
+        <location filename="../subtitle_controller.py" line="2983"/>
         <source>Đang rút gọn phụ đề khớp thời gian (LLM)…</source>
         <translation>Shortening subtitles to fit timing (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2985"/>
+        <location filename="../subtitle_controller.py" line="2984"/>
         <source>Đang dịch phụ đề khớp thời gian (LLM)…</source>
         <translation>Translating subtitles to fit timing (LLM)…</translation>
     </message>
@@ -5439,37 +5439,37 @@
 <context>
     <name>SubtitleCueEditor</name>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="25"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="26"/>
         <source>Danh sách phụ đề</source>
         <translation>Subtitle cue list</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="136"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="137"/>
         <source>Dài</source>
         <translation>Long</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="161"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="162"/>
         <source>Chỉnh sửa lời thoại phụ đề</source>
         <translation>Edit subtitle line</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="179"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="180"/>
         <source>Lời thoại phụ đề</source>
         <translation>Subtitle cue text</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="193"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="194"/>
         <source>Người nói của phụ đề</source>
         <translation>Subtitle cue speaker</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="195"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="196"/>
         <source>Người nói</source>
         <translation>Speaker</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCueEditor.qml" line="202"/>
+        <location filename="../qml/components/SubtitleCueEditor.qml" line="203"/>
         <source>Lưu</source>
         <translation>Save</translation>
     </message>

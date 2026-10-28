@@ -32,7 +32,11 @@ from typing import Any
 
 import numpy as np
 
-from vienetts_app.core.ai_models import resolve_audiocpp_cli, resolve_diarization_model_path
+from vienetts_app.core.ai_models import (
+    cli_command,
+    resolve_audiocpp_cli,
+    resolve_diarization_model_path,
+)
 from vienetts_app.core.audio import read_wav_range, write_wav_file
 from vienetts_app.core.subtitles import Cue
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
@@ -845,8 +849,8 @@ def _run_nemotron_gguf_diarization(
         work_dir.mkdir(parents=True, exist_ok=True)
         turns_out = work_dir / f".nemotron_turns_{uuid.uuid4().hex}.json"
 
-    cmd = [
-        str(cli),
+    cmd = cli_command(
+        cli,
         "--task",
         "diar",
         "--family",
@@ -861,7 +865,7 @@ def _run_nemotron_gguf_diarization(
         str(wav_path),
         "--turns-out",
         str(turns_out),
-    ]
+    )
     use_f32 = backend_dev == "cpu" or (backend_dev == "best" and _runtime_is_cpu_only(data_dir))
     if use_f32:
         # Verified upstream: forcing f32 on CPU is ~2x faster than the native

@@ -18,6 +18,7 @@ ListView {
 
     objectName: "subtitleCueList"
     visible: root.shown
+    implicitHeight: 220
     clip: true
     focus: true
     activeFocusOnTab: true

@@ -238,7 +238,7 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
         "  esac\n"
         "  shift\n"
         "done\n"
-        f'echo "$wav" >> "{seen_wav_log}"\n'
+        f'echo "$wav" >> "{seen_wav_log.as_posix()}"\n'
         'printf "1\\n00:00:00,000 --> 00:00:01,000\\n"'
         '"Xin chào từ whisper-cli.\\n\\n" > "${of}.srt"\n'
         "exit 0\n",
@@ -522,7 +522,7 @@ def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
     args_log = tmp_path / "args.txt"
     cli_path.write_text(
         "#!/bin/sh\n"
-        f'echo "$@" > "{args_log}"\n'
+        f'echo "$@" > "{args_log.as_posix()}"\n'
         'of=""\n'
         "while [ $# -gt 0 ]; do\n"
         '  if [ "$1" = "-of" ]; then shift; of="$1"; fi\n'
@@ -557,7 +557,7 @@ def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
     assert any(0.5 < p < 0.96 for p in progress)
 
     # Timeout kills hung process
-    cli_path.write_text("#!/bin/sh\nsleep 5\nexit 0\n", encoding="utf-8")
+    cli_path.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n", encoding="utf-8")
     cli_path.chmod(0o755)
     with pytest.raises(AsrError, match="quá thời gian chờ"):
         transcribe_media_to_cues(

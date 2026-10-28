@@ -384,7 +384,7 @@ AppCard {
                 aiBusy: root.aiBusy
                 exporting: root.exporting
                 disabledReason: root.busyReason()
-                Layout.row: root.twoColWorkspace ? 0 : 1
+                Layout.row: (root.twoColWorkspace || !root.hasVideo) ? 0 : 1
                 Layout.column: 0
                 Layout.rowSpan: root.twoColWorkspace ? (root.stage === "produce" ? 3 : 1) : 1
                 Layout.fillWidth: true

@@ -300,8 +300,13 @@ def test_broken_runtime_archive_keeps_previous_install(tmp_path: Path) -> None:
 
 def test_runtime_variants_for_platform() -> None:
     variants = available_audiocpp_variants()
-    assert "cpu" in variants
-    assert variants["cpu"].filename.startswith("audio-")
+    if sys.platform == "darwin":
+        assert "metal" in variants
+        assert variants["metal"].filename.startswith("audio-")
+        assert resolve_audiocpp_variant("auto").id == "metal"
+    else:
+        assert "cpu" in variants
+        assert variants["cpu"].filename.startswith("audio-")
     if sys.platform.startswith("linux"):
         assert "vulkan" in variants
         assert "vulkan" in variants["vulkan"].filename

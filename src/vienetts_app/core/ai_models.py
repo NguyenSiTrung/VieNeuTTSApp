@@ -431,16 +431,12 @@ def audiocpp_runtime_dir(data_dir: Path) -> Path:
 
 
 def resolve_audiocpp_cli(data_dir: Path | None = None) -> Path | None:
-    exe = "audiocpp_cli.exe" if os.name == "nt" else "audiocpp_cli"
     if data_dir is not None:
         rt_dir = audiocpp_runtime_dir(data_dir)
-        for cand in (rt_dir / "bin" / exe, rt_dir / exe):
-            if cand.is_file():
-                return cand
         if rt_dir.is_dir():
-            for found in rt_dir.rglob(exe):
-                if found.is_file():
-                    return found
+            found = _locate_cli(rt_dir)
+            if found is not None:
+                return found
     on_path = shutil.which("audiocpp_cli")
     return Path(on_path) if on_path else None
 
@@ -559,11 +555,30 @@ def _extract_archive(archive_path: Path, destination: Path) -> None:
 
 
 def _locate_cli(root: Path) -> Path | None:
-    exe = "audiocpp_cli.exe" if os.name == "nt" else "audiocpp_cli"
-    for cand in (root / "bin" / exe, root / exe):
-        if cand.is_file():
-            return cand
-    return next((p for p in root.rglob(exe) if p.is_file()), None)
+    names = ("audiocpp_cli.exe", "audiocpp_cli") if os.name == "nt" else ("audiocpp_cli",)
+    for exe in names:
+        for cand in (root / "bin" / exe, root / exe):
+            if cand.is_file():
+                return cand
+    for exe in names:
+        found = next((p for p in root.rglob(exe) if p.is_file()), None)
+        if found is not None:
+            return found
+    return None
+
+
+def cli_command(cli: Path, *args: str) -> list[str]:
+    """Build the argv for ``cli``, handling shebang test stubs on Windows."""
+    if os.name == "nt":
+        with contextlib.suppress(OSError):
+            with cli.open("rb") as fh:
+                first_line = fh.readline(256)
+            if first_line.startswith(b"#!"):
+                if b"python" in first_line.lower():
+                    return [sys.executable, str(cli), *args]
+                sh_bin = shutil.which("sh") or shutil.which("bash") or "sh"
+                return [sh_bin, str(cli), *args]
+    return [str(cli), *args]
 
 
 def _probe_runtime(cli: Path, runtime_label: str = "audio.cpp") -> None:
@@ -576,7 +591,7 @@ def _probe_runtime(cli: Path, runtime_label: str = "audio.cpp") -> None:
     """
     try:
         proc = subprocess.run(
-            [str(cli), "--help"],
+            cli_command(cli, "--help"),
             cwd=str(cli.parent),
             capture_output=True,
             timeout=30,
@@ -672,7 +687,11 @@ def whisper_runtime_dir(data_dir: Path) -> Path:
 
 
 def _locate_whisper_cli(root: Path) -> Path | None:
-    names = ("whisper-cli.exe", "main.exe") if os.name == "nt" else ("whisper-cli", "whisper-cpp")
+    names = (
+        ("whisper-cli.exe", "main.exe", "whisper-cli", "whisper-cpp")
+        if os.name == "nt"
+        else ("whisper-cli", "whisper-cpp")
+    )
     for name in names:
         for cand in (root / "bin" / name, root / "Release" / name, root / name):
             if cand.is_file():
@@ -691,7 +710,11 @@ def resolve_whisper_cpp_cli(data_dir: Path | None = None) -> Path | None:
             found = _locate_whisper_cli(rt_dir)
             if found is not None:
                 return found
-    names = ("whisper-cli.exe", "main.exe") if os.name == "nt" else ("whisper-cli", "whisper-cpp")
+    names = (
+        ("whisper-cli.exe", "main.exe", "whisper-cli", "whisper-cpp")
+        if os.name == "nt"
+        else ("whisper-cli", "whisper-cpp")
+    )
     for name in names:
         on_path = shutil.which(name)
         if on_path:

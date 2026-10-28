@@ -516,14 +516,23 @@ DRIVER = textwrap.dedent(
                 "2\\n00:00:02,000 --> 00:00:03,000\\nCâu phụ đề thứ hai\\n\\n",
                 encoding="utf-8",
             )
+            from PySide6.QtTest import QTest
+
             imported_ok = bool(sub_ctrl.importSrt(str(srt_file)))
             bridge.setCurrentTab("subtitles")
+            window.grabWindow()
             settle()
             sub_tab = window.findChildren(QObject, "subtitlesTab")[0]
-            sub_walk = walk(sub_tab)
             sub_card = window.findChildren(QObject, "subtitleCard")[0]
             cue_list = window.findChildren(QObject, "subtitleCueList")[0]
-            cue_rows = [i for i in sub_walk if i.objectName() == "subtitleCueRow"]
+            cue_rows = []
+            for _ in range(30):
+                sub_walk = walk(sub_tab)
+                cue_rows = [i for i in sub_walk if i.objectName() == "subtitleCueRow"]
+                if len(cue_rows) >= 2:
+                    break
+                window.grabWindow()
+                QTest.qWait(20)
             cue_texts = [
                 str(i.property("text"))
                 for row in cue_rows

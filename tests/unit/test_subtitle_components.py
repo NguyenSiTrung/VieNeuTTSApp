@@ -44,6 +44,7 @@ _DRIVER = textwrap.dedent(
     """
     import json
     import sys
+    from pathlib import Path
 
     from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Signal, Slot
     from PySide6.QtGui import QGuiApplication
@@ -334,7 +335,7 @@ _DRIVER = textwrap.dedent(
 
     results = {}
     for path in files:
-        name = path.rsplit("/", 1)[-1]
+        name = Path(path).name
         component = QQmlComponent(engine, QUrl.fromLocalFile(path))
         item = component.create()
         created = item is not None

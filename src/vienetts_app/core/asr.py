@@ -27,7 +27,11 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
+from vienetts_app.core.ai_models import (
+    cli_command,
+    resolve_asr_model_path,
+    resolve_whisper_cpp_cli,
+)
 from vienetts_app.core.audio import StreamingWavWriter, read_wav_range, write_wav_file
 from vienetts_app.core.diarization import refine_cues_speech_bounds
 from vienetts_app.core.llm_client import http_error_detail
@@ -598,8 +602,8 @@ def _run_whisper_cpp(
     srt_out = Path(f"{out_prefix}.srt")
     lang = "auto" if not config.language else config.language
     threads = _resolve_threads(config)
-    cmd = [
-        str(binary),
+    cmd = cli_command(
+        binary,
         "-m",
         str(model_path),
         "-f",
@@ -613,7 +617,7 @@ def _run_whisper_cpp(
         "-osrt",
         "-of",
         str(out_prefix),
-    ]
+    )
     if (config.device or "auto").strip().lower() == "cpu":
         cmd.append("-ng")
 

@@ -130,7 +130,7 @@ def test_missing_turns_file_means_no_speech_not_failure(tmp_path: Path) -> None:
 
 
 def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:
-    _install_fake_cli(tmp_path, "#!/bin/sh\nsleep 30\n")
+    _install_fake_cli(tmp_path, "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
     wav = write_wav_file(
         np.zeros(16_000 * 2, dtype=np.float32), tmp_path / "hang.wav", sample_rate=16_000
     )
@@ -180,7 +180,7 @@ def test_48k_wav_is_downmixed_to_16k_before_the_model(tmp_path: Path) -> None:
 def test_turns_are_cached_across_runs(tmp_path: Path) -> None:
     counter = tmp_path / "calls.txt"
     script = _turns_writer(TURNS_TWO_SPEAKERS).replace(
-        "#!/bin/sh\n", f"#!/bin/sh\necho x >> '{counter}'\n"
+        "#!/bin/sh\n", f"#!/bin/sh\necho x >> '{counter.as_posix()}'\n"
     )
     _install_fake_cli(tmp_path, script)
     wav = write_wav_file(
@@ -227,7 +227,7 @@ def test_labels_are_remapped_to_previous_run() -> None:
 
 
 def _arg_logger(path: Path, turns: str) -> str:
-    head = "#!/bin/sh\n" + 'printf \'%s\\n\' "$@" > "' + str(path) + '"\n'
+    head = "#!/bin/sh\n" + 'printf \'%s\\n\' "$@" > "' + path.as_posix() + '"\n'
     return head + _turns_writer(turns).split("#!/bin/sh\n", 1)[1]
 
 

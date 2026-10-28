@@ -14,17 +14,20 @@ import contextlib
 import json
 import math
 import os
+import platform
 import re
 import tempfile
+import threading
+import time
 import unicodedata
 import uuid
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import numpy as np
 
@@ -44,8 +47,8 @@ from vienetts_app.core.audio_prep import (
     ensure_source_16k,
 )
 from vienetts_app.core.diarization import refine_cues_speech_bounds
-from vienetts_app.core.llm_client import http_error_detail
-from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
+from vienetts_app.core.llm_client import RequestCancelled, cancellable_request, http_error_detail
+from vienetts_app.core.processes import CliCancelled, CliTimeout, find_executable, run_cli
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
@@ -64,7 +67,14 @@ ASR_CACHE_FILENAME = "asr_segments_cache.json"
 # Bumped whenever the backends' output changes (2: whisper.cpp ``-mc 0``/VAD/JSON-full
 # words), so a segments cache written by an older version re-runs instead of being reused.
 ASR_VERSION = 2
+# One loaded faster-whisper model, reused across runs and released once idle for
+# FASTER_WHISPER_IDLE_S (see release_idle_asr_models) or by release_asr_models().
 _FASTER_WHISPER_CACHE: dict[tuple[Any, str, str, str, int], Any] = {}
+FASTER_WHISPER_IDLE_S = 600.0
+_clock: Callable[[], float] = time.monotonic
+_fw_lock = threading.Lock()
+_fw_active = 0  # runs currently using the cached model
+_fw_last_used = 0.0  # _clock() when the last run started or ended
 
 
 class AsrError(RuntimeError):
@@ -94,7 +104,7 @@ class AsrConfig:
     api_base_url: str = ""
     api_key: str = ""
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "metal"
-    threads: int = 0  # 0 = automatic (min(16, os.cpu_count() or 4))
+    threads: int = 0  # 0 = automatic (default_asr_threads())
     timeout_s: float = 0.0  # 0 = derive from audio duration
     api_model: str = ""
     # Auto mode uploads to ``api_base_url`` only when this is set and no local backend
@@ -686,10 +696,84 @@ def _energy_speech_check(wav_path: Path, threshold_db: float = -42.0) -> Callabl
     return has_speech
 
 
+def _sysctl(name: str) -> str | None:
+    """``sysctl -n name`` (macOS), or None when it cannot be read."""
+    binary = find_executable("sysctl", well_known_dirs=("/usr/sbin", "/sbin", "/usr/bin"))
+    if binary is None:
+        return None
+    try:
+        res = run_cli([str(binary), "-n", name], timeout=5.0)
+    except (OSError, CliTimeout):
+        return None
+    return res.stdout if res.returncode == 0 else None
+
+
+def default_asr_threads(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    sysctl: Callable[[str], str | None] = _sysctl,
+    cpu_count: Callable[[], int | None] = os.cpu_count,
+) -> int:
+    """Automatic ASR thread count, capped at 8.
+
+    Apple Silicon: its performance-core count (``hw.perflevel0.physicalcpu``),
+    since work spread onto efficiency cores finishes later. Elsewhere, or when
+    sysctl cannot be read: half the logical CPUs (SMT siblings add little).
+    """
+    system = platform.system() if system is None else system
+    machine = platform.machine() if machine is None else machine
+    if system == "Darwin" and machine.lower() in ("arm64", "aarch64"):
+        try:
+            perf_cores = int(str(sysctl("hw.perflevel0.physicalcpu") or "").strip())
+        except ValueError:
+            perf_cores = 0
+        if perf_cores > 0:
+            return min(8, perf_cores)
+    return max(1, min(8, int(cpu_count() or 2) // 2))
+
+
 def _resolve_threads(config: AsrConfig) -> int:
     if int(config.threads) > 0:
         return max(1, min(64, int(config.threads)))
-    return max(1, min(16, int(os.cpu_count() or 4)))
+    return default_asr_threads()
+
+
+def release_asr_models() -> None:
+    """Drop the cached faster-whisper model (app shutdown, memory pressure).
+
+    A run still using it keeps its own reference until it finishes.
+    """
+    with _fw_lock:
+        _FASTER_WHISPER_CACHE.clear()
+
+
+def release_idle_asr_models(*, idle_s: float = FASTER_WHISPER_IDLE_S) -> bool:
+    """Release the cached faster-whisper model once no run has used it for ``idle_s``.
+
+    Polled — at the start of every transcription and from the app's periodic
+    tick — rather than by a timer thread. Returns True when a model was released.
+    """
+    with _fw_lock:
+        if not _FASTER_WHISPER_CACHE or _fw_active or _clock() - _fw_last_used < idle_s:
+            return False
+        _FASTER_WHISPER_CACHE.clear()
+        return True
+
+
+@contextlib.contextmanager
+def _faster_whisper_in_use() -> Iterator[None]:
+    """Mark the cached model busy, so the idle release never fires mid-run."""
+    global _fw_active, _fw_last_used
+    with _fw_lock:
+        _fw_active += 1
+        _fw_last_used = _clock()
+    try:
+        yield
+    finally:
+        with _fw_lock:
+            _fw_active -= 1
+            _fw_last_used = _clock()
 
 
 def _wav_duration_s(wav_path: Path) -> float:
@@ -731,62 +815,90 @@ def _run_faster_whisper(
         progress_cb(0.1, f"Đang tải mô hình Whisper ({model_name})…")
 
     try:
-        cache_key = (faster_whisper.WhisperModel, model_name, fw_device, compute_type, threads)
-        model = _FASTER_WHISPER_CACHE.get(cache_key)
-        if model is None:
-            _FASTER_WHISPER_CACHE.clear()
-            model = faster_whisper.WhisperModel(
-                model_name,
-                device=fw_device,
+        with _faster_whisper_in_use():
+            return _transcribe_faster_whisper(
+                faster_whisper,
+                wav_path,
+                model_name=model_name,
+                lang=lang,
+                fw_device=fw_device,
                 compute_type=compute_type,
-                cpu_threads=threads,
+                threads=threads,
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
+                report=report,
             )
-            _FASTER_WHISPER_CACHE[cache_key] = model
-        segments_iter, info = model.transcribe(
-            str(wav_path),
-            language=lang,
-            vad_filter=True,
-            condition_on_previous_text=False,
-            word_timestamps=True,
-        )
-        total_s = float(getattr(info, "duration", 0.0) or 0.0)
-        if report is not None:
-            report.set_language(getattr(info, "language", None))
-        raw_segments: list[RawSegment] = []
-        for seg in segments_iter:
-            if cancel_check is not None and cancel_check():
-                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
-            start_s = float(getattr(seg, "start", 0.0) or 0.0)
-            end_s = float(getattr(seg, "end", start_s + 0.5) or (start_s + 0.5))
-            txt = str(getattr(seg, "text", "") or "").strip()
-            if txt:
-                seg_start_ms = int(round(start_s * 1000))
-                seg_end_ms = max(seg_start_ms + 1, int(round(end_s * 1000)))
-                seg_words = _extract_words(getattr(seg, "words", None), seg_start_ms, seg_end_ms)
-                sp_start, sp_end = _clamp_speech_bounds(
-                    seg_start_ms, seg_end_ms, None, None, seg_words
-                )
-                raw_segments.append(
-                    RawSegment(
-                        seg_start_ms,
-                        seg_end_ms,
-                        txt,
-                        words=seg_words,
-                        speech_start_ms=sp_start,
-                        speech_end_ms=sp_end,
-                        **{name: _opt_float(getattr(seg, name, None)) for name in _SCORE_FIELDS},
-                    )
-                )
-            if progress_cb is not None and total_s > 0:
-                progress_cb(
-                    min(0.95, 0.15 + 0.8 * (end_s / total_s)),
-                    "Đang nhận diện phụ đề (Whisper)…",
-                )
     except AsrError:
         raise
     except Exception as exc:
         raise AsrError(f"Lỗi khi chạy faster-whisper: {exc}") from exc
 
+
+def _transcribe_faster_whisper(
+    faster_whisper: Any,
+    wav_path: Path,
+    *,
+    model_name: str,
+    lang: str | None,
+    fw_device: str,
+    compute_type: str,
+    threads: int,
+    progress_cb: Callable[[float, str], None] | None,
+    cancel_check: Callable[[], bool] | None,
+    report: _RunReport | None,
+) -> list[RawSegment]:
+    cache_key = (faster_whisper.WhisperModel, model_name, fw_device, compute_type, threads)
+    with _fw_lock:
+        model = _FASTER_WHISPER_CACHE.get(cache_key)
+        if model is None:
+            _FASTER_WHISPER_CACHE.clear()  # free the previous model before loading another
+    if model is None:
+        model = faster_whisper.WhisperModel(
+            model_name,
+            device=fw_device,
+            compute_type=compute_type,
+            cpu_threads=threads,
+        )
+        with _fw_lock:
+            _FASTER_WHISPER_CACHE[cache_key] = model
+    segments_iter, info = model.transcribe(
+        str(wav_path),
+        language=lang,
+        vad_filter=True,
+        condition_on_previous_text=False,
+        word_timestamps=True,
+    )
+    total_s = float(getattr(info, "duration", 0.0) or 0.0)
+    if report is not None:
+        report.set_language(getattr(info, "language", None))
+    raw_segments: list[RawSegment] = []
+    for seg in segments_iter:
+        if cancel_check is not None and cancel_check():
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        start_s = float(getattr(seg, "start", 0.0) or 0.0)
+        end_s = float(getattr(seg, "end", start_s + 0.5) or (start_s + 0.5))
+        txt = str(getattr(seg, "text", "") or "").strip()
+        if txt:
+            seg_start_ms = int(round(start_s * 1000))
+            seg_end_ms = max(seg_start_ms + 1, int(round(end_s * 1000)))
+            seg_words = _extract_words(getattr(seg, "words", None), seg_start_ms, seg_end_ms)
+            sp_start, sp_end = _clamp_speech_bounds(seg_start_ms, seg_end_ms, None, None, seg_words)
+            raw_segments.append(
+                RawSegment(
+                    seg_start_ms,
+                    seg_end_ms,
+                    txt,
+                    words=seg_words,
+                    speech_start_ms=sp_start,
+                    speech_end_ms=sp_end,
+                    **{name: _opt_float(getattr(seg, name, None)) for name in _SCORE_FIELDS},
+                )
+            )
+        if progress_cb is not None and total_s > 0:
+            progress_cb(
+                min(0.95, 0.15 + 0.8 * (end_s / total_s)),
+                "Đang nhận diện phụ đề (Whisper)…",
+            )
     if progress_cb is not None:
         progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
     return raw_segments
@@ -1082,6 +1194,9 @@ def _upload_whisper_api(
 
     _add_field("model", model_name)
     _add_field("response_format", "verbose_json")
+    # OpenAI returns word timings only when asked; segments must be asked for too.
+    _add_field("timestamp_granularities[]", "word")
+    _add_field("timestamp_granularities[]", "segment")
     if config.language and config.language != "auto":
         _add_field("language", config.language)
     if prompt:
@@ -1113,9 +1228,10 @@ def _upload_whisper_api(
         if cancel_check is not None and cancel_check():
             raise AsrCancelled("Đã hủy nhận diện giọng nói.")
         try:
-            with urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                raw_resp = resp.read().decode("utf-8", errors="replace")
+            raw_bytes = cancellable_request(req, timeout=timeout, cancel_check=cancel_check)
             break
+        except RequestCancelled:
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.") from None
         except HTTPError as exc:
             message = f"Máy chủ ASR HTTP {exc.code} ({url}): {http_error_detail(exc)}"
             transient = exc.code in (408, 409, 429) or exc.code >= 500
@@ -1129,6 +1245,7 @@ def _upload_whisper_api(
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
 
+    raw_resp = raw_bytes.decode("utf-8", errors="replace")
     stripped = raw_resp.lstrip()
     is_json = stripped.startswith("{") or stripped.startswith("[")
     if not is_json and "-->" in raw_resp:
@@ -1588,6 +1705,7 @@ def transcribe_media_to_cues(
     notes: list[str] | None = None,
 ) -> list[Cue]:
     """Extract 16 kHz audio from ``media_path``, run Whisper ASR, and return normalized ``Cue``s."""
+    release_idle_asr_models()
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     cfg = config or AsrConfig()

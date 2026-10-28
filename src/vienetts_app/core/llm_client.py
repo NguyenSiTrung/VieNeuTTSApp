@@ -11,6 +11,52 @@ from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+CANCEL_POLL_S = 0.25
+
+
+class RequestCancelled(Exception):
+    """``cancel_check`` turned true while a request was in flight; its reply is discarded."""
+
+
+def cancellable_request(
+    request: Request,
+    *,
+    timeout: float,
+    cancel_check: Callable[[], bool] | None = None,
+    poll_s: float = CANCEL_POLL_S,
+) -> bytes:
+    """``urlopen(request).read()`` that a cancel abandons within ``poll_s``.
+
+    With a ``cancel_check`` the blocking request runs on a daemon thread that
+    is polled every ``poll_s``; when the check turns true this raises
+    :class:`RequestCancelled` at once and the thread's eventual reply (or
+    error) is dropped — the socket ``timeout`` still bounds that thread.
+    ``HTTPError``/``URLError``/``OSError`` propagate unchanged either way.
+    """
+    if cancel_check is None:
+        with urlopen(request, timeout=timeout) as resp:  # noqa: S310
+            return resp.read()
+    outcome: list[bytes | BaseException] = []
+    done = threading.Event()
+
+    def fetch() -> None:
+        try:
+            with urlopen(request, timeout=timeout) as resp:  # noqa: S310
+                outcome.append(resp.read())
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
+            outcome.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=fetch, name="cancellable-request", daemon=True).start()
+    while not done.wait(poll_s):
+        if cancel_check():
+            raise RequestCancelled
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
 
 class LlmRefineError(RuntimeError):
     """An LLM refinement request failed; message is user-actionable."""
@@ -135,8 +181,11 @@ def post_chat_completion(
         data = json.dumps(payload, ensure_ascii=False).encode()
         req = Request(url, data=data, headers=headers, method="POST")
         try:
-            with urlopen(req, timeout=max(1.0, float(config.timeout_s))) as resp:  # noqa: S310
-                raw = resp.read().decode("utf-8", errors="replace")
+            raw = cancellable_request(
+                req, timeout=max(1.0, float(config.timeout_s)), cancel_check=cancel_check
+            ).decode("utf-8", errors="replace")
+        except RequestCancelled:
+            raise LlmRefineError("Đã hủy tác vụ tinh chỉnh AI.", kind="cancelled") from None
         except HTTPError as exc:
             detail = http_error_detail(exc)
             lowered = detail.lower()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -16,11 +17,16 @@ from vienetts_app.core.llm_client import LlmConfig, LlmRefineError, post_chat_co
 def provider():
     responses: list[tuple[int, object, dict[str, str]]] = []
     requests: list[dict] = []
+    release = threading.Event()  # set in teardown, so a stalled reply never outlives the test
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             status, body, headers = responses.pop(0)
+            if isinstance(body, threading.Event):  # stall: signal arrival, hold the reply 5 s
+                body.set()
+                release.wait(5)
+                body = {}
             data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
             self.send_response(status)
             for name, value in headers.items():
@@ -43,6 +49,7 @@ def provider():
             ),
         )
     finally:
+        release.set()
         server.shutdown()
         server.server_close()
 
@@ -103,6 +110,17 @@ def test_retries_retry_after_and_cancellation(provider, monkeypatch) -> None:
     with pytest.raises(LlmRefineError) as caught:
         post_chat_completion(config, [], cancel_check=lambda: bool(sleeps))
     assert caught.value.kind == "cancelled"
+    # With a cancel_check the request runs on a worker thread; a normal reply is returned.
+    responses.append((200, success, {}))
+    assert post_chat_completion(config, [], cancel_check=lambda: False).content == "OK"
+    # A stalled provider is abandoned within one poll of the cancel, not at its 5 s reply.
+    arrived = threading.Event()
+    responses.append((200, arrived, {}))
+    started = time.monotonic()
+    with pytest.raises(LlmRefineError) as caught:
+        post_chat_completion(config, [], cancel_check=arrived.is_set)
+    assert caught.value.kind == "cancelled"
+    assert time.monotonic() - started < 1.0
 
 
 def test_capability_fallback_cache_and_envelope(provider) -> None:

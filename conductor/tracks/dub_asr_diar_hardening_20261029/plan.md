@@ -228,7 +228,7 @@ Test seams and fakes:
     - Add `AsrConfig.cloud_fallback`, `resolve_whisper_model`, the `AsrBackendMissing` typing, and the detected-language plumbing.
     - Change the default in `models.py`.
 
-- [~] **Task 4.4: Cancellable requests, API word timestamps, thread defaults, faster-whisper cache release (FR-3.5, FR-3.7)**
+- [x] **Task 4.4: Cancellable requests, API word timestamps, thread defaults, faster-whisper cache release (FR-3.5, FR-3.7)**
   <!-- files: src/vienetts_app/core/llm_client.py, src/vienetts_app/core/asr.py, tests/unit/test_llm_client.py, tests/unit/test_asr.py -->
   - Red tests:
     - **Cancel:** against a mock server that stalls 5 s, `post_chat_completion` and the ASR upload return `cancelled` within 1 s of `cancel_check` (event-driven).

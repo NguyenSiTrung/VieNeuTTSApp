@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import threading
+import time
 import types
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -227,6 +228,85 @@ def test_transcribe_with_faster_whisper_adapter(
     hit_notes: list[str] = []
     assert transcribe_media_to_cues(wav, cfg, work_dir=work_dir, notes=hit_notes) == cues
     assert hit_notes == notes
+
+
+def test_default_asr_threads_prefers_apple_performance_cores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+
+    def sysctl(name: str) -> str | None:
+        asked.append(name)
+        return "4\n"
+
+    def no_sysctl(name: str) -> str | None:
+        raise AssertionError("sysctl is only read on Apple Silicon")
+
+    def threads(system: str, machine: str, sysctl=no_sysctl, cpus: int | None = 10) -> int:
+        return asr.default_asr_threads(
+            system=system, machine=machine, sysctl=sysctl, cpu_count=lambda: cpus
+        )
+
+    # Apple Silicon: the performance-core count, capped at 8.
+    assert threads("Darwin", "arm64", sysctl) == 4
+    assert asked == ["hw.perflevel0.physicalcpu"]
+    assert threads("Darwin", "arm64", lambda _name: "12") == 8
+    # An unreadable sysctl, or any other host: half the logical CPUs, capped at 8.
+    assert threads("Darwin", "arm64", lambda _name: None) == 5
+    assert threads("Darwin", "arm64", lambda _name: "n/a") == 5
+    assert threads("Darwin", "x86_64") == 5
+    assert threads("Linux", "x86_64", cpus=32) == 8
+    assert threads("Windows", "AMD64", cpus=None) == 1
+    # threads=0 means automatic; an explicit count wins.
+    monkeypatch.setattr(asr, "default_asr_threads", lambda: 3)
+    assert asr._resolve_threads(AsrConfig()) == 3
+    assert asr._resolve_threads(AsrConfig(threads=6)) == 6
+
+
+def test_faster_whisper_model_released_after_idle_or_on_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [1_000.0]
+    monkeypatch.setattr(asr, "_clock", lambda: now[0])
+    monkeypatch.setattr(asr, "_FASTER_WHISPER_CACHE", {})
+    loads: list[str] = []
+    idle_release_mid_run: list[bool] = []
+
+    class _Seg:
+        start, end, text = 0.0, 1.0, "Xin chào"
+
+    class _Model:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            loads.append(model_size)
+
+        def transcribe(self, path: str, **kwargs: object):
+            now[0] += 3_600  # a long run is in use, never idle
+            idle_release_mid_run.append(asr.release_idle_asr_models())
+            return iter([_Seg()]), types.SimpleNamespace(duration=1.0, language="vi")
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = _Model  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "a.wav", 16_000)
+    cfg = AsrConfig(backend="faster_whisper", model="base", language="vi")
+
+    asr._run_faster_whisper(wav, cfg)
+    asr._run_faster_whisper(wav, cfg)
+    assert loads == ["base"] and idle_release_mid_run == [False, False]
+    now[0] += 599
+    assert not asr.release_idle_asr_models() and asr._FASTER_WHISPER_CACHE
+    now[0] += 1  # 10 min after the last run ended
+    assert asr.release_idle_asr_models() and not asr._FASTER_WHISPER_CACHE
+    asr._run_faster_whisper(wav, cfg)
+    assert loads == ["base", "base"]
+    asr.release_asr_models()
+    assert not asr._FASTER_WHISPER_CACHE
+    # Every transcription polls the idle release first (no timer thread is started).
+    asr._run_faster_whisper(wav, cfg)
+    now[0] += 600
+    with pytest.raises(AsrError):
+        transcribe_media_to_cues(tmp_path / "missing.wav", cfg)
+    assert not asr._FASTER_WHISPER_CACHE
 
 
 def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
@@ -686,25 +766,24 @@ def test_chunked_api_silence_offsets_retry_prompt_and_cleanup(
     assert chunks[0][1] == chunks[1][0] and chunks[1][1] == chunks[2][0]
     bodies: list[bytes] = []
     status = "retry"
+    release = threading.Event()  # set in teardown, so a stalled reply never outlives the test
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             body = self.rfile.read(int(self.headers["Content-Length"]))
             bodies.append(body)
+            if status == "stall":
+                release.wait(5)
             if status == "error" or (status == "retry" and len(bodies) == 2):
                 self.send_response(401 if status == "error" else 503)
                 self.end_headers()
                 self.wfile.write(b'{"error":{"message":"unavailable"}}')
                 return
+            # With timestamp_granularities[]=word, OpenAI returns the words at the top
+            # level, relative to the uploaded chunk.
             payload = {
-                "segments": [
-                    {
-                        "start": 0.1,
-                        "end": 0.7,
-                        "text": f"chunk{len(bodies)}",
-                        "words": [{"word": "hello", "start": 0.2, "end": 0.5}],
-                    }
-                ]
+                "segments": [{"start": 0.1, "end": 0.7, "text": f"chunk{len(bodies)}"}],
+                "words": [{"word": "hello", "start": 0.2, "end": 0.5}],
             }
             self.send_response(200)
             self.end_headers()
@@ -728,6 +807,8 @@ def test_chunked_api_silence_offsets_retry_prompt_and_cleanup(
         assert b'name="prompt"\r\n\r\nchunk1\r\n' in bodies[1]
         assert b'name="prompt"\r\n\r\nchunk3\r\n' in bodies[3]
         for body in bodies:
+            for granularity in (b"word", b"segment"):
+                assert b'name="timestamp_granularities[]"\r\n\r\n%s\r\n' % granularity in body
             audio = body.split(b"\r\n\r\nRIFF", 1)[1]
             info = sf.info(io.BytesIO(b"RIFF" + audio))
             assert info.subtype == "PCM_16" and info.duration <= 10
@@ -735,16 +816,21 @@ def test_chunked_api_silence_offsets_retry_prompt_and_cleanup(
         assert 600 * 16_000 * 2 < 25_000_000
         assert not list(tmp_path.glob("vieneu-asr-*"))
         bodies.clear()
-        status = "cancel"
-        with pytest.raises(AsrCancelled):
-            asr._run_openai_whisper_api(wav, config, cancel_check=lambda: len(bodies) >= 1)
-        assert len(bodies) == 1 and not list(tmp_path.glob("vieneu-asr-*"))
-        bodies.clear()
         status = "error"
         with pytest.raises(AsrError):
             asr._run_openai_whisper_api(wav, config)
         assert len(bodies) == 1 and not list(tmp_path.glob("vieneu-asr-*"))
+        # A server stalling its reply for 5 s: the in-flight upload is abandoned within
+        # one poll of the cancel, and the chunk files are still cleaned up.
+        bodies.clear()
+        status = "stall"
+        started = time.monotonic()
+        with pytest.raises(AsrCancelled):
+            asr._run_openai_whisper_api(wav, config, cancel_check=lambda: len(bodies) >= 1)
+        assert time.monotonic() - started < 1.0
+        assert len(bodies) == 1 and not list(tmp_path.glob("vieneu-asr-*"))
     finally:
+        release.set()
         server.shutdown()
         server.server_close()
 

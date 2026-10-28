@@ -501,10 +501,49 @@ def _teardown_qml(app: QGuiApplication, engine: QQmlApplicationEngine) -> None:
         if component is not None and hasattr(component, "shutdown"):
             with contextlib.suppress(Exception):
                 component.shutdown()
+    timer = getattr(engine, "_update_timer", None)
+    if timer is not None and hasattr(timer, "stop"):
+        with contextlib.suppress(Exception):
+            timer.stop()
+    translator = getattr(engine, "_translator", None)
+    if translator is not None:
+        with contextlib.suppress(Exception):
+            app.removeTranslator(translator)
+    retired = getattr(app, "_retired_qml_anchors", None)
+    if retired is None:
+        retired = []
+        app._retired_qml_anchors = retired  # noqa: SLF001 — keep context QObjects alive across rebuilds
+    for attr in (
+        "_bridge",
+        "_controller",
+        "_playback",
+        "_audiobook",
+        "_batch",
+        "_subtitle",
+        "_translator",
+        "_focus_clear_filter",
+    ):
+        obj = getattr(engine, attr, None)
+        if obj is not None:
+            retired.append(obj)
     for root in engine.rootObjects():
+        filt = getattr(root, "_focus_clear_filter", None)
+        if filt is not None:
+            with contextlib.suppress(Exception):
+                root.removeEventFilter(filt)
+            filt._win = None  # noqa: SLF001
+            root._focus_clear_filter = None  # noqa: SLF001
+        prebuild = getattr(root, "_tab_prebuild", None)
+        if prebuild is not None:
+            prebuild._win = None  # noqa: SLF001
+            root._tab_prebuild = None  # noqa: SLF001
+        with contextlib.suppress(Exception):
+            root.setProperty("prebuildTabs", False)
         root.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    app.processEvents()
+    for _ in range(3):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
     engine.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    app.processEvents()
+    for _ in range(3):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()

@@ -1126,15 +1126,20 @@ DRIVER = textwrap.dedent(
             out["system_dark_effective"] = bridge.effectiveTheme
             bridge.themePreference = "light"
             app.processEvents()
-            # "restart": fresh bridge + engine against the same settings dir
-            app2, engine2 = build()
-            bridge2 = engine2.rootContext().contextProperty("bridge")
-            out["persisted_pref"] = bridge2.themePreference
-            out["persisted_effective"] = bridge2.effectiveTheme
+            # "restart": tear down first instance before building fresh bridge + engine
             from vienetts_app.app import _teardown_qml
 
-            _teardown_qml(app2, engine2)
-            engine2 = None
+            _teardown_qml(app, engine)
+            window = None
+            engine = None
+            gc.collect()
+            app.processEvents()
+            app, engine = build()
+            window = engine.rootObjects()[0]
+            out["restart_tabs_ready"] = pump_until(lambda: bool(window.property("tabsReady")), 20.0)
+            bridge2 = engine.rootContext().contextProperty("bridge")
+            out["persisted_pref"] = bridge2.themePreference
+            out["persisted_effective"] = bridge2.effectiveTheme
         elif scenario == "modelsmissing":
             controller = engine.rootContext().contextProperty("controller")
             out["initial_missing"] = bool(controller.modelsMissing)
@@ -1661,7 +1666,13 @@ DRIVER = textwrap.dedent(
         gc.collect()
         app.processEvents()
 
-    print("RESULT:" + json.dumps(results))
+    faulthandler.cancel_dump_traceback_later()
+    print("RESULT:" + json.dumps(results), flush=True)
+    import os as _os
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _os._exit(0)
     """
 )
 

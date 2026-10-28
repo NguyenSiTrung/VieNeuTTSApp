@@ -228,20 +228,18 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     cli_path = bin_dir / cli_name
     seen_wav_log = tmp_path / "seen_wav.txt"
     cli_path.write_text(
-        "#!/bin/sh\n"
-        'wav=""\n'
-        'of=""\n'
-        "while [ $# -gt 0 ]; do\n"
-        '  case "$1" in\n'
-        '    -f) shift; wav="$1" ;;\n'
-        '    -of) shift; of="$1" ;;\n'
-        "  esac\n"
-        "  shift\n"
-        "done\n"
-        f'echo "$wav" >> "{seen_wav_log.as_posix()}"\n'
-        'printf "1\\n00:00:00,000 --> 00:00:01,000\\n"'
-        '"Xin chào từ whisper-cli.\\n\\n" > "${of}.srt"\n'
-        "exit 0\n",
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "wav = args[args.index('-f') + 1]\n"
+        "of = args[args.index('-of') + 1]\n"
+        f"with open({str(seen_wav_log.as_posix())!r}, 'a', encoding='utf-8') as fh:\n"
+        "    fh.write(wav + '\\n')\n"
+        "Path(of + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,000\\nXin chào từ whisper-cli.\\n\\n',\n"
+        "    encoding='utf-8',\n"
+        ")\n",
         encoding="utf-8",
     )
     cli_path.chmod(0o755)
@@ -327,7 +325,10 @@ def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
     bin_dir.mkdir(parents=True, exist_ok=True)
     cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
     cli_path = bin_dir / cli_name
-    cli_path.write_text("#!/bin/sh\necho 'GPU init error' >&2\nexit 2\n", encoding="utf-8")
+    cli_path.write_text(
+        "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('GPU init error\\n')\nsys.exit(2)\n",
+        encoding="utf-8",
+    )
     cli_path.chmod(0o755)
     model_dir = tmp_path / "models" / "whisper"
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -521,16 +522,18 @@ def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
     cli_path = bin_dir / cli_name
     args_log = tmp_path / "args.txt"
     cli_path.write_text(
-        "#!/bin/sh\n"
-        f'echo "$@" > "{args_log.as_posix()}"\n'
-        'of=""\n'
-        "while [ $# -gt 0 ]; do\n"
-        '  if [ "$1" = "-of" ]; then shift; of="$1"; fi\n'
-        "  shift\n"
-        "done\n"
-        'echo "whisper_print_progress_callback: progress =  50%" >&2\n'
-        'printf "1\\n00:00:00,000 --> 00:00:01,500\\nTiếng Việt có dấu.\\n\\n" > "${of}.srt"\n'
-        "exit 0\n",
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        f"Path({str(args_log.as_posix())!r}).write_text(' '.join(args), encoding='utf-8')\n"
+        "of = args[args.index('-of') + 1]\n"
+        "sys.stderr.write('whisper_print_progress_callback: progress =  50%\\n')\n"
+        "sys.stderr.flush()\n"
+        "Path(of + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,500\\nTiếng Việt có dấu.\\n\\n',\n"
+        "    encoding='utf-8',\n"
+        ")\n",
         encoding="utf-8",
     )
     cli_path.chmod(0o755)

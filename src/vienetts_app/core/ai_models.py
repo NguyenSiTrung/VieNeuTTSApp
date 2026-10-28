@@ -573,11 +573,9 @@ def cli_command(cli: Path, *args: str) -> list[str]:
         with contextlib.suppress(OSError):
             with cli.open("rb") as fh:
                 first_line = fh.readline(256)
-            if first_line.startswith(b"#!"):
-                if b"python" in first_line.lower():
-                    return [sys.executable, str(cli), *args]
-                sh_bin = shutil.which("sh") or shutil.which("bash") or "sh"
-                return [sh_bin, str(cli), *args]
+            if first_line.startswith(b"#!") and b"python" in first_line.lower():
+                py_exe = getattr(sys, "_base_executable", None) or sys.executable
+                return [py_exe, str(cli), *args]
     return [str(cli), *args]
 
 

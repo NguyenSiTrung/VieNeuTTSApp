@@ -71,7 +71,7 @@ def test_download_and_remove_asr_and_diarization_models(
     )
     tar_buf = io.BytesIO()
     with tarfile.open(fileobj=tar_buf, mode="w:gz") as tf:
-        bin_bytes = b"#!/bin/sh\necho audiocpp_cli\n"
+        bin_bytes = b"#!/usr/bin/env python3\nprint('audiocpp_cli')\n"
         info = tarfile.TarInfo(name="bin/audiocpp_cli")
         info.size = len(bin_bytes)
         info.mode = 0o755
@@ -277,8 +277,8 @@ def _runtime_tar(script: str) -> bytes:
 
 
 def test_broken_runtime_archive_keeps_previous_install(tmp_path: Path) -> None:
-    good = _runtime_tar("#!/bin/sh\necho audiocpp_cli\n")
-    broken = _runtime_tar("#!/bin/sh\nexit 2\n")
+    good = _runtime_tar("#!/usr/bin/env python3\nprint('audiocpp_cli')\n")
+    broken = _runtime_tar("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
     port, shutdown = _serve({"/good.tar.gz": good, "/broken.tar.gz": broken})
     try:
         old = download_audiocpp_runtime(
@@ -345,8 +345,15 @@ def test_whisper_cpp_runtime_download_probe_rollback_and_remove(
     monkeypatch.undo()
 
     # Script requires sibling.Marker in cwd (proving --help runs with cwd=cli.parent)
-    good = _whisper_runtime_tar("#!/bin/sh\ntest -f ./sibling.Marker && echo whisper-cli help\n")
-    broken = _whisper_runtime_tar("#!/bin/sh\nexit 2\n")
+    good = _whisper_runtime_tar(
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "if not Path('./sibling.Marker').is_file():\n"
+        "    sys.exit(1)\n"
+        "print('whisper-cli help')\n"
+    )
+    broken = _whisper_runtime_tar("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
     port, shutdown = _serve({"/whisper-good.tar.gz": good, "/whisper-broken.tar.gz": broken})
     try:
         assert is_whisper_cpp_installed(tmp_path) is False

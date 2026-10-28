@@ -62,16 +62,12 @@ def _install_fake_cli(tmp_path: Path, script: str, *, variant: str = "") -> Path
 
 def _turns_writer(turns: str) -> str:
     return (
-        "#!/bin/sh\n"
-        "while [ $# -gt 0 ]; do\n"
-        '  if [ "$1" = "--turns-out" ]; then\n'
-        "    shift\n"
-        f"    printf '%s' '{turns}' > \"$1\"\n"
-        "    exit 0\n"
-        "  fi\n"
-        "  shift\n"
-        "done\n"
-        "exit 1\n"
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "out = args[args.index('--turns-out') + 1]\n"
+        f"Path(out).write_text({turns!r}, encoding='utf-8')\n"
     )
 
 
@@ -113,7 +109,7 @@ def test_auto_never_swallows_cancellation(tmp_path: Path, mono16: Path) -> None:
 
 
 def test_missing_turns_file_means_no_speech_not_failure(tmp_path: Path) -> None:
-    _install_fake_cli(tmp_path, "#!/bin/sh\nexit 0\n")
+    _install_fake_cli(tmp_path, "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
     wav = write_wav_file(
         np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "silent.wav", sample_rate=16_000
     )
@@ -180,7 +176,10 @@ def test_48k_wav_is_downmixed_to_16k_before_the_model(tmp_path: Path) -> None:
 def test_turns_are_cached_across_runs(tmp_path: Path) -> None:
     counter = tmp_path / "calls.txt"
     script = _turns_writer(TURNS_TWO_SPEAKERS).replace(
-        "#!/bin/sh\n", f"#!/bin/sh\necho x >> '{counter.as_posix()}'\n"
+        "#!/usr/bin/env python3\n",
+        "#!/usr/bin/env python3\n"
+        f"with open({str(counter.as_posix())!r}, 'a', encoding='utf-8') as _fh:\n"
+        "    _fh.write('x\\n')\n",
     )
     _install_fake_cli(tmp_path, script)
     wav = write_wav_file(
@@ -227,8 +226,14 @@ def test_labels_are_remapped_to_previous_run() -> None:
 
 
 def _arg_logger(path: Path, turns: str) -> str:
-    head = "#!/bin/sh\n" + 'printf \'%s\\n\' "$@" > "' + path.as_posix() + '"\n'
-    return head + _turns_writer(turns).split("#!/bin/sh\n", 1)[1]
+    log_p = str(path.as_posix())
+    head = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({log_p!r}).write_text('\\n'.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n"
+    )
+    return head + _turns_writer(turns).split("#!/usr/bin/env python3\n", 1)[1]
 
 
 def test_cpu_only_runtime_forces_f32_even_on_auto(tmp_path: Path) -> None:

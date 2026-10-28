@@ -159,19 +159,18 @@ def test_nemotron_3_diarization_gguf_audiocpp_cpu_turns(tmp_path: Path) -> None:
     cli_name = "audiocpp_cli.exe" if os.name == "nt" else "audiocpp_cli"
     cli_path = bin_dir / cli_name
     cli_path.write_text(
-        "#!/bin/sh\n"
-        "while [ $# -gt 0 ]; do\n"
-        '  if [ "$1" = "--turns-out" ]; then\n'
-        "    shift\n"
-        '    printf \'[{"start_sample":0,"end_sample":32000,'
-        '"speaker_id":"speaker_0","confidence":1.0},'
-        '{"start_sample":35200,"end_sample":67200,'
-        '"speaker_id":"speaker_1","confidence":0.95}]\' > "$1"\n'
-        "    exit 0\n"
-        "  fi\n"
-        "  shift\n"
-        "done\n"
-        "exit 1\n",
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "out = args[args.index('--turns-out') + 1]\n"
+        "turns = [\n"
+        "    {'start_sample': 0, 'end_sample': 32000, "
+        "'speaker_id': 'speaker_0', 'confidence': 1.0},\n"
+        "    {'start_sample': 35200, 'end_sample': 67200, "
+        "'speaker_id': 'speaker_1', 'confidence': 0.95},\n"
+        "]\n"
+        "Path(out).write_text(json.dumps(turns), encoding='utf-8')\n",
         encoding="utf-8",
     )
     cli_path.chmod(0o755)

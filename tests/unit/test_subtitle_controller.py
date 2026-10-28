@@ -2139,3 +2139,110 @@ def test_video_speech_bounds_refinement_and_uniform_unit_render(env, tmp_path: P
     assert len(rates) == 2
     assert rates[0] > 1.0
     assert rates[0] == pytest.approx(rates[1])
+
+
+def test_video_preview_url_release_unrendered_seek_and_audio_exclusivity(
+    env, tmp_path: Path, monkeypatch
+) -> None:
+    from PySide6.QtCore import QUrl
+
+    controller, fake, player = env
+    releases: list[str] = []
+    video_seeks: list[int] = []
+    controller.videoReleaseRequested.connect(lambda: releases.append("released"))
+    controller.videoSeekRequested.connect(video_seeks.append)
+
+    # 1. No video initially -> videoUrl is empty; unrendered seekToCue refuses with hintText
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.hasVideo is False
+    assert controller.videoUrl == ""
+    controller.seekToCue(1)
+    assert "Chưa có bản âm thanh" in controller.hintText
+    assert controller.activeCue == -1
+    assert player.seeks == []
+    assert video_seeks == []
+
+    # 2. Attach video -> videoUrl exposes QUrl.fromLocalFile(videoPath)
+    video = tmp_path / "preview_clip.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.attachVideo(str(video)) is True
+    assert controller.hasVideo is True
+    assert controller.videoUrl == QUrl.fromLocalFile(str(video)).toString()
+
+    # 3. Unrendered seekToCue with video attached seeks video preview without touching dub player
+    controller.seekToCue(1)
+    assert controller.hintText == ""
+    assert controller.activeCue == 1
+    assert controller.positionMs == 3_000
+    assert player.seeks == []
+    assert video_seeks == [3_000]
+    controller.seekToCue(99)  # out of range is a no-op
+    assert controller.activeCue == 1
+    assert video_seeks == [3_000]
+
+    # 4. syncActiveCueFromVideo highlights cue spanning ms (or -1 in silence) when dub is idle
+    controller.syncActiveCueFromVideo(500)
+    assert controller.activeCue == 0
+    assert controller.positionMs == 500
+    controller.syncActiveCueFromVideo(2_500)  # silence between 0..2000 and 3000..5000
+    assert controller.activeCue == -1
+    assert controller.positionMs == 2_500
+    controller.syncActiveCueFromVideo(3_400)
+    assert controller.activeCue == 1
+
+    # 5. Rendered seekToCue seeks both dub player (measured timeline) and video preview (SRT start)
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True
+    video_seeks.clear()
+    player.seeks.clear()
+    controller.seekToCue(0)
+    assert player.seeks == [0]
+    assert video_seeks == [0]
+
+    # 6. Audio exclusivity: notifyVideoPreviewPlaying stops active dub playback;
+    #    while dub is playing, syncActiveCueFromVideo does not clobber dub karaoke state.
+    controller.play()
+    assert controller.playerState == "playing"
+    player.positionChanged.emit(100)
+    assert controller.activeCue == 0
+    controller.syncActiveCueFromVideo(3_500)
+    assert controller.activeCue == 0  # dub playback owns activeCue while playing
+    controller.notifyVideoPreviewPlaying()
+    assert controller.playerState == "stopped"
+    assert player.state == "stopped"
+
+    # 7. videoReleaseRequested fires before disk operations: exportVideo, clearVideo,
+    #    openProject, removeProject, and clear.
+    mux_saw_release: list[bool] = []
+
+    def _fake_mux(*_args, **_kwargs):
+        mux_saw_release.append(bool(releases))
+        return tmp_path / "out.mp4"
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.mux_dubbed_video", _fake_mux)
+    releases.clear()
+    controller.exportVideo(str(tmp_path / "exports"))
+    assert mux_saw_release == [True]
+    assert len(releases) == 1
+
+    releases.clear()
+    controller.clearVideo()
+    assert len(releases) == 1
+    assert controller.hasVideo is False
+    assert controller.videoUrl == ""
+
+    # Re-attach video so project has video on disk, then test openProject, removeProject, clear
+    assert controller.attachVideo(str(video)) is True
+    proj_id = controller.projectId
+    releases.clear()
+    assert controller.openProject(proj_id) is True
+    assert len(releases) == 1
+
+    releases.clear()
+    controller.clear()
+    assert len(releases) == 1
+    assert controller.videoUrl == ""
+
+    releases.clear()
+    assert controller.removeProject(proj_id) is True
+    assert len(releases) >= 1

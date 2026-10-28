@@ -63,7 +63,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
 
-from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, Qt, Signal, Slot
+from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, Qt, QUrl, Signal, Slot
 
 from vienetts_app.core.align import (
     MODE_DUB,
@@ -156,6 +156,7 @@ API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
         "state",
         "title",
         "videoPath",
+        "videoUrl",
     }
 )
 
@@ -235,6 +236,8 @@ class SubtitleController(QObject):
     exportProgressChanged = Signal()
     overrunChanged = Signal()
     videoChanged = Signal()
+    videoSeekRequested = Signal(int)
+    videoReleaseRequested = Signal()
     speakersChanged = Signal()
     aiBusyChanged = Signal()
     aiProgressChanged = Signal()
@@ -963,6 +966,11 @@ class SubtitleController(QObject):
             return self._project.video_path
         return self._pending_video_path
 
+    @Property(str, notify=videoChanged)
+    def videoUrl(self) -> str:
+        vp = self.videoPath
+        return QUrl.fromLocalFile(vp).toString() if vp else ""
+
     @Property(bool, notify=videoChanged)
     def hasVideo(self) -> bool:
         return bool(self.videoPath)
@@ -1499,6 +1507,7 @@ class SubtitleController(QObject):
     @Slot()
     def clearVideo(self) -> None:
         """Detach the video file from the current subtitle workspace."""
+        self.videoReleaseRequested.emit()
         self._pending_video_path = ""
         if self._project is not None and self._project.video_path:
             self._project = replace(self._project, video_path="")
@@ -1588,6 +1597,7 @@ class SubtitleController(QObject):
         if loaded is None:
             self._set_error(self.tr("Không mở được dự án phụ đề đã chọn."))
             return False
+        self.videoReleaseRequested.emit()
         self._stop_render()
         self._stop_playback()
         self.cancelAiTask()
@@ -1637,6 +1647,7 @@ class SubtitleController(QObject):
     def removeProject(self, project_id: str) -> bool:
         """Delete a stored workspace; removing the active one returns to empty."""
         pid = str(project_id or "")
+        self.videoReleaseRequested.emit()
         try:
             self._store.remove(pid)
         except SubtitleProjectError as exc:
@@ -2110,6 +2121,34 @@ class SubtitleController(QObject):
             self._player.stop()
         self._reset_active_span()
 
+    @Slot()
+    def notifyVideoPreviewPlaying(self) -> None:
+        """Stop active dub or speaker-sample playback when source video playback begins."""
+        if (
+            self._player_state != "stopped"
+            or str(getattr(self._player, "state", "stopped") or "stopped") != "stopped"
+        ):
+            self._stop_playback()
+
+    @Slot(int)
+    def syncActiveCueFromVideo(self, ms: int) -> None:
+        """Highlight the cue spanning ``ms`` during source-video playback/scrubbing."""
+        project = self._project
+        if project is None or self._player_state == "playing":
+            return
+        pos = max(0, int(ms))
+        if pos != self._position_ms:
+            self._position_ms = pos
+            self.positionMsChanged.emit()
+        matched = -1
+        for i, cue in enumerate(project.cues):
+            if cue.start_ms <= pos < cue.end_ms:
+                matched = i
+                break
+        if matched != self._active_cue:
+            self._active_cue = matched
+            self.activeCueChanged.emit()
+
     @Slot(int)
     def seek(self, ms: int) -> None:
         with contextlib.suppress(Exception):
@@ -2121,7 +2160,22 @@ class SubtitleController(QObject):
         if project is None:
             return
         if self._timeline is None:
-            self._set_hint(self.tr("Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề."))
+            if not self.hasVideo:
+                self._set_hint(
+                    self.tr("Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề.")
+                )
+                return
+            if not 0 <= index < len(project.cues):
+                return
+            target_ms = int(project.cues[index].start_ms)
+            self._set_hint("")
+            if index != self._active_cue:
+                self._active_cue = index
+                self.activeCueChanged.emit()
+            if target_ms != self._position_ms:
+                self._position_ms = target_ms
+                self.positionMsChanged.emit()
+            self.videoSeekRequested.emit(target_ms)
             return
         if not 0 <= index < len(project.cues):
             return
@@ -2131,6 +2185,8 @@ class SubtitleController(QObject):
         if segment.end_ms <= segment.start_ms:
             return
         self.seek(segment.start_ms)
+        if self.hasVideo:
+            self.videoSeekRequested.emit(int(project.cues[index].start_ms))
 
     def _reset_active_span(self) -> None:
         # The cue list itself never changes here — delegates read the
@@ -2277,6 +2333,7 @@ class SubtitleController(QObject):
         if not vpath_str or not Path(vpath_str).is_file():
             self._set_error(self.tr("Chưa chọn tệp video nguồn hợp lệ để ghép."))
             return ""
+        self.videoReleaseRequested.emit()
         vpath = Path(vpath_str)
         ext = vpath.suffix.lower() or ".mp4"
         target = self._export_target(dest_dir, f"{project.title}_dubbed", ext)
@@ -2960,6 +3017,7 @@ class SubtitleController(QObject):
 
     @Slot()
     def clear(self) -> None:
+        self.videoReleaseRequested.emit()
         self._stop_render()
         self._stop_playback()
         self.cancelAiTask()
@@ -2995,6 +3053,7 @@ class SubtitleController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        self.videoReleaseRequested.emit()
         self._stop_render()
         self._stop_playback()
         # Queued placements are already no-ops; let the abort run (bounded).

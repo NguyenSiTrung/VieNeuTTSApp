@@ -1213,17 +1213,28 @@ class _CliProgress:
         self._progress_cb(value)
 
 
-def _run_nemotron_gguf_diarization(
+def extract_speaker_turns(
     wav_path: Path,
-    cues: Sequence[Cue],
-    config: DiarizationConfig,
+    config: DiarizationConfig | None = None,
     *,
-    data_dir: Path | None = None,
     work_dir: Path | None = None,
+    data_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     notes: list[str] | None = None,
-) -> list[Cue]:
+) -> list[RttmTurn]:
+    """Speaker turns from the Nemotron-3 audio.cpp CLI for a 16 kHz mono WAV.
+
+    ``wav_path`` is the shared ``source_16k.wav`` (``audio_prep.ensure_source_16k``).
+    The turns are cached in ``work_dir``, so ``diarize_cues`` reuses a run made here.
+    ``config.threads`` (when > 0) goes to the CLI as is, which lets the transcription
+    pipeline give each of ASR and Nemotron half of the budget.
+
+    Returns ``[]`` with a note when no speech was found. Raises
+    ``DiarizationError`` when the runtime or model is missing or the run fails (the
+    ``auto`` backend falls back on it) and ``DiarizationCancelled`` on cancel.
+    """
+    config = config or DiarizationConfig()
     cli = resolve_audiocpp_cli(data_dir)
     if cli is None:
         raise DiarizationError(
@@ -1249,7 +1260,7 @@ def _run_nemotron_gguf_diarization(
     if cached is not None:
         if progress_cb is not None:
             progress_cb(1.0)
-        return assign_speakers_from_turns(cues, cached, wav_path=wav_path, data_dir=data_dir)
+        return cached
 
     if progress_cb is not None:
         progress_cb(_CLI_PROGRESS_START)
@@ -1333,35 +1344,52 @@ def _run_nemotron_gguf_diarization(
         if res.returncode != 0:
             detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["audiocpp_cli failed"]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
-        if not turns_out.is_file():
-            # Verified upstream: an empty result writes no turns file at all.
-            if notes is not None:
-                notes.append(
-                    "Không phát hiện giọng nói nào trong video, nên chưa có nhãn người nói."
-                )
-            if progress_cb is not None:
-                progress_cb(1.0)
-            return assign_speakers_from_turns(cues, [], wav_path=wav_path, data_dir=data_dir)
-        turns = parse_audiocpp_turns(
-            turns_out.read_text(encoding="utf-8", errors="replace"),
-            sample_rate=MODEL_SAMPLE_RATE,
+        # Verified upstream: an empty result writes no turns file at all.
+        turns = (
+            parse_audiocpp_turns(
+                turns_out.read_text(encoding="utf-8", errors="replace"),
+                sample_rate=MODEL_SAMPLE_RATE,
+            )
+            if turns_out.is_file()
+            else []
         )
         if not turns:
             if notes is not None:
                 notes.append(
                     "Không phát hiện giọng nói nào trong video, nên chưa có nhãn người nói."
                 )
-            if progress_cb is not None:
-                progress_cb(1.0)
-            return assign_speakers_from_turns(cues, [], wav_path=wav_path, data_dir=data_dir)
-        _store_cached_turns(work_dir, cache_key, turns)
+        else:
+            _store_cached_turns(work_dir, cache_key, turns)
         if progress_cb is not None:
             progress_cb(1.0)
-        return assign_speakers_from_turns(cues, turns, wav_path=wav_path, data_dir=data_dir)
+        return turns
     finally:
         turns_temp.cleanup()
         with contextlib.suppress(OSError):
             turns_out.unlink(missing_ok=True)
+
+
+def _run_nemotron_gguf_diarization(
+    wav_path: Path,
+    cues: Sequence[Cue],
+    config: DiarizationConfig,
+    *,
+    data_dir: Path | None = None,
+    work_dir: Path | None = None,
+    progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
+) -> list[Cue]:
+    turns = extract_speaker_turns(
+        wav_path,
+        config,
+        work_dir=work_dir,
+        data_dir=data_dir,
+        progress_cb=progress_cb,
+        cancel_check=cancel_check,
+        notes=notes,
+    )
+    return assign_speakers_from_turns(cues, turns, wav_path=wav_path, data_dir=data_dir)
 
 
 #: Average-linkage stop distance (1 - cosine) for the installed speaker

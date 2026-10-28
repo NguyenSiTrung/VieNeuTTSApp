@@ -46,6 +46,7 @@ from vienetts_app.core.diarization import (
     apply_speaker_ceiling,
     assign_speakers_from_turns,
     diarize_cues,
+    extract_speaker_turns,
     split_segments_at_turns,
 )
 from vienetts_app.core.subtitles import Cue
@@ -83,9 +84,9 @@ DiarizeRunner = Callable[..., list[Cue]]
 class PipelineRunners:
     """The runners ``run_transcription`` calls; ``None`` picks the default.
 
-    There is no default ``extract_turns`` yet: diarization.py has no public
-    turn-only entry point, so without one the speaker labels come from
-    ``diarize_cues`` after ASR and ``parallel=True`` runs sequentially.
+    The defaults are ``asr.transcribe_segments``, ``diarization.extract_speaker_turns``
+    (the Nemotron CLI) and ``diarization.diarize_cues`` (the acoustic backend and the
+    ``auto`` fallback).
     """
 
     transcribe: TranscribeRunner | None = None
@@ -190,7 +191,7 @@ def run_transcription(
     asr_cfg = asr_cfg or AsrConfig()
     picked = runners or PipelineRunners()
     transcribe = picked.transcribe or transcribe_segments
-    extract_turns = picked.extract_turns
+    extract_turns = picked.extract_turns or extract_speaker_turns
     diarize = picked.diarize or diarize_cues
 
     def cancelled() -> bool:

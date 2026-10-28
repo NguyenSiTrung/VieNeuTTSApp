@@ -9,6 +9,7 @@ timestamps, and every re-run re-shelling out to the CLI.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,7 @@ from vienetts_app.core.diarization import (
     apply_speaker_ceiling,
     diarize_cues,
     extract_speaker_reference_wav,
+    extract_speaker_turns,
     remap_speakers_to_previous,
     select_speaker_reference_clip,
 )
@@ -201,8 +203,14 @@ def test_nemotron_progress_is_relayed_in_monotonic_steps(tmp_path: Path) -> None
     assert estimated[-1] == pytest.approx(0.95)
 
 
-def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:
-    _install_fake_cli(tmp_path, "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+def test_hung_child_is_killed_at_timeout_or_on_cancel(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    _install_fake_cli(
+        tmp_path,
+        "#!/usr/bin/env python3\nimport time\n"
+        f"open({str(started.as_posix())!r}, 'w').close()\n"
+        "time.sleep(30)\n",
+    )
     wav = write_wav_file(
         np.zeros(16_000 * 2, dtype=np.float32), tmp_path / "hang.wav", sample_rate=16_000
     )
@@ -212,6 +220,15 @@ def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:
             _cues(),
             DiarizationConfig(backend="nemotron_gguf", device="cpu", timeout_s=0.7),
             data_dir=tmp_path,
+        )
+    # The turn runner kills the child as soon as the user cancels.
+    started.unlink(missing_ok=True)
+    with pytest.raises(DiarizationCancelled):
+        extract_speaker_turns(
+            wav,
+            DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+            data_dir=tmp_path,
+            cancel_check=started.exists,
         )
 
 
@@ -267,24 +284,40 @@ def test_48k_wav_is_downmixed_to_16k_and_a_legacy_cache_is_adopted(tmp_path: Pat
 
 
 def test_turns_are_cached_across_runs(tmp_path: Path) -> None:
-    counter = tmp_path / "calls.txt"
-    script = _turns_writer(TURNS_TWO_SPEAKERS).replace(
-        "#!/usr/bin/env python3\n",
-        "#!/usr/bin/env python3\n"
-        f"with open({str(counter.as_posix())!r}, 'a', encoding='utf-8') as _fh:\n"
-        "    _fh.write('x\\n')\n",
-    )
-    _install_fake_cli(tmp_path, script)
     wav = write_wav_file(
         np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "cached.wav", sample_rate=16_000
     )
     work_dir = tmp_path / "work"
-    cfg = DiarizationConfig(backend="nemotron_gguf", device="cpu")
+    cfg = DiarizationConfig(backend="nemotron_gguf", device="cpu", threads=3)
+    # The public turn runner: no runtime or no model is a DiarizationError (auto's cue
+    # to fall back), and the thread count it is given reaches the CLI.
+    with pytest.raises(DiarizationError, match="audio.cpp"):
+        extract_speaker_turns(wav, cfg, data_dir=tmp_path)
+    counter = tmp_path / "calls.txt"
+    script = _turns_writer(TURNS_TWO_SPEAKERS).replace(
+        "#!/usr/bin/env python3\n",
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"with open({str(counter.as_posix())!r}, 'a', encoding='utf-8') as _fh:\n"
+        "    _fh.write(sys.argv[sys.argv.index('--threads') + 1] + '\\n')\n",
+    )
+    _install_fake_cli(tmp_path, script)
+    with pytest.raises(DiarizationError, match="Nemotron-3"):
+        extract_speaker_turns(wav, replace(cfg, model="missing.gguf"), data_dir=tmp_path)
+    seen: list[float] = []
+    turns = extract_speaker_turns(
+        wav, cfg, work_dir=work_dir, data_dir=tmp_path, progress_cb=seen.append
+    )
+    assert turns == [RttmTurn(0, 2000, "SPEAKER_01"), RttmTurn(2200, 4200, "SPEAKER_02")]
+    assert counter.read_text().splitlines() == ["3"] and seen[-1] == 1.0
+
+    # diarize_cues labels from the same turn cache: one CLI run serves every call.
     first = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
     second = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
     assert [c.speaker for c in first] == ["SPEAKER_01", "SPEAKER_02"]
     assert [c.speaker for c in second] == ["SPEAKER_01", "SPEAKER_02"]
-    assert counter.read_text().count("x") == 1
+    assert extract_speaker_turns(wav, cfg, work_dir=work_dir, data_dir=tmp_path) == turns
+    assert counter.read_text().splitlines() == ["3"]
 
 
 def test_reference_clip_scoring_prefers_a_clean_in_range_clip(tmp_path: Path) -> None:

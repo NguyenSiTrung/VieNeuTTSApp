@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import sys
+import os
 import threading
 import time
-import types
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -13,8 +12,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vienetts_app.core import asr
 from vienetts_app.core import transcribe_pipeline as tp
+from vienetts_app.core.ai_models import DIARIZATION_GGUF_MODELS, WHISPER_GGUF_MODELS
 from vienetts_app.core.asr import AsrCancelled, AsrConfig, AsrError, RawSegment
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.diarization import (
@@ -300,57 +299,108 @@ def test_cancel_stops_both_runners_and_an_asr_failure_stops_nemotron(tmp_path: P
     ]
 
 
-def test_default_runners_match_the_controller_flow(
+def _install_stub_clis(data_dir: Path) -> tuple[Path, dict[str, Path]]:
+    """whisper-cli and audiocpp_cli stubs, run through ``ai_models.cli_command``.
+
+    Each logs the thread count it was given. audiocpp_cli marks that it started; while
+    the returned flag file exists, whisper-cli waits for that mark (up to WAIT_S) and
+    fails without it, so a passing run proves Nemotron started before ASR finished.
+    """
+    flag, started = data_dir / "require_overlap", data_dir / "nemotron_started"
+    logs = {"whisper": data_dir / "whisper.log", "nemotron": data_dir / "nemotron.log"}
+
+    def install(rel_dir: str, name: str, body: str) -> None:
+        bin_dir = data_dir / rel_dir
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        cli = bin_dir / (f"{name}.exe" if os.name == "nt" else name)
+        cli.write_text(
+            "#!/usr/bin/env python3\nimport json, sys, time\nfrom pathlib import Path\n"
+            f"args = sys.argv[1:]\nflag, started = Path({flag.as_posix()!r}), "
+            f"Path({started.as_posix()!r})\n" + body,
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+
+    install(
+        "runtimes/whisper/bin",
+        "whisper-cli",
+        f"deadline = time.monotonic() + {WAIT_S}\n"
+        "while flag.exists() and not started.exists():\n"
+        "    if time.monotonic() > deadline:\n"
+        "        sys.exit('audiocpp_cli never started')\n"
+        "    time.sleep(0.005)\n"
+        f"with open({logs['whisper'].as_posix()!r}, 'a') as fh:\n"
+        "    fh.write(args[args.index('-t') + 1] + '\\n')\n"
+        "Path(args[args.index('-of') + 1] + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,500\\nXin chào.\\n\\n'\n"
+        "    '2\\n00:00:02,000 --> 00:00:03,500\\nHôm nay trời đẹp.\\n\\n', encoding='utf-8'\n"
+        ")\n",
+    )
+    install(
+        "runtimes/audiocpp/bin",
+        "audiocpp_cli",
+        "started.touch()\n"
+        f"with open({logs['nemotron'].as_posix()!r}, 'a') as fh:\n"
+        "    fh.write(args[args.index('--threads') + 1] + '\\n')\n"
+        "turns = [{'start_sample': 0, 'end_sample': 28800, 'speaker_id': 'speaker_0'},\n"
+        "         {'start_sample': 28800, 'end_sample': 64000, 'speaker_id': 'speaker_1'}]\n"
+        "Path(args[args.index('--turns-out') + 1]).write_text(json.dumps(turns))\n",
+    )
+    for folder, spec in (
+        ("whisper", WHISPER_GGUF_MODELS["base"]),
+        ("diarization", DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"]),
+    ):
+        model_dir = data_dir / "models" / folder
+        model_dir.mkdir(parents=True, exist_ok=True)
+        with (model_dir / spec.filename).open("wb") as fh:  # sparse, at the catalog size
+            fh.truncate(int(spec.size_bytes))
+    return flag, logs
+
+
+def test_default_runners_run_the_whisper_and_nemotron_clis_side_by_side(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     media = _speech_wav(tmp_path / "talk.wav")
+    flag, logs = _install_stub_clis(tmp_path)
+    asr_cfg = AsrConfig(backend="whisper_cpp", model="base", language="vi", threads=4)
+    diar = DiarizationConfig(backend="nemotron_gguf", device="cpu")
 
-    class _Word:
-        def __init__(self, start_ms: int, end_ms: int, word: str) -> None:
-            self.start, self.end, self.word = start_ms / 1000, end_ms / 1000, word
+    def threads(name: str) -> list[str]:
+        return logs[name].read_text(encoding="utf-8").splitlines()
 
-    class _Seg:
-        start, end, text = 0.0, 3.6, SEGMENT.text
-        words = [_Word(*w) for w in WORDS]
+    # parallel=True: audiocpp_cli starts while whisper-cli is still running, and each
+    # gets half of the 4-thread budget on its argv.
+    flag.touch()
+    result = tp.run_transcription(
+        media, asr_cfg, diar, work_dir=tmp_path / "par", data_dir=tmp_path, parallel=True
+    )
+    assert threads("whisper") == ["2"] and threads("nemotron") == ["2"]
+    assert [(c.text, c.speaker) for c in result.cues] == [
+        ("Xin chào.", "SPEAKER_01"),
+        ("Hôm nay trời đẹp.", "SPEAKER_02"),
+    ]
+    assert result.turns == [RttmTurn(0, 1800, "SPEAKER_01"), RttmTurn(1800, 4000, "SPEAKER_02")]
 
-    class _Model:
-        def __init__(self, model_size: str, **kwargs: object) -> None:
-            pass
+    # Sequential: the same result, with ASR on the whole budget.
+    flag.unlink()
+    sequential = tp.run_transcription(
+        media, asr_cfg, diar, work_dir=tmp_path / "seq", data_dir=tmp_path
+    )
+    assert sequential == result and threads("whisper") == ["2", "4"]
 
-        def transcribe(self, path: str, **kwargs: object):
-            return iter([_Seg()]), types.SimpleNamespace(duration=4.0, language="vi")
+    # The acoustic backend goes through diarize_cues; its failure keeps the ASR cues.
+    def failing_diarize(*_args: Any, **_kwargs: Any) -> list[Any]:
+        raise RuntimeError("onnx exploded")
 
-    fake_mod = types.ModuleType("faster_whisper")
-    fake_mod.WhisperModel = _Model  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
-    monkeypatch.setattr(asr, "_FASTER_WHISPER_CACHE", {})
-    seen: list[tuple[Path, str, int, Path | None]] = []
-
-    def fake_diarize(media_path, cues, config, *, work_dir, data_dir, notes, **_kwargs):
-        seen.append((Path(media_path), config.backend, config.threads, data_dir))
-        if config.backend == "acoustic":
-            raise RuntimeError("onnx exploded")
-        notes.append("diar note")
-        return [replace(c, speaker="SPEAKER_01") for c in cues]
-
-    monkeypatch.setattr(tp, "diarize_cues", fake_diarize)
-    asr_cfg = AsrConfig(backend="faster_whisper")
-    # No Nemotron turn runner yet: parallel=True runs the controller's sequential flow
-    # — the real ASR, then diarize_cues on the same WAV with the configs as given.
+    monkeypatch.setattr(tp, "diarize_cues", failing_diarize)
     result = tp.run_transcription(
         media,
         asr_cfg,
-        DiarizationConfig(),
-        work_dir=tmp_path / "cache",
+        DiarizationConfig(backend="acoustic"),
+        work_dir=tmp_path / "seq",
         data_dir=tmp_path,
         parallel=True,
     )
-    assert seen == [(media, "auto", 0, tmp_path)]
-    assert [(c.text, c.speaker) for c in result.cues] == [(SEGMENT.text, "SPEAKER_01")]
-    assert result.notes == ["Ngôn ngữ nhận diện được: vi.", "diar note"]
-    assert result.turns is None
-    result = tp.run_transcription(
-        media, asr_cfg, DiarizationConfig(backend="acoustic"), work_dir=tmp_path / "cache"
-    )
-    assert [c.speaker for c in result.cues] == [""]
-    assert result.notes[-1] == "Không phân tách được người nói: onnx exploded"
+    assert [c.speaker for c in result.cues] == ["", ""]
+    assert result.notes == ["Không phân tách được người nói: onnx exploded"]
+    assert len(threads("nemotron")) == 2  # one Nemotron run per work dir

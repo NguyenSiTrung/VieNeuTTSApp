@@ -104,7 +104,7 @@ short snippet to a full document, fully offline.
    clickable equal-height guide cards, danger styling for destructive actions,
    square 40 px icon hit targets, and clips the last of the Studio chrome into
    reusable `StudioRackModule` / `StudioParamRow` / `StudioClipRow` components
-   (`StudioTab.qml` 1757 → 1398 lines). Post-v0.3.0 on `main` (2026-10-19,
+   (`StudioTab.qml` 1757 → 1398 lines). Shipped in v0.4.0 (2026-10-19,
    bead `VieNeuTTSApp-n5ts`): **windowed SRT Studio integration** —
    `SubtitleCard` (`subtitleStudioButton`) and `StudioTab`'s fourth guide card
    (`studioGuideSubtitleButton`) open rendered SRT projects in bounded 50-cue
@@ -165,7 +165,7 @@ short snippet to a full document, fully offline.
     fingerprint (`core/subtitle_project.py`) caches the track per workspace
     (including per-cue speakers and `speaker_voices`), so unchanged settings
     reuse the rendered `track.wav` instead of re-synthesizing.
-    Post-v0.3.0 on `main` (2026-10-19, epic `VieNeuTTSApp-b3nq` + `ab1aad1`):
+    Shipped in v0.4.0 (2026-10-19..28, epic `VieNeuTTSApp-b3nq` + `ab1aad1`):
     - **Video dubbing & stream-copy muxing (`core/video_dub.py`)**: import or
       attach `.mp4`/`.mkv`/`.mov`/`.webm`/`.avi`/`.m4v` with companion `.srt`
       auto-discovery, `ffmpeg` audio extraction (full or `[start_ms, end_ms]`
@@ -400,7 +400,7 @@ short snippet to a full document, fully offline.
     surfaces; the design system enforces a 12 px type floor, 44 px targets,
     AA-contrast text and at most one primary action per screen, and every
     destination is usable at the 640×420 minimum window. Legacy navigation
-    ids (text / paragraph / cloning) stay as aliases. Post-v0.3.0 on `main`: optional Ko-fi support links in the sidebar (`navSupportButton`) and Cài đặt → Cập nhật (`supportCard` / `settingsSupportButton`) (`2f44ee1`, 2026-10-19); and `subtitles` (`Lồng tiếng & Phụ đề`, `SubtitlesTab.qml`) promoted out of `CreateTab` into a sixth top-level sidebar destination (`aef1d87`, 2026-10-19) so `CreateTab` serves `compose` / `document` / `files` with `CreateInspector` and `TransportDock` always active.
+    ids (text / paragraph / cloning) stay as aliases. Shipped in v0.4.0: optional Ko-fi support links in the sidebar (`navSupportButton`) and Cài đặt → Cập nhật (`supportCard` / `settingsSupportButton`) (`2f44ee1`, 2026-10-19); and `subtitles` (`Lồng tiếng & Phụ đề`, `SubtitlesTab.qml`) promoted out of `CreateTab` into a sixth top-level sidebar destination (`aef1d87`, 2026-10-19) so `CreateTab` serves `compose` / `document` / `files` with `CreateInspector` and `TransportDock` always active.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -433,8 +433,8 @@ the 2026-10-28 OpenAI-compatible LLM & Whisper API provider hardening track
 (`llm_provider_hardening_20261028`, feature 11), and bead-driven
 batches (incl. `VieNeuTTSApp-2ifr` diarization hardening and `VieNeuTTSApp-4mqj`
 test-runtime reduction). All 16 conductor tracks are complete and archived under
-`conductor/archive/`. Current app version 0.3.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite now stands at 1630
+`conductor/archive/`. Current app version 0.4.0; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1630
 items collected / 1612 selected (18 benchmarks deselected via
 `-m 'not benchmark'`; `-m "not slow"` → 1590, `-m "not slow and not benchmark"`
 → 1572; verified live 2026-10-28 with `pytest --collect-only -q`). Latest gate

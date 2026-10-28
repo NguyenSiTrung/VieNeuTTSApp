@@ -446,7 +446,7 @@ an explicit stored choice is never overridden):
 ## Build & Dev Tooling
 - Build backend: hatchling (wheel packages `src/vienetts_app`); console
   script `vienetts-app` → `vienetts_app.__main__:main`. Current version
-  0.3.0.
+  0.4.0.
 - Synthesis pipeline (2026-09-03): immutable job values
   (`core/jobs.py`: SynthesisJob/JobChunk/JobTerminal) admitted via FIFO
   (`workers/job_queue.py`) to the single worker; incremental validated WAV
@@ -476,7 +476,7 @@ an explicit stored choice is never overridden):
   package at the same relative layout, so no frozen-mode code paths are
   needed; torch/transformers excluded (CPU build stays torch-free).
 - **Shipped (2026-09-04):** curated release notes per version in
-  `packaging/release-notes/v0.1.1.md`–`v0.3.0.md`; windowed `.exe`
+  `packaging/release-notes/v0.1.1.md`–`v0.4.0.md`; windowed `.exe`
   stdio→devnull so packaged GUI builds can download + synthesize (184b600).
 - **Shipped (2026-09-06…10):** in-app update checks (`core/updates.py`,
   v0.1.6: platform-aware GitHub Releases matching, variant-aware for the
@@ -544,7 +544,8 @@ an explicit stored choice is never overridden):
   frozen-TLS / DMG audit fixes; `release.yml` asserts that the frozen bundle
   ships precompiled QML (`Main.qmlc` present, one `.qmlc`/`.jsc` per bundled
   `.qml`/`.js`); headless `offscreen`/`minimal` Qt skips native modal crash
-  dialogs (`8db2677`). Post-v0.3.0 on `main` (2026-10-19): Ko-fi support links
+  dialogs (`8db2677`).
+- **Shipped (2026-10-28, v0.4.0):** Ko-fi support links
   in sidebar, Settings → Updates, README, and `.github/FUNDING.yml`
   (`2f44ee1`); windowed 50-cue SRT Studio integration with per-cue speed refit
   and chunked 64k-frame save-back (`e94d045..02b9181`, bead `n5ts`);
@@ -556,27 +557,28 @@ an explicit stored choice is never overridden):
   refinement (`core/llm_refine.py`), and in-app AI model/runtime downloads
   (`core/ai_models.py`, `SettingsModels.qml`, `ba69a5a..ab1aad1`, epic `b3nq`);
   dedicated top-level `SubtitlesTab.qml` destination + two-column `SubtitleCard`
-  workstation (`aef1d87`); and Video Dubbing Studio support with per-speaker
+  workstation (`aef1d87`); Video Dubbing Studio support with per-speaker
   voice context, 1-click `studioExportVideo` splice+mux, and
   `studioPlayOriginalCue` original video audio audition (`12734a0`, bead
-  `eet9`). Post-v0.3.0 on `main` (2026-10-20..28): video-dubbing hardening
+  `eet9`); video-dubbing hardening
   (`d17a261` — diarization/muxing correctness, inline cue editing, per-speaker
-  sample audition, AI progress bars, Studio staged-ops auto-commit),
-  `VoicePicker` popup clipping/padding + `SubtitleCard` layout (`1661604`), the
+  sample audition, AI progress bars, Studio staged-ops auto-commit);
+  `VoicePicker` popup clipping/padding + `SubtitleCard` layout (`1661604`); the
   soft-vs-burned subtitle embed mode with styled ASS burn-in, HDR bit-depth
   preservation, and streamed export progress (`6e7c747` + `d7b8721`, beads
-  `poph`/`ni2i`/`vxil`), diarization hardening (`b41caf7..cb0c1e9`, epic
-  `2ifr`), test-runtime reduction + torch isolation fix (`1542053` + `5eb6f85`,
-  bead `4mqj`), track `asr_hardening_20261021` (`b09dd45..d50f43b`, epic `7u58`,
-  archived `ed66f6a`), track `subtitles_ux_overhaul_20261023`
-  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`), track
+  `poph`/`ni2i`/`vxil`); diarization hardening (`b41caf7..cb0c1e9`, epic
+  `2ifr`); test-runtime reduction + torch isolation fix (`1542053` + `5eb6f85`,
+  bead `4mqj`); track `asr_hardening_20261021` (`b09dd45..d50f43b`, epic `7u58`,
+  archived `ed66f6a`); track `subtitles_ux_overhaul_20261023`
+  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`); track
   `dub_pacing_alignment_20261026` (`765c10a..dfac5b8`, epic `o8af`, archived
-  `3d6418b`), track `video_preview_panel_20261028` (`4ddf6f8..2faa30a`, epic
-  `t80a`, archived `2faa30a`), and track `llm_provider_hardening_20261028`
-  (`3dfb2b5..4374d0f`, epic `f783`, archived `4374d0f`). Test suite 1630
+  `3d6418b`); track `video_preview_panel_20261028` (`4ddf6f8..2faa30a`, epic
+  `t80a`, archived `2faa30a`); and track `llm_provider_hardening_20261028`
+  (`3dfb2b5..4374d0f`, epic `f783`, archived `4374d0f`). Notes:
+  `packaging/release-notes/v0.4.0.md`. Test suite 1630
   collected / 1612 selected (18 benchmark deselected); `ruff check .` +
   `ruff format --check .` green (216 files); i18n 1216/1216 finished; no root
-  dependency drift (`pyproject.toml` / `uv.lock` untouched).
+  dependency drift (`pyproject.toml` / `uv.lock` version bumped to 0.4.0).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

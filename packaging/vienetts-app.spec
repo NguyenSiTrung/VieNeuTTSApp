@@ -232,7 +232,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.vienetts.app",
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": _stamp_version or "0.3.0",
+            "CFBundleShortVersionString": _stamp_version or "0.4.0",
             # Real frozen floor (macOS audit 2026-10-11): onnxruntime 1.29
             # arm64 wheel is macosx_14_0 — without this, macOS 11/12 crash
             # at launch on Qt and macOS 13 fails mid-flow loading VieNeu.

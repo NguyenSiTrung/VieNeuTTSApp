@@ -11,6 +11,7 @@ TextField {
     id: root
 
     property string accessibleLabel: ""
+    readonly property bool passwordEcho: root.echoMode === TextInput.Password
 
     implicitHeight: Theme.controlHeightSm
     leftPadding: Theme.spacingSm

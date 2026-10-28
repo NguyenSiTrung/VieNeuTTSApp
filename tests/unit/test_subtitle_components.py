@@ -73,6 +73,7 @@ _DRIVER = textwrap.dedent(
         videoMixModeChanged = Signal()
         videoBgGainDbChanged = Signal()
         softSubtitlesSupportedChanged = Signal()
+        llmGlossaryChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -115,8 +116,20 @@ _DRIVER = textwrap.dedent(
             self._mix = "duck"
             self._gain = -16.0
             self._soft = True
+            self._llm_glossary = "Minh -> Minh"
+            self.glossary_calls = []
             self.notified_video_playing = 0
             self.synced_positions = []
+
+        @Property(str, notify=llmGlossaryChanged)
+        def llmGlossary(self):
+            return self._llm_glossary
+
+        @Slot(str)
+        def setLlmGlossary(self, text):
+            self._llm_glossary = str(text)
+            self.glossary_calls.append(self._llm_glossary)
+            self.llmGlossaryChanged.emit()
 
         @Property(bool, notify=loadedChanged)
         def loaded(self):
@@ -331,6 +344,28 @@ _DRIVER = textwrap.dedent(
             item.setProperty("available", True)
             item.setProperty("shown", True)
             loaded = True
+            if name == "SubtitlePreparePanel.qml":
+                app.processEvents()
+                glossary_toggle = item.findChild(QObject, "subtitleGlossaryToggle")
+                glossary_field = item.findChild(QObject, "subtitleGlossaryField")
+                extra["glossary_found"] = (
+                    glossary_toggle is not None and glossary_field is not None
+                )
+                if glossary_field is not None and glossary_toggle is not None:
+                    extra["glossary_expanded_initial"] = bool(
+                        item.property("glossaryExpanded")
+                    )
+                    QMetaObject.invokeMethod(glossary_toggle, "click")
+                    app.processEvents()
+                    extra["glossary_expanded_after_click"] = bool(
+                        item.property("glossaryExpanded")
+                    )
+                    extra["glossary_initial"] = str(glossary_field.property("text"))
+                    glossary_field.setProperty("text", "An -> An; anh - em")
+                    QMetaObject.invokeMethod(glossary_field, "editingFinished")
+                    app.processEvents()
+                    extra["glossary_calls"] = list(controller.glossary_calls)
+
             if name == "SubtitleVideoPreview.qml":
                 app.processEvents()
                 names = {item.objectName()} | {
@@ -419,6 +454,13 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
         assert results[name]["created"], results[name]
         assert results[name]["loaded"], results[name]
         assert results[name]["errors"] == [], results[name]
+
+    pp = results["SubtitlePreparePanel.qml"]
+    assert pp["glossary_found"] is True
+    assert pp["glossary_expanded_initial"] is False
+    assert pp["glossary_expanded_after_click"] is True
+    assert pp["glossary_initial"] == "Minh -> Minh"
+    assert pp["glossary_calls"] == ["An -> An; anh - em"]
 
     vp = results["SubtitleVideoPreview.qml"]
     assert set(VIDEO_PREVIEW_OBJECT_NAMES) <= set(vp["object_names"])

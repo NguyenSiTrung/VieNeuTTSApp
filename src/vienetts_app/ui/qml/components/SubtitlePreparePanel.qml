@@ -19,12 +19,32 @@ ColumnLayout {
     property bool exporting: false
     property string llmReason: ""
     property string targetLanguage: ""
+    property bool glossaryExpanded: false
 
     signal languageSelected(string code)
 
     objectName: "subtitleAiBar"
     visible: root.shown
     spacing: Theme.spacingXs
+
+    readonly property string currentGlossary: root.available
+        && typeof subtitleController.llmGlossary === "string"
+        ? subtitleController.llmGlossary : ""
+
+    function commitGlossary() {
+        if (root.available && typeof subtitleController.setLlmGlossary === "function")
+            subtitleController.setLlmGlossary(subtitleGlossaryField.text);
+    }
+
+    Connections {
+        target: root.available ? subtitleController : null
+
+        function onLlmGlossaryChanged() {
+            const next = subtitleController.llmGlossary || "";
+            if (!subtitleGlossaryField.activeFocus && subtitleGlossaryField.text !== next)
+                subtitleGlossaryField.text = next;
+        }
+    }
 
     readonly property var languageOptions: {
         const rows = [{ code: "", label: qsTr("Theo ngôn ngữ tổng hợp") }];
@@ -149,6 +169,16 @@ ColumnLayout {
             }
 
             AppButton {
+                objectName: "subtitleGlossaryToggle"
+                variant: "secondary"
+                size: "sm"
+                iconKind: root.glossaryExpanded ? "chevronUp" : "chevronDown"
+                text: qsTr("Thuật ngữ & cách xưng hô")
+                tooltipText: qsTr("Ghi chú tên riêng, thuật ngữ và quy tắc xưng hô giữa các nhân vật cho AI")
+                onClicked: root.glossaryExpanded = !root.glossaryExpanded
+            }
+
+            AppButton {
                 objectName: "subtitleAiSettingsButton"
                 variant: "secondary"
                 size: "sm"
@@ -157,6 +187,61 @@ ColumnLayout {
                 onClicked: {
                     if (typeof bridge !== "undefined" && bridge !== null)
                         bridge.setCurrentTab("settings");
+                }
+            }
+        }
+
+        // FR-7.2: Collapsible project glossary & pronoun-rules section.
+        ColumnLayout {
+            objectName: "subtitleGlossarySection"
+            Layout.fillWidth: true
+            visible: root.glossaryExpanded
+            spacing: Theme.spacingXxs
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Ghi chú tên riêng, thuật ngữ và quy tắc xưng hô (tối đa 4000 ký tự, gửi kèm mọi tác vụ AI).")
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+                wrapMode: Text.WordWrap
+            }
+
+            TextArea {
+                id: subtitleGlossaryField
+
+                objectName: "subtitleGlossaryField"
+                Layout.fillWidth: true
+                implicitHeight: 72
+                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                text: root.currentGlossary
+                placeholderText: qsTr("Ví dụ: Minh -> Minh (giữ nguyên); SPEAKER_01 -> SPEAKER_02: xưng anh - gọi em")
+                placeholderTextColor: Theme.textSubtle
+                color: enabled ? Theme.text : Theme.controlDisabledText
+                selectedTextColor: Theme.accentText
+                selectionColor: Theme.accent
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+                wrapMode: TextArea.Wrap
+                selectByMouse: true
+                leftPadding: Theme.spacingSm
+                rightPadding: Theme.spacingSm
+                topPadding: Theme.spacingXs
+                bottomPadding: Theme.spacingXs
+                Accessible.name: qsTr("Thuật ngữ & cách xưng hô")
+
+                background: Rectangle {
+                    radius: Theme.radiusSm
+                    color: subtitleGlossaryField.enabled ? Theme.surface : Theme.controlDisabledBg
+                    border.width: subtitleGlossaryField.activeFocus ? Theme.focusRingWidth : 1
+                    border.color: subtitleGlossaryField.activeFocus ? Theme.accent
+                        : (subtitleGlossaryField.enabled ? Theme.borderSubtle : Theme.controlDisabledBorder)
+                }
+
+                onEditingFinished: root.commitGlossary()
+                onActiveFocusChanged: {
+                    if (!activeFocus)
+                        root.commitGlossary();
                 }
             }
         }

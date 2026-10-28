@@ -150,7 +150,6 @@ API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
         "cues",
         "exportBlockedReason",
         "invalidationReason",
-        "llmGlossary",
         "policySummary",
         "sourcePath",
         "state",

@@ -682,6 +682,68 @@ SettingsSection {
                 }
             }
 
+            // FR-7.1: Separate Whisper API group (URL / model / API key).
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Máy chủ Whisper API (URL)")
+                description: qsTr("Để trống để dùng chung máy chủ LLM chỉ khi Bộ nhận diện đặt là Máy chủ Whisper API. Chế độ Tự động chỉ gọi API khi nhập URL tại đây.")
+                control: AppTextField {
+                    objectName: "asrApiBaseUrlField"
+                    implicitWidth: 260
+                    accessibleLabel: qsTr("Máy chủ Whisper API (URL)")
+                    placeholderText: "https://api.openai.com/v1"
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    text: (controller && typeof controller.asrApiBaseUrl === "string")
+                        ? controller.asrApiBaseUrl : ""
+                    onEditingFinished: {
+                        if (controller && typeof controller.asrApiBaseUrl !== "undefined")
+                            controller.asrApiBaseUrl = text;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Tên mô hình Whisper API")
+                description: qsTr("Tên mô hình gửi lên trường model của /audio/transcriptions (mặc định whisper-1)")
+                control: AppTextField {
+                    objectName: "asrApiModelField"
+                    implicitWidth: 220
+                    accessibleLabel: qsTr("Tên mô hình Whisper API")
+                    placeholderText: "whisper-1"
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    text: (controller && typeof controller.asrApiModel === "string")
+                        ? controller.asrApiModel : ""
+                    onEditingFinished: {
+                        if (controller && typeof controller.asrApiModel !== "undefined")
+                            controller.asrApiModel = text;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Whisper API Key (tùy chọn)")
+                description: qsTr("Chỉ gửi tới máy chủ Whisper API đã cấu hình; khóa LLM không bao giờ tự gửi sang máy chủ ASR khác")
+                control: AppTextField {
+                    objectName: "asrApiKeyField"
+                    implicitWidth: 220
+                    accessibleLabel: qsTr("Whisper API Key")
+                    echoMode: TextInput.Password
+                    placeholderText: "sk-..."
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    text: (controller && typeof controller.asrApiKey === "string")
+                        ? controller.asrApiKey : ""
+                    onEditingFinished: {
+                        if (controller && typeof controller.asrApiKey !== "undefined")
+                            controller.asrApiKey = text;
+                    }
+                }
+            }
+
             SettingRow {
                 Layout.fillWidth: true
                 compact: section.compact
@@ -1030,6 +1092,149 @@ SettingsSection {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeXs
                     elide: Text.ElideRight
+                }
+            }
+
+            // FR-7.1: Collapsed-by-default "LLM advanced" disclosure.
+            SettingsDisclosure {
+                id: llmAdvancedDisclosure
+
+                objectName: "llmAdvancedDisclosure"
+                toggleObjectName: "llmAdvancedToggle"
+                filter: section.filter
+                title: qsTr("Tùy chọn LLM nâng cao")
+                description: qsTr("Mô hình riêng cho từng tác vụ, số yêu cầu song song, thời gian chờ và kích thước lô")
+                keywords: "LLM refine translate fit concurrency timeout batch"
+
+                readonly property string mainLlmModel: (controller
+                    && typeof controller.llmModel === "string"
+                    && controller.llmModel !== "")
+                    ? controller.llmModel : "qwen2.5:7b"
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Mô hình làm sạch ASR (tùy chọn)")
+                    description: qsTr("Để trống để dùng tên mô hình LLM chính ở trên")
+                    control: AppTextField {
+                        objectName: "llmModelRefineField"
+                        implicitWidth: 220
+                        accessibleLabel: qsTr("Mô hình làm sạch ASR")
+                        placeholderText: llmAdvancedDisclosure.mainLlmModel
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        text: (controller && typeof controller.llmModelRefine === "string")
+                            ? controller.llmModelRefine : ""
+                        onEditingFinished: {
+                            if (controller && typeof controller.llmModelRefine !== "undefined")
+                                controller.llmModelRefine = text;
+                        }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Mô hình dịch lồng tiếng (tùy chọn)")
+                    description: qsTr("Để trống để dùng tên mô hình LLM chính ở trên")
+                    control: AppTextField {
+                        objectName: "llmModelTranslateField"
+                        implicitWidth: 220
+                        accessibleLabel: qsTr("Mô hình dịch lồng tiếng")
+                        placeholderText: llmAdvancedDisclosure.mainLlmModel
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        text: (controller && typeof controller.llmModelTranslate === "string")
+                            ? controller.llmModelTranslate : ""
+                        onEditingFinished: {
+                            if (controller && typeof controller.llmModelTranslate !== "undefined")
+                                controller.llmModelTranslate = text;
+                        }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Mô hình rút gọn khớp thời gian (tùy chọn)")
+                    description: qsTr("Để trống để dùng tên mô hình LLM chính ở trên")
+                    control: AppTextField {
+                        objectName: "llmModelFitField"
+                        implicitWidth: 220
+                        accessibleLabel: qsTr("Mô hình rút gọn khớp thời gian")
+                        placeholderText: llmAdvancedDisclosure.mainLlmModel
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        text: (controller && typeof controller.llmModelFit === "string")
+                            ? controller.llmModelFit : ""
+                        onEditingFinished: {
+                            if (controller && typeof controller.llmModelFit !== "undefined")
+                                controller.llmModelFit = text;
+                        }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Số yêu cầu LLM song song")
+                    description: qsTr("0 = tự động (1 cho máy chủ nội bộ, 3 cho máy chủ đám mây; tối đa 8)")
+                    control: AppNumberField {
+                        objectName: "llmConcurrencyField"
+                        accessibleLabel: qsTr("Số yêu cầu LLM song song")
+                        decimals: 0
+                        scaleFactor: 1
+                        from: 0
+                        to: 8
+                        stepSize: 1
+                        value: (controller && typeof controller.llmConcurrency === "number")
+                            ? controller.llmConcurrency : 0
+                        onValueModified: {
+                            if (controller && typeof controller.llmConcurrency !== "undefined")
+                                controller.llmConcurrency = value;
+                        }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Thời gian chờ mỗi yêu cầu LLM (giây)")
+                    description: qsTr("Giới hạn thời gian chờ phản hồi từ máy chủ LLM (15 – 600 giây, mặc định 120)")
+                    control: AppNumberField {
+                        objectName: "llmTimeoutField"
+                        accessibleLabel: qsTr("Thời gian chờ mỗi yêu cầu LLM (giây)")
+                        decimals: 0
+                        scaleFactor: 1
+                        from: 15
+                        to: 600
+                        stepSize: 15
+                        value: (controller && typeof controller.llmTimeoutS === "number")
+                            ? controller.llmTimeoutS : 120
+                        onValueModified: {
+                            if (controller && typeof controller.llmTimeoutS !== "undefined")
+                                controller.llmTimeoutS = value;
+                        }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    compact: section.compact
+                    label: qsTr("Số câu phụ đề mỗi lô LLM")
+                    description: qsTr("Số câu gửi trong một yêu cầu (5 – 60, mặc định 25; giảm nếu dùng Ollama 4k context)")
+                    control: AppNumberField {
+                        objectName: "llmBatchSizeField"
+                        accessibleLabel: qsTr("Số câu phụ đề mỗi lô LLM")
+                        decimals: 0
+                        scaleFactor: 1
+                        from: 5
+                        to: 60
+                        stepSize: 5
+                        value: (controller && typeof controller.llmBatchSize === "number")
+                            ? controller.llmBatchSize : 25
+                        onValueModified: {
+                            if (controller && typeof controller.llmBatchSize !== "undefined")
+                                controller.llmBatchSize = value;
+                        }
+                    }
                 }
             }
         }

@@ -283,6 +283,7 @@ DRIVER = textwrap.dedent(
         exportingChanged = Signal()
         # Create inspector (Task 3.4): the active profile's recent voices.
         recentVoicesChanged = Signal()
+        aiSettingsChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -349,6 +350,18 @@ DRIVER = textwrap.dedent(
             # direct exportWav calls only.
             self.export_audio_calls = []
             self._model_repo = ""
+            self._asr_api_base_url = ""
+            self._asr_api_key = ""
+            self._asr_api_model = ""
+            self._llm_base_url = "http://localhost:11434/v1"
+            self._llm_api_key = ""
+            self._llm_model = "qwen2.5:7b"
+            self._llm_model_refine = ""
+            self._llm_model_translate = ""
+            self._llm_model_fit = ""
+            self._llm_concurrency = 0
+            self._llm_timeout_s = 120
+            self._llm_batch_size = 25
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
             # and binds text/icon to replayActive.
             self._replay_active = False
@@ -1745,6 +1758,114 @@ DRIVER = textwrap.dedent(
             self.qwen_open_dir_calls.append("models")
             return True
 
+        @Property(str, notify=aiSettingsChanged)
+        def asrApiBaseUrl(self):
+            return self._asr_api_base_url
+
+        @asrApiBaseUrl.setter
+        def asrApiBaseUrl(self, value):
+            self._asr_api_base_url = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrApiKey(self):
+            return self._asr_api_key
+
+        @asrApiKey.setter
+        def asrApiKey(self, value):
+            self._asr_api_key = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrApiModel(self):
+            return self._asr_api_model
+
+        @asrApiModel.setter
+        def asrApiModel(self, value):
+            self._asr_api_model = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmBaseUrl(self):
+            return self._llm_base_url
+
+        @llmBaseUrl.setter
+        def llmBaseUrl(self, value):
+            self._llm_base_url = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmApiKey(self):
+            return self._llm_api_key
+
+        @llmApiKey.setter
+        def llmApiKey(self, value):
+            self._llm_api_key = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmModel(self):
+            return self._llm_model
+
+        @llmModel.setter
+        def llmModel(self, value):
+            self._llm_model = str(value).strip() or "qwen2.5:7b"
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmModelRefine(self):
+            return self._llm_model_refine
+
+        @llmModelRefine.setter
+        def llmModelRefine(self, value):
+            self._llm_model_refine = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmModelTranslate(self):
+            return self._llm_model_translate
+
+        @llmModelTranslate.setter
+        def llmModelTranslate(self, value):
+            self._llm_model_translate = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def llmModelFit(self):
+            return self._llm_model_fit
+
+        @llmModelFit.setter
+        def llmModelFit(self, value):
+            self._llm_model_fit = str(value).strip()
+            self.aiSettingsChanged.emit()
+
+        @Property(int, notify=aiSettingsChanged)
+        def llmConcurrency(self):
+            return self._llm_concurrency
+
+        @llmConcurrency.setter
+        def llmConcurrency(self, value):
+            self._llm_concurrency = int(value)
+            self.aiSettingsChanged.emit()
+
+        @Property(int, notify=aiSettingsChanged)
+        def llmTimeoutS(self):
+            return self._llm_timeout_s
+
+        @llmTimeoutS.setter
+        def llmTimeoutS(self, value):
+            self._llm_timeout_s = int(value)
+            self.aiSettingsChanged.emit()
+
+        @Property(int, notify=aiSettingsChanged)
+        def llmBatchSize(self):
+            return self._llm_batch_size
+
+        @llmBatchSize.setter
+        def llmBatchSize(self, value):
+            self._llm_batch_size = int(value)
+            self.aiSettingsChanged.emit()
+
         def _append_cloned(self, name):
             for group in self._voices:
                 if group["label"] == "Đã sao chép":
@@ -2079,6 +2200,7 @@ DRIVER = textwrap.dedent(
                 projectsChanged = Signal()
                 pendingInvalidationChanged = Signal()
                 renderInvalidationRequested = Signal(str, str)
+                llmGlossaryChanged = Signal()
 
                 def __init__(self):
                     super().__init__()
@@ -2086,6 +2208,8 @@ DRIVER = textwrap.dedent(
                     self.imported = []
                     self.ai_calls = []
                     self.speaker_calls = []
+                    self._llm_glossary = "Minh -> Minh"
+                    self.glossary_calls = []
                     self._rendering = False
                     self._rendered = True
                     self._exporting = False
@@ -2576,6 +2700,16 @@ DRIVER = textwrap.dedent(
                 @Slot()
                 def cancelAiTask(self):
                     self._record("cancelAiTask")
+
+                @Property(str, notify=llmGlossaryChanged)
+                def llmGlossary(self):
+                    return self._llm_glossary
+
+                @Slot(str)
+                def setLlmGlossary(self, text):
+                    self._llm_glossary = str(text)
+                    self.glossary_calls.append(self._llm_glossary)
+                    self.llmGlossaryChanged.emit()
 
             fake_subtitle = FakeSubtitle()
             subtitle_factory = lambda _controller: fake_subtitle
@@ -4267,6 +4401,14 @@ DRIVER = textwrap.dedent(
                 sfind("subtitleCard").property("translateTargetLanguage")
             )
             out["ai_calls"] = list(fake_subtitle.ai_calls)
+            # FR-7.2: Prepare-stage glossary editor binds to llmGlossary and
+            # commits via setLlmGlossary.
+            glossary_field = sfind("subtitleGlossaryField")
+            out["glossary_initial"] = str(glossary_field.property("text"))
+            glossary_field.setProperty("text", "An -> An; SPEAKER_01 -> SPEAKER_02: anh - em")
+            QMetaObject.invokeMethod(glossary_field, "editingFinished")
+            app.processEvents()
+            out["glossary_calls"] = list(fake_subtitle.glossary_calls)
             # FR-3.4: per-speaker casting goes through the catalog picker.
             picker = ifind("subtitleSpeakerVoicePicker")[0]
             QMetaObject.invokeMethod(picker, "voiceActivated", Q_ARG(str, "voice_en_01"))
@@ -6166,6 +6308,93 @@ DRIVER = textwrap.dedent(
             controller.switchEngineProfile("vieneu")
             app.processEvents()
             out["vieneu_again"] = family_states()
+
+            # ── FR-7.1: Whisper API group + LLM advanced disclosure in Mô hình ──
+            settings_section("models")
+            preserved_llm_names = (
+                "llmBaseUrlField",
+                "llmModelField",
+                "llmApiKeyField",
+                "llmTestConnectionButton",
+            )
+            whisper_api_names = (
+                "asrApiBaseUrlField",
+                "asrApiModelField",
+                "asrApiKeyField",
+            )
+            llm_advanced_names = (
+                "llmModelRefineField",
+                "llmModelTranslateField",
+                "llmModelFitField",
+                "llmConcurrencyField",
+                "llmTimeoutField",
+                "llmBatchSizeField",
+            )
+            models_present = {o.objectName() for o in settings_tab.findChildren(QObject)}
+            adv_collapsed_before = not settings_disclosure("llmAdvancedToggle")[1].property(
+                "expanded"
+            )
+            adv_hidden_before = [
+                not settings_tab.findChildren(QObject, n)[0].isVisible()
+                for n in llm_advanced_names
+            ]
+            settings_expand("llmAdvancedToggle", True)
+            adv_visible_after = [
+                bool(settings_tab.findChildren(QObject, n)[0].isVisible())
+                for n in llm_advanced_names
+            ]
+            asr_key_field = settings_tab.findChildren(QObject, "asrApiKeyField")[0]
+            llm_key_field = settings_tab.findChildren(QObject, "llmApiKeyField")[0]
+            asr_model_field = settings_tab.findChildren(QObject, "asrApiModelField")[0]
+
+            for fname, fval in (
+                ("asrApiBaseUrlField", "https://asr.example.com/v1"),
+                ("asrApiModelField", "whisper-large-v3-turbo"),
+                ("asrApiKeyField", "sk-asr-secret"),
+                ("llmModelRefineField", "gpt-4.1-mini"),
+                ("llmModelTranslateField", "deepseek-chat"),
+                ("llmModelFitField", "qwen2.5:14b"),
+            ):
+                fld = settings_tab.findChildren(QObject, fname)[0]
+                fld.setProperty("text", fval)
+                QMetaObject.invokeMethod(fld, "editingFinished")
+            for nname, nval in (
+                ("llmConcurrencyField", 4),
+                ("llmTimeoutField", 180),
+                ("llmBatchSizeField", 15),
+            ):
+                nfld = settings_tab.findChildren(QObject, nname)[0]
+                nfld.setProperty("value", nval)
+                QMetaObject.invokeMethod(nfld, "valueModified")
+            app.processEvents()
+            settings_expand("llmAdvancedToggle", False)
+            out["ai_provider_settings"] = {
+                "preserved_present": set(preserved_llm_names) <= models_present,
+                "whisper_present": set(whisper_api_names) <= models_present,
+                "advanced_present": (
+                    {"llmAdvancedToggle"} | set(llm_advanced_names)
+                ) <= models_present,
+                "asr_key_password_echo": (
+                    bool(asr_key_field.property("passwordEcho"))
+                    and str(asr_key_field.property("displayText")) != "sk-asr-secret"
+                    and len(str(asr_key_field.property("displayText"))) == len("sk-asr-secret")
+                ),
+                "asr_model_placeholder": str(asr_model_field.property("placeholderText")),
+                "collapsed_before": adv_collapsed_before,
+                "hidden_before": all(adv_hidden_before),
+                "visible_after_expand": all(adv_visible_after),
+                "writes": {
+                    "asrApiBaseUrl": controller.asrApiBaseUrl,
+                    "asrApiModel": controller.asrApiModel,
+                    "asrApiKey": controller.asrApiKey,
+                    "llmModelRefine": controller.llmModelRefine,
+                    "llmModelTranslate": controller.llmModelTranslate,
+                    "llmModelFit": controller.llmModelFit,
+                    "llmConcurrency": controller.llmConcurrency,
+                    "llmTimeoutS": controller.llmTimeoutS,
+                    "llmBatchSize": controller.llmBatchSize,
+                },
+            }
 
             results["settings_sections"] = out
             out = {"scenario": "waveform_repaint"}
@@ -8823,6 +9052,8 @@ class TestTextParagraphTabSmoke:
             "subtitleTranslateLanguageCombo",
             "subtitleFitTimingButton",
             "subtitleAiPrereqRow",
+            "subtitleGlossaryToggle",
+            "subtitleGlossaryField",
             "subtitleAiSettingsButton",
             "subtitleAiStageLabel",
             "subtitleAiProgressBar",
@@ -8941,6 +9172,8 @@ class TestTextParagraphTabSmoke:
         assert result["translate_options"] == ["", "vi", "en"]
         assert result["translate_target_after_pick"] == "en"
         assert result["ai_calls"] == [["translate_dub", "en"]]
+        assert result["glossary_initial"] == "Minh -> Minh"
+        assert result["glossary_calls"] == ["An -> An; SPEAKER_01 -> SPEAKER_02: anh - em"]
         assert result["speaker_calls"] == [[result["speaker_calls"][0][0], "voice_en_01"]]
         assert result["speaker_calls"][0][0] in ("SPEAKER_01", "SPEAKER_02")
         assert result["speaker_no_raw_field"] is True
@@ -10121,6 +10354,27 @@ class TestSettingsTabSmoke:
         assert qsum["reason"] != ""
         assert qsum["note_hidden"] is True
         assert result["vieneu_again"] == result["vieneu"]
+        assert result["ai_provider_settings"] == {
+            "preserved_present": True,
+            "whisper_present": True,
+            "advanced_present": True,
+            "asr_key_password_echo": True,
+            "asr_model_placeholder": "whisper-1",
+            "collapsed_before": True,
+            "hidden_before": True,
+            "visible_after_expand": True,
+            "writes": {
+                "asrApiBaseUrl": "https://asr.example.com/v1",
+                "asrApiModel": "whisper-large-v3-turbo",
+                "asrApiKey": "sk-asr-secret",
+                "llmModelRefine": "gpt-4.1-mini",
+                "llmModelTranslate": "deepseek-chat",
+                "llmModelFit": "qwen2.5:14b",
+                "llmConcurrency": 4,
+                "llmTimeoutS": 180,
+                "llmBatchSize": 15,
+            },
+        }
 
         # Waveform paint discipline (6.2): hidden waveforms never paint and a
         # replay moves only the playhead (waveform_repaint).

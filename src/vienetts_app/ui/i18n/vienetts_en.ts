@@ -389,88 +389,88 @@
         <translation>Original audio preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8465"/>
+        <location filename="../controller.py" line="8552"/>
         <source>Đang kiểm tra kết nối…</source>
         <translation>Testing connection…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8549"/>
+        <location filename="../controller.py" line="8636"/>
         <source>Đang tải mô hình Whisper ({m})…</source>
         <translation>Downloading Whisper model ({m})…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8584"/>
+        <location filename="../controller.py" line="8671"/>
         <source>Đã tải mô hình {name}, nhưng chưa cài được runtime whisper.cpp: {err}</source>
         <translation>Downloaded model {name}, but could not install whisper.cpp runtime: {err}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8587"/>
+        <location filename="../controller.py" line="8674"/>
         <source>Đã tải xong: {name}</source>
         <translation>Downloaded: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8623"/>
+        <location filename="../controller.py" line="8710"/>
         <source>Không có bản runtime whisper.cpp cho thiết bị {device} trên hệ điều hành này.</source>
         <translation>No whisper.cpp runtime is available for device {device} on this operating system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8629"/>
+        <location filename="../controller.py" line="8716"/>
         <source>Đang tải runtime whisper.cpp…</source>
         <translation>Downloading whisper.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8650"/>
+        <location filename="../controller.py" line="8737"/>
         <source>Đã cài đặt whisper.cpp: {name}</source>
         <translation>Installed whisper.cpp: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8691"/>
+        <location filename="../controller.py" line="8778"/>
         <source>Runtime whisper.cpp chưa được cài đặt.</source>
         <translation>whisper.cpp runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8760"/>
+        <location filename="../controller.py" line="8847"/>
         <source>Đang tải {m} &amp; runtime audio.cpp…</source>
         <translation>Downloading {m} &amp; audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8794"/>
+        <location filename="../controller.py" line="8881"/>
         <source>Đã tải mô hình {name}, nhưng chưa cài được runtime audio.cpp: {err}</source>
         <translation>Downloaded model {name}, but the audio.cpp runtime could not be installed: {err}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8797"/>
+        <location filename="../controller.py" line="8884"/>
         <source>Đã sẵn sàng: {name}</source>
         <translation>Ready: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8833"/>
+        <location filename="../controller.py" line="8920"/>
         <source>Không có bản runtime audio.cpp cho thiết bị {device} trên hệ điều hành này.</source>
         <translation>No audio.cpp runtime build is available for {device} on this operating system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8839"/>
+        <location filename="../controller.py" line="8926"/>
         <source>Đang tải runtime audio.cpp…</source>
         <translation>Downloading audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8860"/>
+        <location filename="../controller.py" line="8947"/>
         <source>Đã cài đặt audio.cpp: {name}</source>
         <translation>Installed audio.cpp: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8678"/>
-        <location filename="../controller.py" line="8888"/>
+        <location filename="../controller.py" line="8765"/>
+        <location filename="../controller.py" line="8975"/>
         <source>Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.</source>
         <translation>Cannot remove a model stored outside the app directory.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8901"/>
+        <location filename="../controller.py" line="8988"/>
         <source>Runtime audio.cpp chưa được cài đặt.</source>
         <translation>The audio.cpp runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9063"/>
+        <location filename="../controller.py" line="9153"/>
         <source>Không thể đổi {} khi đang xử lý: {}</source>
         <translation>Cannot change {} while busy: {}</translation>
     </message>
@@ -598,22 +598,22 @@
         <translation>outputDir must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8954"/>
+        <location filename="../controller.py" line="9041"/>
         <source>exportFormat phải là chuỗi ký tự.</source>
         <translation>exportFormat must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8969"/>
+        <location filename="../controller.py" line="9056"/>
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8984"/>
+        <location filename="../controller.py" line="9071"/>
         <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
         <translation>speed must be a number between 0.5 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8999"/>
+        <location filename="../controller.py" line="9086"/>
         <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
         <translation>silence_p must be a number between 0.0 and 2.0.</translation>
     </message>
@@ -3145,6 +3145,86 @@
         <translation>Automatic (runtime picks the best backend)</translation>
     </message>
     <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1105"/>
+        <source>Tùy chọn LLM nâng cao</source>
+        <translation>Advanced LLM options</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1106"/>
+        <source>Mô hình riêng cho từng tác vụ, số yêu cầu song song, thời gian chờ và kích thước lô</source>
+        <translation>Per-task model overrides, concurrent requests, request timeout, and batch size</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1117"/>
+        <source>Mô hình làm sạch ASR (tùy chọn)</source>
+        <translation>ASR cleanup model (optional)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1118"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1138"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1158"/>
+        <source>Để trống để dùng tên mô hình LLM chính ở trên</source>
+        <translation>Leave blank to use the main LLM model above</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1122"/>
+        <source>Mô hình làm sạch ASR</source>
+        <translation>ASR cleanup model</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1137"/>
+        <source>Mô hình dịch lồng tiếng (tùy chọn)</source>
+        <translation>Dubbing translation model (optional)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1142"/>
+        <source>Mô hình dịch lồng tiếng</source>
+        <translation>Dubbing translation model</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1157"/>
+        <source>Mô hình rút gọn khớp thời gian (tùy chọn)</source>
+        <translation>Timing-fit shortening model (optional)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1162"/>
+        <source>Mô hình rút gọn khớp thời gian</source>
+        <translation>Timing-fit shortening model</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1177"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1181"/>
+        <source>Số yêu cầu LLM song song</source>
+        <translation>Concurrent LLM requests</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1178"/>
+        <source>0 = tự động (1 cho máy chủ nội bộ, 3 cho máy chủ đám mây; tối đa 8)</source>
+        <translation>0 = automatic (1 for local servers, 3 for cloud providers; max 8)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1199"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1203"/>
+        <source>Thời gian chờ mỗi yêu cầu LLM (giây)</source>
+        <translation>LLM request timeout (seconds)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1200"/>
+        <source>Giới hạn thời gian chờ phản hồi từ máy chủ LLM (15 – 600 giây, mặc định 120)</source>
+        <translation>Maximum wait per LLM request (15–600 seconds, default 120)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1221"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1225"/>
+        <source>Số câu phụ đề mỗi lô LLM</source>
+        <translation>Subtitle cues per LLM batch</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="1222"/>
+        <source>Số câu gửi trong một yêu cầu (5 – 60, mặc định 25; giảm nếu dùng Ollama 4k context)</source>
+        <translation>Cues sent per request (5–60, default 25; lower for Ollama 4k context)</translation>
+    </message>
+    <message>
         <location filename="../qml/settings/SettingsModels.qml" line="413"/>
         <location filename="../qml/settings/SettingsModels.qml" line="434"/>
         <source>CPU (mọi máy, ổn định nhất)</source>
@@ -3162,60 +3242,60 @@
         <translation>Metal GPU (macOS Apple Silicon)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="754"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="816"/>
         <source>audio-cpp/Nemotron-3-Diarization-GGUF chạy trên CPU/Vulkan/Metal qua audio.cpp</source>
         <translation>audio-cpp/Nemotron-3-Diarization-GGUF running on CPU/Vulkan/Metal through audio.cpp</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="787"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="849"/>
         <source>Đang tải…</source>
         <translation>Downloading…</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="790"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="852"/>
         <source>Tải mô hình Nemotron-3 GGUF</source>
         <translation>Download the Nemotron-3 GGUF model</translation>
     </message>
     <message>
         <location filename="../qml/settings/SettingsModels.qml" line="602"/>
-        <location filename="../qml/settings/SettingsModels.qml" line="804"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="866"/>
         <source>Đang cài…</source>
         <translation>Installing…</translation>
     </message>
     <message>
         <location filename="../qml/settings/SettingsModels.qml" line="604"/>
-        <location filename="../qml/settings/SettingsModels.qml" line="806"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="868"/>
         <source>Tải lại runtime</source>
         <translation>Reinstall runtime</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="807"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="869"/>
         <source>Cài runtime audio.cpp</source>
         <translation>Install audio.cpp runtime</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="821"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="883"/>
         <source>Xóa mô hình</source>
         <translation>Remove model</translation>
     </message>
     <message>
         <location filename="../qml/settings/SettingsModels.qml" line="632"/>
-        <location filename="../qml/settings/SettingsModels.qml" line="834"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="896"/>
         <source>Xóa runtime</source>
         <translation>Remove runtime</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="850"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="912"/>
         <source>Tiến trình tải mô hình và runtime Diarization</source>
         <translation>Diarization model and runtime download progress</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="862"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="924"/>
         <source>Đã cài đặt Nemotron-3 GGUF + %1 (sẵn sàng chạy ngoại tuyến).</source>
         <translation>Nemotron-3 GGUF + %1 installed (ready to run offline).</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="865"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="927"/>
         <source>Đã tải GGUF nhưng chưa có runtime audio.cpp — hãy bấm &apos;Cài runtime audio.cpp&apos;.</source>
         <translation>GGUF downloaded but the audio.cpp runtime is missing — click “Install audio.cpp runtime”.</translation>
     </message>
@@ -3365,53 +3445,90 @@
         <translation>Not downloaded yet.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="688"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="689"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="694"/>
+        <source>Máy chủ Whisper API (URL)</source>
+        <translation>Whisper API server (URL)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="690"/>
+        <source>Để trống để dùng chung máy chủ LLM chỉ khi Bộ nhận diện đặt là Máy chủ Whisper API. Chế độ Tự động chỉ gọi API khi nhập URL tại đây.</source>
+        <translation>Leave blank to share the LLM server only when the recognizer is set to Whisper API. Automatic mode calls the API only when a URL is entered here.</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="709"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="714"/>
+        <source>Tên mô hình Whisper API</source>
+        <translation>Whisper API model name</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="710"/>
+        <source>Tên mô hình gửi lên trường model của /audio/transcriptions (mặc định whisper-1)</source>
+        <translation>Model name sent in the model field of /audio/transcriptions (default whisper-1)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="729"/>
+        <source>Whisper API Key (tùy chọn)</source>
+        <translation>Whisper API Key (optional)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="730"/>
+        <source>Chỉ gửi tới máy chủ Whisper API đã cấu hình; khóa LLM không bao giờ tự gửi sang máy chủ ASR khác</source>
+        <translation>Sent only to the configured Whisper API server; the LLM key is never sent to a different ASR host</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="734"/>
+        <source>Whisper API Key</source>
+        <translation>Whisper API Key</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsModels.qml" line="750"/>
         <source>Phân tách người nói (Diarization)</source>
         <translation>Speaker diarization</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="689"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="751"/>
         <source>Gán nhãn từng người nói (tối đa 8 người) để tự động phân vai giọng đọc</source>
         <translation>Tag each speaker (up to 8 speakers) to automatically cast voices</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="710"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="772"/>
         <source>Thiết bị chạy Diarization</source>
         <translation>Diarization device</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="711"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="773"/>
         <source>Tự động dùng backend GPU nếu runtime hỗ trợ, ngược lại CPU. Đổi thiết bị cần cài lại runtime tương ứng.</source>
         <translation>Use a GPU backend automatically when the runtime supports it, otherwise CPU. Changing the device requires reinstalling the matching runtime.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="732"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="794"/>
         <source>Số luồng CPU cho Diarization</source>
         <translation>CPU threads for diarization</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="733"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="795"/>
         <source>0 = tự động (tối đa 16 luồng). Tăng giúp CPU chạy nhanh hơn; GPU bỏ qua giá trị này.</source>
         <translation>0 = automatic (up to 16 threads). More threads speed up CPU runs; GPUs ignore this value.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="753"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="815"/>
         <source>Mô hình Nemotron-3 Diarization (GGUF)</source>
         <translation>Nemotron-3 Diarization model (GGUF)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="789"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="851"/>
         <source>Tải lại Nemotron-3 GGUF</source>
         <translation>Re-download Nemotron-3 GGUF</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="866"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="928"/>
         <source>Chưa tải (đang dùng Phân cụm âm học Offline dự phòng).</source>
         <translation>Not downloaded (using fallback Offline acoustic clustering).</translation>
     </message>
     <message>
         <location filename="../qml/settings/SettingsModels.qml" line="677"/>
-        <location filename="../qml/settings/SettingsModels.qml" line="879"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="941"/>
         <source>Đã tải %1%</source>
         <translation>%1% downloaded</translation>
     </message>
@@ -3431,47 +3548,47 @@
         <translation>Whisper model downloaded, but whisper.cpp runtime is missing — click &apos;Install whisper.cpp runtime&apos;.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="890"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="952"/>
         <source>Số người nói tối đa (0 = tự động)</source>
         <translation>Maximum speakers (0 = auto)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="891"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="953"/>
         <source>Giới hạn trên, không phải số lượng cố định. Nemotron-3 hỗ trợ tối đa 8 người nói.</source>
         <translation>An upper bound, not a fixed count. Nemotron-3 supports at most 8 speakers.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="911"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="973"/>
         <source>Máy chủ LLM (OpenAI-compatible URL)</source>
         <translation>LLM server (OpenAI-compatible URL)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="912"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="974"/>
         <source>Hỗ trợ Ollama (http://localhost:11434/v1), LM Studio, vLLM hoặc OpenAI</source>
         <translation>Supports Ollama (http://localhost:11434/v1), LM Studio, vLLM, or OpenAI</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="944"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1006"/>
         <source>Tên mô hình LLM</source>
         <translation>LLM model name</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="945"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1007"/>
         <source>Mô hình dùng để làm sạch ASR, rút gọn khớp thời gian và dịch lồng tiếng</source>
         <translation>Model used to clean ASR output, shorten cues to fit timing, and translate for dubbing</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="977"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1039"/>
         <source>LLM API Key (tùy chọn)</source>
         <translation>LLM API Key (optional)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="978"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1040"/>
         <source>Để trống nếu dùng Ollama / LM Studio nội bộ</source>
         <translation>Leave blank when using local Ollama / LM Studio</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsModels.qml" line="1016"/>
+        <location filename="../qml/settings/SettingsModels.qml" line="1078"/>
         <source>Kiểm tra kết nối LLM</source>
         <translation>Test LLM connection</translation>
     </message>
@@ -4935,386 +5052,386 @@
 <context>
     <name>SubtitleController</name>
     <message>
-        <location filename="../subtitle_controller.py" line="764"/>
+        <location filename="../subtitle_controller.py" line="787"/>
         <source>{n} phụ đề</source>
         <translation>{n} subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="767"/>
+        <location filename="../subtitle_controller.py" line="790"/>
         <source>{n} nén (tối đa {rate}×)</source>
         <translation>{n} squeezed (max {rate}×)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="773"/>
+        <location filename="../subtitle_controller.py" line="796"/>
         <source>{n} tràn (tối đa {ms} ms)</source>
         <translation>{n} overflowing (max {ms} ms)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="778"/>
+        <location filename="../subtitle_controller.py" line="801"/>
         <source>{n} đẩy lùi</source>
         <translation>{n} pushed back</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1429"/>
+        <location filename="../subtitle_controller.py" line="1456"/>
         <source>Không tìm thấy tệp phụ đề: {name}</source>
         <translation>Subtitle file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1440"/>
+        <location filename="../subtitle_controller.py" line="1467"/>
         <source>Không đọc được tệp phụ đề &apos;{name}&apos;: {error}</source>
         <translation>Could not read subtitle file &apos;{name}&apos;: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1448"/>
+        <location filename="../subtitle_controller.py" line="1475"/>
         <source>Tệp &apos;{name}&apos; không có phụ đề nào đọc được. Hãy kiểm tra định dạng SubRip (.srt).</source>
         <translation>No readable cues in &apos;{name}&apos;. Check the SubRip (.srt) format.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1745"/>
+        <location filename="../subtitle_controller.py" line="1773"/>
         <source>Không thể mở tệp ghi phụ đề: {error}</source>
         <translation>Could not open the subtitle output file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1683"/>
-        <location filename="../subtitle_controller.py" line="1799"/>
-        <location filename="../subtitle_controller.py" line="1814"/>
-        <location filename="../subtitle_controller.py" line="1843"/>
+        <location filename="../subtitle_controller.py" line="1711"/>
+        <location filename="../subtitle_controller.py" line="1827"/>
+        <location filename="../subtitle_controller.py" line="1842"/>
+        <location filename="../subtitle_controller.py" line="1871"/>
         <source>Không thể tạo tác vụ tổng hợp.</source>
         <translation>Could not create a synthesis job.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="488"/>
+        <location filename="../subtitle_controller.py" line="491"/>
         <source>{action} sẽ xóa bản lồng tiếng đã tạo và tệp phụ đề đã căn chỉnh. Tiếp tục?</source>
         <extracomment>Transcript mode&apos;s real default: preserve pauses but cap them (FR-1.5). Burn-in re-encodes and can take minutes; this carries ffmpeg&apos;s fraction so the card shows a real bar instead of a silent freeze. A render-destroying change is staged and needs a user decision. True once the user set the gap explicitly; until then transcript mode uses its real default instead of &quot;uncapped&quot; (FR-1.5).</extracomment>
         <translation>{action} will delete the rendered dub and the retimed subtitle file. Continue?</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="600"/>
+        <location filename="../subtitle_controller.py" line="603"/>
         <source>Bản lồng tiếng và phụ đề đã căn chỉnh không còn khớp với thay đổi ({reason}). Hãy tạo lại để xuất.</source>
         <translation>The dub and retimed subtitles no longer match the change ({reason}). Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="604"/>
+        <location filename="../subtitle_controller.py" line="607"/>
         <source>Bản lồng tiếng đã lưu không khớp với cấu hình hiện tại. Hãy tạo lại để xuất.</source>
         <translation>The saved dub does not match the current settings. Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="609"/>
+        <location filename="../subtitle_controller.py" line="612"/>
         <source>đổi chế độ</source>
         <translation>mode change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="610"/>
+        <location filename="../subtitle_controller.py" line="613"/>
         <source>đổi mức nén</source>
         <translation>compression change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="611"/>
+        <location filename="../subtitle_controller.py" line="614"/>
         <source>đổi giới hạn khoảng lặng</source>
         <translation>pause-cap change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="612"/>
+        <location filename="../subtitle_controller.py" line="615"/>
         <source>đổi độ lệch</source>
         <translation>offset change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="613"/>
+        <location filename="../subtitle_controller.py" line="616"/>
         <source>đổi cách gộp câu</source>
         <translation>sentence-merge change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="614"/>
+        <location filename="../subtitle_controller.py" line="617"/>
         <source>đổi giọng đọc</source>
         <translation>voice change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="615"/>
+        <location filename="../subtitle_controller.py" line="618"/>
         <source>sửa phụ đề</source>
         <translation>cue edit</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="616"/>
+        <location filename="../subtitle_controller.py" line="619"/>
         <source>phân tách người nói</source>
         <translation>speaker diarization</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="617"/>
+        <location filename="../subtitle_controller.py" line="620"/>
         <source>tinh chỉnh bằng AI</source>
         <translation>AI refinement</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="618"/>
+        <location filename="../subtitle_controller.py" line="621"/>
         <source>nhận diện lại phụ đề</source>
         <translation>subtitle re-recognition</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="635"/>
+        <location filename="../subtitle_controller.py" line="638"/>
         <source>Chưa có dự án phụ đề nào. Hãy nhập tệp để bắt đầu.</source>
         <translation>No subtitle project yet. Import a file to start.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="639"/>
+        <location filename="../subtitle_controller.py" line="642"/>
         <source>Chưa có bản lồng tiếng để xuất. Hãy tạo âm thanh trước.</source>
         <translation>No dub to export yet. Render the audio first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="811"/>
+        <location filename="../subtitle_controller.py" line="834"/>
         <source>Đổi chế độ khớp thời gian</source>
         <translation>Change the timing mode</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="830"/>
+        <location filename="../subtitle_controller.py" line="853"/>
         <source>Đổi mức nén</source>
         <translation>Change the compression cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="857"/>
+        <location filename="../subtitle_controller.py" line="880"/>
         <source>Đổi giới hạn khoảng lặng</source>
         <translation>Change the pause cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="880"/>
+        <location filename="../subtitle_controller.py" line="903"/>
         <source>Đổi độ lệch thời gian</source>
         <translation>Change the time offset</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="900"/>
+        <location filename="../subtitle_controller.py" line="923"/>
         <source>Đổi cách gộp câu</source>
         <translation>Change sentence merging</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="919"/>
+        <location filename="../subtitle_controller.py" line="942"/>
         <source>Đổi giọng đọc</source>
         <translation>Change the voice</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1460"/>
+        <location filename="../subtitle_controller.py" line="1487"/>
         <source>Không tìm thấy tệp video: {name}</source>
         <translation>Video file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1598"/>
+        <location filename="../subtitle_controller.py" line="1626"/>
         <source>Không mở được dự án phụ đề đã chọn.</source>
         <translation>Could not open the selected subtitle project.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1699"/>
+        <location filename="../subtitle_controller.py" line="1727"/>
         <source>Giọng đọc &apos;{voice}&apos; của &apos;{speaker}&apos; không hợp lệ.</source>
         <translation>Voice &apos;{voice}&apos; for &apos;{speaker}&apos; is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1781"/>
-        <location filename="../subtitle_controller.py" line="2380"/>
+        <location filename="../subtitle_controller.py" line="1809"/>
+        <location filename="../subtitle_controller.py" line="2414"/>
         <source>Đã hủy xuất.</source>
         <translation>Export cancelled.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1827"/>
+        <location filename="../subtitle_controller.py" line="1855"/>
         <source>Giọng đọc &apos;{voice}&apos; không hợp lệ cho hồ sơ hiện tại.</source>
         <translation>Voice &apos;{voice}&apos; is invalid for the current profile.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1840"/>
+        <location filename="../subtitle_controller.py" line="1868"/>
         <source>Không thể tạo tác vụ tổng hợp: {error}</source>
         <translation>Could not create a synthesis job: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1876"/>
-        <location filename="../subtitle_controller.py" line="1963"/>
+        <location filename="../subtitle_controller.py" line="1904"/>
+        <location filename="../subtitle_controller.py" line="1991"/>
         <source>Tổng hợp thất bại.</source>
         <translation>Synthesis failed.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1894"/>
-        <location filename="../subtitle_controller.py" line="1927"/>
+        <location filename="../subtitle_controller.py" line="1922"/>
+        <location filename="../subtitle_controller.py" line="1955"/>
         <source>Tệp âm thanh vừa tạo không hợp lệ.</source>
         <translation>The generated audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1933"/>
+        <location filename="../subtitle_controller.py" line="1961"/>
         <source>Không đọc được âm thanh vừa tạo: {error}</source>
         <translation>Could not read the rendered audio: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1937"/>
+        <location filename="../subtitle_controller.py" line="1965"/>
         <source>Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).</source>
         <translation>The rendered audio has an unsupported sample rate ({rate} Hz).</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1948"/>
+        <location filename="../subtitle_controller.py" line="1976"/>
         <source>Không ghép được âm thanh vào phụ đề: {error}</source>
         <translation>Could not fit audio to subtitles: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2005"/>
+        <location filename="../subtitle_controller.py" line="2039"/>
         <source>Không thể hoàn tất tệp phụ đề âm thanh: {error}</source>
         <translation>Could not finalize the subtitle audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2082"/>
+        <location filename="../subtitle_controller.py" line="2116"/>
         <source>Chưa có bản âm thanh — đang tạo trước khi phát.</source>
         <translation>No audio yet — generating it before playback.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2096"/>
+        <location filename="../subtitle_controller.py" line="2130"/>
         <source>Chưa có tệp âm thanh để phát.</source>
         <translation>Nothing to play yet — generate it first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2103"/>
+        <location filename="../subtitle_controller.py" line="2137"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2165"/>
+        <location filename="../subtitle_controller.py" line="2199"/>
         <source>Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề.</source>
         <translation>No audio yet — generate audio before seeking through subtitles.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2245"/>
+        <location filename="../subtitle_controller.py" line="2279"/>
         <source>Chưa có tệp âm thanh để xuất.</source>
         <translation>There is no audio file to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2288"/>
+        <location filename="../subtitle_controller.py" line="2322"/>
         <source>Chưa có phụ đề đã chỉnh để xuất.</source>
         <translation>There are no retimed subtitles to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2329"/>
+        <location filename="../subtitle_controller.py" line="2363"/>
         <source>Chưa có tệp âm thanh để ghép video.</source>
         <translation>There is no audio file to mux into the video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2267"/>
+        <location filename="../subtitle_controller.py" line="2301"/>
         <source>Không thể xuất tệp âm thanh: {error}</source>
         <translation>Could not export the audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2311"/>
+        <location filename="../subtitle_controller.py" line="2345"/>
         <source>Không thể xuất tệp phụ đề: {error}</source>
         <translation>Could not export the subtitle file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2334"/>
+        <location filename="../subtitle_controller.py" line="2368"/>
         <source>Chưa chọn tệp video nguồn hợp lệ để ghép.</source>
         <translation>No valid source video file selected for muxing.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2413"/>
+        <location filename="../subtitle_controller.py" line="2447"/>
         <source>Không thể xuất video lồng tiếng: {error}</source>
         <translation>Could not export dubbed video: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2523"/>
-        <location filename="../subtitle_controller.py" line="2542"/>
+        <location filename="../subtitle_controller.py" line="2580"/>
+        <location filename="../subtitle_controller.py" line="2599"/>
         <source>Chưa có tệp video để nhận diện phụ đề.</source>
         <translation>No video file selected for subtitle transcription.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2526"/>
-        <location filename="../subtitle_controller.py" line="2642"/>
-        <location filename="../subtitle_controller.py" line="2897"/>
+        <location filename="../subtitle_controller.py" line="2583"/>
+        <location filename="../subtitle_controller.py" line="2699"/>
+        <location filename="../subtitle_controller.py" line="2954"/>
         <source>Đang bận — hãy chờ tác vụ hiện tại hoàn tất.</source>
         <translation>Busy — wait for the current task to finish.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2533"/>
+        <location filename="../subtitle_controller.py" line="2590"/>
         <source>Nhận diện lại phụ đề</source>
         <translation>Re-recognize subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2551"/>
-        <location filename="../subtitle_controller.py" line="2560"/>
+        <location filename="../subtitle_controller.py" line="2608"/>
+        <location filename="../subtitle_controller.py" line="2617"/>
         <source>Đang nhận diện giọng nói (ASR)…</source>
         <translation>Transcribing speech (ASR)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2567"/>
-        <location filename="../subtitle_controller.py" line="2669"/>
-        <location filename="../subtitle_controller.py" line="2674"/>
+        <location filename="../subtitle_controller.py" line="2624"/>
+        <location filename="../subtitle_controller.py" line="2726"/>
+        <location filename="../subtitle_controller.py" line="2731"/>
         <source>Đang phân tách người nói…</source>
         <translation>Diarizing speakers…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2596"/>
+        <location filename="../subtitle_controller.py" line="2653"/>
         <source>Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên.</source>
         <translation>Speaker diarization cancelled; the subtitles were kept.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2601"/>
+        <location filename="../subtitle_controller.py" line="2658"/>
         <source>Không phân tách được người nói: {error}</source>
         <translation>Could not separate speakers: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2614"/>
+        <location filename="../subtitle_controller.py" line="2671"/>
         <source>Không nhận diện được phụ đề nào trong video này.</source>
         <translation>No subtitles were recognized in this video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2646"/>
-        <location filename="../subtitle_controller.py" line="2660"/>
+        <location filename="../subtitle_controller.py" line="2703"/>
+        <location filename="../subtitle_controller.py" line="2717"/>
         <source>Cần đính kèm tệp video gốc trước khi phân tách người nói.</source>
         <translation>An original video file must be attached before running speaker diarization.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2650"/>
+        <location filename="../subtitle_controller.py" line="2707"/>
         <source>Phân tách người nói</source>
         <translation>Separate speakers</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2748"/>
+        <location filename="../subtitle_controller.py" line="2805"/>
         <source>Nội dung phụ đề không được để trống.</source>
         <translation>Subtitle text cannot be empty.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2759"/>
+        <location filename="../subtitle_controller.py" line="2816"/>
         <source>Sửa phụ đề</source>
         <translation>Edit subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2769"/>
+        <location filename="../subtitle_controller.py" line="2826"/>
         <source>Cần video nguồn để nghe mẫu giọng của người nói.</source>
         <translation>A source video is required to play a speaker voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2815"/>
+        <location filename="../subtitle_controller.py" line="2872"/>
         <source>Cần video nguồn và phân tách người nói để lấy mẫu giọng.</source>
         <translation>Source video and speaker diarization are required to extract a voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2819"/>
+        <location filename="../subtitle_controller.py" line="2876"/>
         <source>Hồ sơ mô hình hiện tại không hỗ trợ nhân bản giọng nói từ video.</source>
         <translation>The current model profile does not support voice cloning from video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2825"/>
+        <location filename="../subtitle_controller.py" line="2882"/>
         <source>Vui lòng xác nhận cam kết sử dụng giọng nhân bản trong thẻ Nhân bản giọng trước khi lấy mẫu.</source>
         <translation>Please accept the voice cloning consent in the Voices tab before extracting a sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2839"/>
+        <location filename="../subtitle_controller.py" line="2896"/>
         <source>Đang trích xuất mẫu giọng {spk}…</source>
         <translation>Extracting voice sample for {spk}…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2902"/>
+        <location filename="../subtitle_controller.py" line="2959"/>
         <source>Tinh chỉnh phụ đề bằng AI</source>
         <translation>Refine subtitles with AI</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2924"/>
+        <location filename="../subtitle_controller.py" line="2983"/>
         <source>Đang làm sạch phụ đề &amp; người nói (LLM)…</source>
         <translation>Cleaning subtitles &amp; speakers (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2925"/>
+        <location filename="../subtitle_controller.py" line="2984"/>
         <source>Đang rút gọn phụ đề khớp thời gian (LLM)…</source>
         <translation>Shortening subtitles to fit timing (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2926"/>
+        <location filename="../subtitle_controller.py" line="2985"/>
         <source>Đang dịch phụ đề khớp thời gian (LLM)…</source>
         <translation>Translating subtitles to fit timing (LLM)…</translation>
     </message>
@@ -5360,77 +5477,98 @@
 <context>
     <name>SubtitlePreparePanel</name>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="30"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="50"/>
         <source>Theo ngôn ngữ tổng hợp</source>
         <translation>Use the synthesis language</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="55"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="75"/>
         <source>CÔNG CỤ AI · THEO THỨ TỰ</source>
         <translation>AI TOOLS · IN ORDER</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="62"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="82"/>
         <source>Hủy AI</source>
         <translation>Cancel AI</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="64"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="84"/>
         <source>Không có tác vụ AI nào đang chạy.</source>
         <translation>No AI task is running.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="80"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="100"/>
         <source>AI Làm sạch phụ đề</source>
         <translation>AI Clean subtitles</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="81"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="101"/>
         <source>Bước 1 · Sửa chính tả và nhãn người nói trên toàn bộ phụ đề.</source>
         <translation>Step 1 · Fix spelling and speaker labels across every cue.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="94"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="114"/>
         <source>AI Dịch lồng tiếng</source>
         <translation>AI Translate for dubbing</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="95"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="115"/>
         <source>Bước 2 · Dịch phụ đề sang ngôn ngữ đích đã chọn.</source>
         <translation>Step 2 · Translate subtitles into the chosen target language.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="108"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="128"/>
         <source>Ngôn ngữ đích khi dịch</source>
         <translation>Translation target language</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="124"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="144"/>
         <source>AI Rút gọn khớp thời gian</source>
         <translation>AI Shorten to fit timing</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="125"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="145"/>
         <source>Bước 3 · Rút ngắn câu cho vừa tốc độ đọc tối đa.</source>
         <translation>Step 3 · Shorten sentences to fit the maximum reading rate.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="144"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="164"/>
         <source>ASR cần mô hình Whisper; AI cần máy chủ LLM tương thích OpenAI.</source>
         <translation>ASR needs a Whisper model; AI needs an OpenAI-compatible LLM server.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="155"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="176"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="231"/>
+        <source>Thuật ngữ &amp; cách xưng hô</source>
+        <translation>Glossary &amp; pronoun rules</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="177"/>
+        <source>Ghi chú tên riêng, thuật ngữ và quy tắc xưng hô giữa các nhân vật cho AI</source>
+        <translation>Notes on proper names, terminology, and speaker pronoun rules for AI</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="185"/>
         <source>Mở Cài đặt › Mô hình</source>
         <translation>Open Settings › Models</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="156"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="186"/>
         <source>Mở phần cài đặt mô hình AI và nhận dạng giọng nói</source>
         <translation>Open the AI model and speech-recognition settings</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitlePreparePanel.qml" line="182"/>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="203"/>
+        <source>Ghi chú tên riêng, thuật ngữ và quy tắc xưng hô (tối đa 4000 ký tự, gửi kèm mọi tác vụ AI).</source>
+        <translation>Notes on proper names, terminology, and pronoun rules (up to 4000 characters, sent with every AI task).</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="218"/>
+        <source>Ví dụ: Minh -&gt; Minh (giữ nguyên); SPEAKER_01 -&gt; SPEAKER_02: xưng anh - gọi em</source>
+        <translation>Example: Minh -&gt; Minh (keep as-is); SPEAKER_01 -&gt; SPEAKER_02: use formal/informal pronouns</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitlePreparePanel.qml" line="267"/>
         <source>Tiến độ tác vụ AI</source>
         <translation>AI task progress</translation>
     </message>

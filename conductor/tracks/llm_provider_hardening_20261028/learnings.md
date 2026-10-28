@@ -69,3 +69,9 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - Refinement notes surface through the subtitle controller hint; failed batches keep original cue text and append notes rather than dropping cues.
 - QML boolean setters reached via Python `Property` setters must ignore `bool` values — QML `CheckBox.checked` is bool and would bypass the int clamp otherwise.
 - Focused gate: 101 controller/subtitle tests green; full gate 1600 passed, 5 skipped, same 6 ARM64 baseline failures, plus a flaky `test_worker_thread_safety_smoke` xdist worker crash (passes standalone, unrelated to this track).
+
+## 2026-10-28 - Phase 4 Task 4.2: Settings Whisper API + LLM advanced UI & Prepare-stage glossary editor
+- PySide6 cannot convert `QQuickTextInput::EchoMode` directly via `.property("echoMode")`; expose `readonly property bool passwordEcho: root.echoMode === TextInput.Password` on `AppTextField` for Python smoke assertions.
+- Multi-line `TextArea` (`subtitleGlossaryField`) has no built-in `editingFinished` signal like `TextField`; commit via a custom `signal editingFinished()` + `onActiveFocusChanged` when focus leaves so programmatic and interactive edits both persist.
+- Translation catalog updated and compiled via `scripts/update_i18n.sh` (1216 finished, 0 unfinished); offscreen screenshots verified with `view_media`.
+- Focused gate: 27 UI/smoke/i18n tests green.

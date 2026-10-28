@@ -172,7 +172,8 @@ an explicit stored choice is never overridden):
   `clickable`/`cardHovered`/`cardClicked`), `AppCombo`, `AppSlider`,
   `AppNumberField` (precise clamped numeric entry synced both ways with its
   slider, v0.1.16), `AppToggle`, `AppProgressBar` and `AppTextField`
-  (added in `subtitles_ux_overhaul_20261023` with built-in `Accessible.name`),
+  (added in `subtitles_ux_overhaul_20261023` with built-in `Accessible.name`,
+  plus `passwordEcho` in `llm_provider_hardening_20261028`),
   `AppIcon`, `AppIconButton` (square 40 px minimum hit target, v0.1.16),
   `AppNotice`, `AppSegmented`, `AppMenu`/`AppMenuItem`, `SectionLabel`,
   `StatusBadge`, `StatusBar`, `TransportDock`, `EmotionChip`, `VoicePicker`
@@ -184,8 +185,9 @@ an explicit stored choice is never overridden):
   `QwenInstallCards`/`QwenDevicePicker`/`QwenSetupDialog` + singleton
   `EngineState`, and the Subtitles components `SubtitleActionDock`/
   `SubtitleSourcePanel`/`SubtitlePreparePanel`/`SubtitleCueEditor`/
-  `SubtitleCastPanel` (extracted from `SubtitleCard.qml` in
-  `subtitles_ux_overhaul_20261023`, 1473 → 646 lines). Feature-surface cards
+  `SubtitleCastPanel`/`SubtitleVideoPreview` (extracted from `SubtitleCard.qml`
+  in `subtitles_ux_overhaul_20261023`, 1473 → 646 lines, plus
+  `SubtitleVideoPreview.qml` in `video_preview_panel_20261028`). Feature-surface cards
   that are NOT in `qmldir` — `BatchQueueCard`, `DocumentEditorCard`,
   `ComposeEditorCard`, `CreateInspector`, `SubtitleCard` — are reached by the
   consuming tab's `import "components"`. Tabs import `"."` for `Theme` and
@@ -285,11 +287,13 @@ an explicit stored choice is never overridden):
   `BatchQueueCard` is now a list-only queue panel, and a mode switch keeps the
   page scrolled in place (`e255027`).
 - SRT subtitle dub/transcript studio (2026-09-14, bead-driven; extended
-  2026-10-19..26 by `VieNeuTTSApp-n5ts`, `VieNeuTTSApp-b3nq`, `ab1aad1`,
+  2026-10-19..28 by `VieNeuTTSApp-n5ts`, `VieNeuTTSApp-b3nq`, `ab1aad1`,
   `aef1d87`, `VieNeuTTSApp-eet9` `12734a0`, `VieNeuTTSApp-2ifr`,
   `asr_hardening_20261021` `VieNeuTTSApp-7u58`,
-  `subtitles_ux_overhaul_20261023` `VieNeuTTSApp-weit`, and
-  `dub_pacing_alignment_20261026` `VieNeuTTSApp-o8af`):
+  `subtitles_ux_overhaul_20261023` `VieNeuTTSApp-weit`,
+  `dub_pacing_alignment_20261026` `VieNeuTTSApp-o8af`,
+  `video_preview_panel_20261028` `VieNeuTTSApp-t80a`, and
+  `llm_provider_hardening_20261028` `VieNeuTTSApp-f783`):
   `core/subtitles.py` (pure `.srt` cue model — parse, strip styling /
   `{\an8}`-style override blocks and `NON_SPEECH_LABELS` tokens like
   `[BLANK_AUDIO]`/`[MUSIC]`, collapse whitespace, re-emit; tolerant
@@ -308,7 +312,9 @@ an explicit stored choice is never overridden):
   punctuation pause weights via `split_unit_audio`; `adjusted_cues` preserves
   readable caption display hold; NumPy WSOLA reuses the app's reading-speed
   bounds), `core/subtitle_project.py` (workspace store with sparse
-  `speechStartMs`/`speechEndMs` JSON emission + streaming
+  `speechStartMs`/`speechEndMs` and `llmGlossary` JSON emission (capped at
+  4,000 chars and excluded from `render_fingerprint` and staged render
+  invalidation) + streaming
   `SubtitleTrackRenderer` writing `PCM_16` `track.wav` clip-by-clip with
   pre-fit `trim_speech_edges` + `apply_micro_fade` and uniform merged-unit
   stretching via `add_unit_clip`, a render fingerprint that caches the track
@@ -318,18 +324,20 @@ an explicit stored choice is never overridden):
   `splice_studio_window_into_subtitle` save-back from Audio Studio), and
   `ui/subtitle_controller.py` + `ui/qml/SubtitlesTab.qml` +
   (`SubtitleSourcePanel`, `SubtitlePreparePanel`, `SubtitleCueEditor`,
-  `SubtitleCastPanel`). Since `subtitles_ux_overhaul_20261023`,
+  `SubtitleCastPanel`, `SubtitleVideoPreview`). Since `subtitles_ux_overhaul_20261023`,
   `SubtitleController` enforces a staged `_PendingInvalidation` confirmation
   gate (`renderInvalidationRequested` + confirm/reject), preserves `lastStats`
   under `renderStale` with `exportBlockedReason`, manages project workspaces
   (`projects`, `openProject`, `removeProject`), cancels in-flight video exports
-  (`cancelExport`), caches `videoOverrunMs`, and drives the UI from a single
-  derived `state` + `busyOwner` (`""|ai|render|export`) with
+  (`cancelExport`), caches `videoOverrunMs`, coordinates dual-mode video
+  preview (`videoUrl`, `videoSeekRequested`, `videoReleaseRequested`,
+  `notifyVideoPreviewPlaying`, `syncActiveCueFromVideo`), and drives the UI
+  from a single derived `state` + `busyOwner` (`""|ai|render|export`) with
   `API_ONLY_PROPERTIES` contract verification.
 - Video dubbing, Whisper ASR, speaker diarization, LLM refinement & managed AI
-  downloads (2026-10-19..26, epics `VieNeuTTSApp-b3nq`, `VieNeuTTSApp-2ifr`,
-  `VieNeuTTSApp-7u58`, `VieNeuTTSApp-weit`, `VieNeuTTSApp-o8af`; zero new root
-  dependencies):
+  downloads (2026-10-19..28, epics `VieNeuTTSApp-b3nq`, `VieNeuTTSApp-2ifr`,
+  `VieNeuTTSApp-7u58`, `VieNeuTTSApp-weit`, `VieNeuTTSApp-o8af`,
+  `VieNeuTTSApp-t80a`, `VieNeuTTSApp-f783`; zero new root dependencies):
   - `core/video_dub.py`: companion `.srt`/video discovery, `ffmpeg` audio
     extraction (full or `[start_ms, end_ms]` slices), and `-c:v copy`
     stream-copy video muxing (`replace` or `duck` background audio mix with
@@ -356,11 +364,18 @@ an explicit stored choice is never overridden):
     `subtitleEmbedMode` (`core/subtitle_project.py`, `soft` default), and
     `_run_ffmpeg` accepts a `cancel_check` callback wired to
     `SubtitleController.cancelExport()`.
-  - `core/asr.py` (hardened in `asr_hardening_20261021`, epic
-    `VieNeuTTSApp-7u58`): on-device Whisper (`faster-whisper` with VAD and
+  - `core/asr.py` (hardened in `asr_hardening_20261021` epic
+    `VieNeuTTSApp-7u58` and `llm_provider_hardening_20261028` epic
+    `VieNeuTTSApp-f783`): on-device Whisper (`faster-whisper` with VAD and
     1-entry model cache, `whisper.cpp` `whisper-cli` with local GGUF/bin weights
     preferred by `auto` when installed, `openai-whisper`) or OpenAI-compatible
-    `/audio/transcriptions`, with `AsrCancelled` semantics, in-process
+    `/audio/transcriptions` with a separate `AsrConfig.api_model` (`whisper-1`
+    default), `asr_api_base_url`/`asr_api_model`/`asr_api_key` settings (never
+    leaking the LLM API key to a different ASR host, and gating `auto` cloud
+    fallback on an explicit `asr_api_base_url`), and silence-aware 600 s /
+    24 MiB temporary 16 kHz mono `PCM_16` chunked upload (`_split_audio_chunks`)
+    with 200-char prompt continuity and offset segment/word/speech timestamps;
+    plus `AsrCancelled` semantics, in-process
     `soundfile`+`numpy` 16 kHz mono WAV normalization (`_ensure_16k_wav` +
     `.json` sidecar), `asr_segments_cache.json` caching under
     `subtitles/_media_cache/<stem>_<hash8>/`, `asr_device`/`asr_threads`
@@ -382,10 +397,24 @@ an explicit stored choice is never overridden):
     `RttmTurn` bounds), and `select_speaker_reference_clip` /
     `extract_speaker_reference_wav` for 1-click speaker voice cloning and
     off-thread sample audition.
-  - `core/llm_refine.py`: stdlib `urllib.request` OpenAI-compatible
-    `/chat/completions` client (`probe_llm_connection`, `refine_cues_with_llm`
-    for `refine_asr`, `fit_timing`, and `translate_dub` with explicit target
-    language, `LANGUAGE_CHARS_PER_SEC` language-aware speaking rates, and
+  - `core/llm_client.py` + `core/llm_refine.py` (hardened in
+    `llm_provider_hardening_20261028`, epic `VieNeuTTSApp-f783`): stdlib
+    `urllib.request` OpenAI-compatible `/chat/completions` transport
+    (`post_chat_completion`, structured error taxonomy, `http_error_detail`
+    with credential redaction, `Retry-After`-aware bounded backoff, and a
+    lock-guarded `(base_url, model)` capability downgrade cache for HTTP 400
+    rejections of `temperature` or `response_format`) backing
+    `probe_llm_connection` and `refine_cues_with_llm` (`refine_asr`,
+    `fit_timing`, and `translate_dub` with explicit target language,
+    `<think>`/fence-tolerant `raw_decode` reply scanning, strict index matching
+    without positional fallback, `allowedSpeakers` whitelist in `refine_asr`,
+    slim JSON request envelope with per-project `llmGlossary` + read-only
+    `contextBefore`/`contextAfter`, per-batch transient failure isolation with
+    `notes`, `finish_reason="length"` bisection, missing-cue follow-up,
+    verified `fit_timing` within `ceil(maxChars * 1.1)`, bounded
+    `ThreadPoolExecutor` concurrency, per-task model overrides
+    `llm_model_refine`/`llm_model_translate`/`llm_model_fit`,
+    `LANGUAGE_CHARS_PER_SEC` language-aware speaking rates, and
     `speech_duration_ms` + bounded post-cue silence slack budgeting in
     `max_chars_for_window`).
   - `core/ai_models.py` + `SettingsModels.qml` (`settingsAiDubbingCard`):
@@ -403,7 +432,9 @@ an explicit stored choice is never overridden):
   reserved device names; BOM-safe (`utf-8-sig`) + universal-newline import.
 
 ## Persistence
-- `platformdirs.user_data_dir("VieNeuTTSApp")` + JSON (settings, incl.
+- `platformdirs.user_data_dir("VieNeuTTSApp")` + JSON (`settings.json` with
+  per-field validation/clamping in `load_settings` and POSIX `0o600` owner-only
+  file permissions since `llm_provider_hardening_20261028`, incl.
   `exportFormat` WAV/MP3 since v0.1.12). Diagnostic `crash.py` (v0.1.8):
   global excepthooks → timestamped `logs/crash.log` + native error dialog
   for windowed builds (Windows `MessageBox`; macOS `osascript` display alert
@@ -528,7 +559,7 @@ an explicit stored choice is never overridden):
   workstation (`aef1d87`); and Video Dubbing Studio support with per-speaker
   voice context, 1-click `studioExportVideo` splice+mux, and
   `studioPlayOriginalCue` original video audio audition (`12734a0`, bead
-  `eet9`). Post-v0.3.0 on `main` (2026-10-20..23): video-dubbing hardening
+  `eet9`). Post-v0.3.0 on `main` (2026-10-20..28): video-dubbing hardening
   (`d17a261` — diarization/muxing correctness, inline cue editing, per-speaker
   sample audition, AI progress bars, Studio staged-ops auto-commit),
   `VoicePicker` popup clipping/padding + `SubtitleCard` layout (`1661604`), the
@@ -538,12 +569,14 @@ an explicit stored choice is never overridden):
   `2ifr`), test-runtime reduction + torch isolation fix (`1542053` + `5eb6f85`,
   bead `4mqj`), track `asr_hardening_20261021` (`b09dd45..d50f43b`, epic `7u58`,
   archived `ed66f6a`), track `subtitles_ux_overhaul_20261023`
-  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`), and track
+  (`2f6fe8a..42ab565`, epic `weit`, archived `ed66f6a`), track
   `dub_pacing_alignment_20261026` (`765c10a..dfac5b8`, epic `o8af`, archived
-  `3d6418b`). Test suite 1614 collected / 1596 selected (18 benchmark
-  deselected); `ruff check .` + `ruff format --check .` green (214 files); i18n
-  1175/1175 finished; no root dependency drift (`pyproject.toml` / `uv.lock`
-  untouched).
+  `3d6418b`), track `video_preview_panel_20261028` (`4ddf6f8..2faa30a`, epic
+  `t80a`, archived `2faa30a`), and track `llm_provider_hardening_20261028`
+  (`3dfb2b5..4374d0f`, epic `f783`, archived `4374d0f`). Test suite 1630
+  collected / 1612 selected (18 benchmark deselected); `ruff check .` +
+  `ruff format --check .` green (216 files); i18n 1216/1216 finished; no root
+  dependency drift (`pyproject.toml` / `uv.lock` untouched).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

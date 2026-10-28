@@ -47,3 +47,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - Reply matching must not fall back to positions when any item has an index; speaker edits are limited to existing labels and only ASR refinement may change them.
 - Budget computation still uses the original cue's speech window and subsequent cue's timing, even though only the resulting `maxChars` is sent.
 - Full gate: 1593 passed, 5 skipped and the same 6 documented ARM64 baseline failures.
+
+## 2026-10-28 - Phase 2 Task 2.2: Resilient batch execution
+- Submit only up to the worker count and re-check cancellation before scheduling more; assemble completed batches by source position.
+- Missing fit-timing cues must not be sent to the corrective pass: they retain original text even when still over budget.
+- Full gate: 1597 passed, 5 skipped and the same 6 documented ARM64 baseline failures.

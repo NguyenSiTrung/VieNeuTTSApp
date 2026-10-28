@@ -7,11 +7,16 @@ vLLM, or cloud OpenAI / Gemini / DeepSeek / OpenRouter endpoints.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import math
 import re
+import threading
 from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Any
+from urllib.parse import urlparse
 
 from vienetts_app.core.llm_client import ChatResult, LlmConfig, LlmRefineError, post_chat_completion
 from vienetts_app.core.subtitles import Cue, clean_cue_text
@@ -228,10 +233,12 @@ def _build_request(
     rate_cap: float,
     glossary: str,
     allowed_speakers: set[str],
+    positions: Sequence[int] | None = None,
+    context_end: int | None = None,
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for offset, cue in enumerate(batch):
-        index = start + offset
+        index = positions[offset] if positions is not None else start + offset
         item: dict[str, Any] = {"index": cue.index, "speaker": cue.speaker, "text": cue.text}
         if task in ("translate_dub", "fit_timing"):
             gap = (
@@ -252,12 +259,24 @@ def _build_request(
     if task == "refine_asr" and allowed_speakers:
         envelope["allowedSpeakers"] = sorted(allowed_speakers)
     before = all_cues[max(0, start - 3) : start]
-    after = all_cues[start + len(batch) : start + len(batch) + 2]
+    end = start + len(batch) if context_end is None else context_end
+    after = all_cues[end : end + 2]
     if before:
         envelope["contextBefore"] = [{"speaker": c.speaker, "text": c.text} for c in before]
     if after:
         envelope["contextAfter"] = [{"speaker": c.speaker, "text": c.text} for c in after]
     return envelope
+
+
+def _auto_concurrency(base_url: str) -> int:
+    host = (urlparse(base_url).hostname or "").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".local"):
+        return 1
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return 3
+    return 1 if address.is_private or address.is_loopback or address.is_link_local else 3
 
 
 def refine_cues_with_llm(
@@ -267,7 +286,7 @@ def refine_cues_with_llm(
     task: str = "refine_asr",
     target_language: str = "vi",
     rate_cap: float = 1.35,
-    batch_size: int = 25,
+    batch_size: int | None = None,
     glossary: str = "",
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
@@ -277,19 +296,30 @@ def refine_cues_with_llm(
     cue_list = list(cues)
     if not cue_list:
         return []
-    step = max(1, int(batch_size))
+    step = max(1, int(config.batch_size if batch_size is None else batch_size))
     sys_prompt = _system_prompt_for_task(task, target_language)
     allowed_speakers = {c.speaker for c in cue_list if c.speaker}
     if len(glossary) > 2000 and notes is not None:
         notes.append("Thuật ngữ đã được rút gọn còn 2000 ký tự.")
-    out: list[Cue] = []
+    batches = [(start, cue_list[start : start + step]) for start in range(0, len(cue_list), step)]
+    stopped = threading.Event()
 
-    for start in range(0, len(cue_list), step):
-        if cancel_check is not None and cancel_check():
-            raise LlmRefineError("Đã hủy tác vụ tinh chỉnh AI.")
-        batch = cue_list[start : start + step]
+    def cancelled() -> bool:
+        return stopped.is_set() or (cancel_check is not None and cancel_check())
+
+    def check_cancel() -> None:
+        if cancelled():
+            raise LlmRefineError("Đã hủy tác vụ tinh chỉnh AI.", kind="cancelled")
+
+    def request(
+        entries: list[tuple[int, Cue]],
+        start: int,
+        end: int,
+        current: dict[int, int] | None = None,
+    ) -> ChatResult:
+        check_cancel()
         envelope = _build_request(
-            batch,
+            [cue for _, cue in entries],
             cue_list,
             start,
             task=task,
@@ -297,22 +327,166 @@ def refine_cues_with_llm(
             rate_cap=rate_cap,
             glossary=glossary,
             allowed_speakers=allowed_speakers,
+            positions=[position for position, _ in entries],
+            context_end=end,
         )
-        user_prompt = json.dumps(envelope, ensure_ascii=False)
-        reply = _post_chat_completion(
+        if current is not None:
+            for item in envelope["cues"]:
+                item["currentChars"] = current[item["index"]]
+        return _post_chat_completion(
             config,
             [
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": json.dumps(envelope, ensure_ascii=False)},
             ],
             json_mode=True,
-            cancel_check=cancel_check,
+            cancel_check=cancelled,
         )
-        updated, _ = _parse_reply(
-            reply.content, batch, task=task, allowed_speakers=allowed_speakers
-        )
-        out.extend(updated)
-        if progress_cb is not None:
-            progress_cb(min(1.0, len(out) / len(cue_list)))
 
-    return out
+    def parse_request(
+        entries: list[tuple[int, Cue]], start: int, end: int, retried: bool = False
+    ) -> tuple[list[Cue], list[int]]:
+        try:
+            reply = request(entries, start, end)
+            if reply.finish_reason == "length":
+                raise LlmRefineError("Phản hồi LLM bị cắt ngắn.", kind="format")
+            return _parse_reply(
+                reply.content,
+                [cue for _, cue in entries],
+                task=task,
+                allowed_speakers=allowed_speakers,
+            )
+        except LlmRefineError as exc:
+            if exc.kind != "format":
+                raise
+            if len(entries) > 5:
+                middle = len(entries) // 2
+                left, left_missing = parse_request(entries[:middle], start, end)
+                right, right_missing = parse_request(entries[middle:], start, end)
+                return left + right, left_missing + right_missing
+            if not retried:
+                return parse_request(entries, start, end, retried=True)
+            raise
+
+    def run_batch(start: int, batch: list[Cue]) -> tuple[list[Cue], int, int]:
+        end = start + len(batch)
+        entries = [(start + offset, cue) for offset, cue in enumerate(batch)]
+        budgets: dict[int, int] = {}
+        if task == "fit_timing":
+            envelope = _build_request(
+                batch,
+                cue_list,
+                start,
+                task=task,
+                target_language=target_language,
+                rate_cap=rate_cap,
+                glossary=glossary,
+                allowed_speakers=allowed_speakers,
+            )
+            budgets = {item["index"]: item["maxChars"] for item in envelope["cues"]}
+            entries = [
+                (position, cue) for position, cue in entries if len(cue.text) > budgets[cue.index]
+            ]
+        if not entries:
+            return batch, 0, 0
+        updated, missing = parse_request(entries, start, end)
+        by_index = {cue.index: cue for cue in updated}
+        if missing:
+            missing_set = set(missing)
+            follow_up = [(position, cue) for position, cue in entries if cue.index in missing_set]
+            try:
+                reply = request(follow_up, start, end)
+                if reply.finish_reason == "length":
+                    raise LlmRefineError("Phản hồi LLM bị cắt ngắn.", kind="format")
+                extra, missing = _parse_reply(
+                    reply.content,
+                    [cue for _, cue in follow_up],
+                    task=task,
+                    allowed_speakers=allowed_speakers,
+                )
+                by_index.update({cue.index: cue for cue in extra})
+            except LlmRefineError as exc:
+                if exc.kind in ("auth", "not_found", "bad_request", "cancelled"):
+                    raise
+        if task == "fit_timing":
+            unresolved = set(missing)
+            correction = [
+                (position, by_index[cue.index])
+                for position, cue in entries
+                if cue.index not in unresolved
+                and len(by_index[cue.index].text) > math.ceil(budgets[cue.index] * 1.1)
+            ]
+            if correction:
+                try:
+                    current = {cue.index: len(cue.text) for _, cue in correction}
+                    reply = request(correction, start, end, current)
+                    if reply.finish_reason == "length":
+                        raise LlmRefineError("Phản hồi LLM bị cắt ngắn.", kind="format")
+                    corrected, _ = _parse_reply(
+                        reply.content,
+                        [cue for _, cue in correction],
+                        task=task,
+                        allowed_speakers=allowed_speakers,
+                    )
+                    for candidate in corrected:
+                        previous = by_index[candidate.index]
+                        if candidate.text and len(candidate.text) < len(previous.text):
+                            by_index[candidate.index] = candidate
+                except LlmRefineError as exc:
+                    if exc.kind in ("auth", "not_found", "bad_request", "cancelled"):
+                        raise
+            for _, original in entries:
+                if len(by_index[original.index].text) > len(original.text):
+                    by_index[original.index] = original
+        result = [by_index.get(cue.index, cue) for cue in batch]
+        over = sum(len(cue.text) > budgets[cue.index] for cue in result) if budgets else 0
+        return result, len(missing), over
+
+    workers = min(len(batches), 8, max(1, config.concurrency or _auto_concurrency(config.base_url)))
+    results: list[list[Cue] | None] = [None] * len(batches)
+    errors: list[LlmRefineError] = []
+    missing_total = over_total = completed = next_batch = 0
+    executor = ThreadPoolExecutor(max_workers=workers)
+    pending = {}
+    try:
+        while next_batch < len(batches) or pending:
+            check_cancel()
+            while next_batch < len(batches) and len(pending) < workers:
+                check_cancel()
+                start, batch = batches[next_batch]
+                pending[executor.submit(run_batch, start, batch)] = next_batch
+                next_batch += 1
+            finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                batch_index = pending.pop(future)
+                try:
+                    result, missing, over = future.result()
+                except LlmRefineError as exc:
+                    if exc.kind in ("auth", "not_found", "bad_request", "cancelled"):
+                        raise
+                    errors.append(exc)
+                    result, missing, over = batches[batch_index][1], 0, 0
+                results[batch_index] = result
+                missing_total += missing
+                over_total += over
+                completed += 1
+                if progress_cb is not None:
+                    progress_cb(completed / len(batches))
+        check_cancel()
+    except BaseException:
+        stopped.set()
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    if len(errors) == len(batches):
+        raise errors[-1]
+    if notes is not None:
+        if errors:
+            notes.append(
+                f"{len(errors)}/{len(batches)} lô không xử lý được — giữ nguyên văn bản gốc."
+            )
+        if missing_total:
+            notes.append(f"{missing_total} phụ đề thiếu trong phản hồi — giữ nguyên văn bản gốc.")
+        if over_total:
+            notes.append(f"{over_total} phụ đề vẫn vượt giới hạn ký tự.")
+    return [cue for result in results if result is not None for cue in result]

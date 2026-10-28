@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -13,6 +14,7 @@ from vienetts_app.core.llm_refine import (
     ChatResult,
     LlmConfig,
     LlmRefineError,
+    _auto_concurrency,
     _parse_reply,
     _system_prompt_for_task,
     max_chars_for_window,
@@ -137,7 +139,9 @@ def test_llm_refine_modes_and_connection_probe() -> None:
         for task in ("refine_asr", "fit_timing", "translate_dub"):
             refined = refine_cues_with_llm(cues, cfg, task=task, target_language="auto")
             assert len(refined) == 2
-            assert refined[0].text == "Xin chào mọi người."
+            assert refined[0].text == (
+                cues[0].text if task == "fit_timing" else "Xin chào mọi người."
+            )
             assert refined[1].text == "Hôm nay trời đẹp quá."
             assert refined[1].speaker == "SPEAKER_01"
             assert refined[0].start_ms == 0 and refined[0].end_ms == 1500
@@ -313,3 +317,168 @@ def test_request_envelope_glossary_context_and_language(monkeypatch: pytest.Monk
         ("xx", "xx"),
     ):
         assert f"spoken {name}" in _system_prompt_for_task("translate_dub", code)
+
+
+def test_batch_failures_are_isolated_and_fatal_errors_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cues = [Cue(i, i * 1000, i * 1000 + 500, f"original{i}") for i in range(1, 4)]
+    seen: list[int] = []
+    error_kind = "server"
+
+    def fake_post(config, messages, **kwargs):
+        items = json.loads(messages[-1]["content"])["cues"]
+        index = items[0]["index"]
+        seen.append(index)
+        if index == 2 or error_kind == "auth" or error_kind == "all":
+            kind = "server" if error_kind == "all" else error_kind
+            raise LlmRefineError("provider failure", kind=kind, transient=kind == "server")
+        return ChatResult(json.dumps({"cues": [{"index": index, "text": f"refined{index}"}]}))
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)
+    notes: list[str] = []
+    result = refine_cues_with_llm(cues, LlmConfig(batch_size=1), notes=notes)
+    assert [c.text for c in result] == ["refined1", "original2", "refined3"]
+    assert any("1/3" in note for note in notes)
+    assert seen == [1, 2, 3]
+    error_kind = "all"
+    with pytest.raises(LlmRefineError, match="provider failure"):
+        refine_cues_with_llm(cues, LlmConfig(batch_size=1))
+    error_kind = "auth"
+    seen.clear()
+    with pytest.raises(LlmRefineError) as caught:
+        refine_cues_with_llm(cues, LlmConfig(batch_size=1))
+    assert caught.value.kind == "auth" and seen == [1]
+
+
+def test_truncation_and_missing_follow_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    cues = [Cue(i, i * 1000, i * 1000 + 500, f"original{i}") for i in range(1, 11)]
+    sizes: list[int] = []
+    mode = "split"
+
+    def fake_post(config, messages, **kwargs):
+        items = json.loads(messages[-1]["content"])["cues"]
+        sizes.append(len(items))
+        if mode == "split" and len(items) == 10:
+            return ChatResult("truncated", "length")
+        if mode == "invalid":
+            return ChatResult("not json")
+        if mode == "missing":
+            items = [item for item in items if item["index"] not in (2, 3)]
+        return ChatResult(
+            json.dumps({"cues": [{"index": item["index"], "text": "changed"} for item in items]})
+        )
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)
+    result = refine_cues_with_llm(cues, LlmConfig(), batch_size=10)
+    assert sizes == [10, 5, 5] and all(c.text == "changed" for c in result)
+    mode = "invalid"
+    sizes.clear()
+    with pytest.raises(LlmRefineError) as caught:
+        refine_cues_with_llm(cues[:5], LlmConfig(), batch_size=5)
+    assert caught.value.kind == "format" and sizes == [5, 5]
+    mode = "missing"
+    sizes.clear()
+    notes: list[str] = []
+    result = refine_cues_with_llm(cues[:5], LlmConfig(), batch_size=5, notes=notes)
+    assert sizes == [5, 2]
+    assert [c.text for c in result[:3]] == ["changed", "original2", "original3"]
+    assert any("2" in note for note in notes)
+
+
+def test_fit_only_over_budget_and_corrects_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[list[dict]] = []
+
+    def fake_post(config, messages, **kwargs):
+        items = json.loads(messages[-1]["content"])["cues"]
+        requests.append(items)
+        text = "x" * (20 if len(requests) == 1 else 14)
+        return ChatResult(json.dumps({"cues": [{"index": items[0]["index"], "text": text}]}))
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)
+    short = Cue(1, 0, 500, "OK")
+    long = Cue(2, 600, 700, "a" * 40)
+    assert refine_cues_with_llm([short], LlmConfig(), task="fit_timing") == [short]
+    assert not requests
+    notes: list[str] = []
+    result = refine_cues_with_llm([short, long], LlmConfig(), task="fit_timing", notes=notes)
+    assert len(requests) == 2
+    assert [item["index"] for item in requests[0]] == [2]
+    assert requests[1][0]["currentChars"] == 20
+    assert result[0] == short and result[1].text == "x" * 14
+    assert any("1" in note for note in notes)
+
+    requests.clear()
+
+    def missing_post(config, messages, **kwargs):
+        requests.append(json.loads(messages[-1]["content"])["cues"])
+        return ChatResult('{"cues":[]}')
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", missing_post)
+    notes.clear()
+    assert refine_cues_with_llm([long], LlmConfig(), task="fit_timing", notes=notes) == [long]
+    assert len(requests) == 2 and any("thiếu" in note for note in notes)
+
+
+def test_parallel_requests_are_ordered_and_cancel_stops_new_work(monkeypatch) -> None:
+    for url, workers in (
+        ("http://localhost:11434/v1", 1),
+        ("http://192.168.1.5:8000/v1", 1),
+        ("http://box.local/v1", 1),
+        ("https://api.openai.com/v1", 3),
+    ):
+        assert _auto_concurrency(url) == workers
+
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            nonlocal active, peak
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            items = json.loads(payload["messages"][-1]["content"])["cues"]
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            with contextlib.suppress(threading.BrokenBarrierError):
+                barrier.wait(timeout=5)
+            encoded = json.dumps(
+                {"choices": [{"message": {"content": json.dumps({"cues": items})}}]}
+            ).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(encoded)
+            with lock:
+                active -= 1
+
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    cues = [Cue(i, i * 1000, i * 1000 + 500, str(i)) for i in range(1, 7)]
+    try:
+        result = refine_cues_with_llm(
+            cues,
+            LlmConfig(base_url=f"http://127.0.0.1:{server.server_port}/v1", concurrency=3),
+            batch_size=1,
+        )
+        assert result == cues and peak >= 2
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    calls: list[int] = []
+
+    def cancel_after_first(config, messages, **kwargs):
+        calls.append(1)
+        return ChatResult(messages[-1]["content"])
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", cancel_after_first)
+    with pytest.raises(LlmRefineError) as caught:
+        refine_cues_with_llm(
+            cues, LlmConfig(concurrency=1, batch_size=1), cancel_check=lambda: bool(calls)
+        )
+    assert caught.value.kind == "cancelled" and len(calls) == 1

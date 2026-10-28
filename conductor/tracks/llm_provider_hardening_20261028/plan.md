@@ -52,7 +52,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
     - Add `_strip_reasoning`, a `raw_decode` candidate scanner, and `_parse_reply(raw, batch, *, task, allowed_speakers) -> tuple[list[Cue], list[int]]` to replace `_parse_refined_batch`.
     - Add `LANGUAGE_NAMES`, the new system prompts (context is read-only; reply shape `{"cues": [...]}`), and `_build_request(batch, all_cues, start, *, task, ...)`.
 
-- [ ] **Task 2.2: Batch failure isolation, truncation bisection, missing-cue follow-up, `fit_timing` verification and concurrency**
+- [x] **Task 2.2: Batch failure isolation, truncation bisection, missing-cue follow-up, `fit_timing` verification and concurrency**
   <!-- files: src/vienetts_app/core/llm_refine.py, tests/unit/test_llm_refine.py -->
   - Red tests (via the `_post_chat_completion` seam unless noted):
     - 3 batches where batch 2 always raises a transient `server` error: the result has batches 1 and 3 refined and batch 2 original, and `notes` gets a "1/3 lô" summary. If every batch fails, the last error is raised. An `auth` error on batch 1 raises immediately and no further batches are requested.

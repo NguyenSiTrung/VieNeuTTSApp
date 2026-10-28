@@ -46,6 +46,12 @@ from vienetts_app.core.audio_prep import (
     cache_key_paths,
     ensure_source_16k,
 )
+from vienetts_app.core.onnx_audio import (
+    SileroVad,
+    SpeakerEmbedder,
+    installed_silero_vad,
+    installed_speaker_embedder,
+)
 from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import Cue
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
@@ -158,11 +164,13 @@ def refine_cues_speech_bounds(
     turns: Sequence[RttmTurn] | None = None,
     threshold_db: float = -42.0,
     pad_ms: int = 30,
+    data_dir: Path | None = None,
 ) -> list[Cue]:
     """Refine each ``Cue``'s ``[speech_start_ms, speech_end_ms]`` inside ``[start_ms, end_ms]``.
 
-    Uses a 10 ms RMS energy VAD over ``wav_path`` when readable and intersects
-    with ``turns`` when provided. Keeps ``Cue.start_ms`` and ``Cue.end_ms``
+    Uses a VAD over ``wav_path`` when readable and intersects with ``turns``
+    when provided: Silero when its model is installed under ``data_dir``,
+    else a 10 ms RMS energy VAD. Keeps ``Cue.start_ms`` and ``Cue.end_ms``
     untouched, and leaves existing bounds unchanged when the WAV slice is
     silent or unreadable and no overlapping turns apply.
 
@@ -176,6 +184,7 @@ def refine_cues_speech_bounds(
     abs_thresh = float(10.0 ** (float(threshold_db) / 20.0))
     pad = max(0, int(pad_ms))
     wav_file = _open_wav_for_vad(wav_path)
+    vad = None if wav_file is None else installed_silero_vad(data_dir)
     order = sorted(range(len(cues)), key=lambda i: cues[i].start_ms)
     pending = sorted(turns or (), key=lambda t: t.start_ms)
     next_turn = 0
@@ -192,7 +201,7 @@ def refine_cues_speech_bounds(
             live = [t for t in live if t.end_ms > cue.start_ms]
 
             vad_bounds = (
-                None if wav_file is None else _cue_vad_bounds(wav_file, cue, abs_thresh, pad)
+                None if wav_file is None else _cue_vad_bounds(wav_file, cue, abs_thresh, pad, vad)
             )
             turn_bounds = _cue_turn_bounds(cue, live)
             chosen_bounds: tuple[int, int] | None = None
@@ -280,18 +289,40 @@ def _energy_vad(rms: np.ndarray, abs_thresh: float) -> np.ndarray | None:
     return np.flatnonzero(rms >= max(abs_thresh, peak_rms * 0.10))
 
 
-def _cue_vad_bounds(wav_file: Any, cue: Cue, abs_thresh: float, pad: int) -> tuple[int, int] | None:
-    """Energy-VAD speech span of ``cue`` (padded, clamped to the cue), or ``None``."""
-    mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
-    if mono is None:
-        return None
-    sr = int(wav_file.samplerate)
+def _speech_extent(
+    mono: np.ndarray, sr: int, abs_thresh: float, vad: SileroVad | None
+) -> tuple[int, int] | None:
+    """First speech sample and end of the last speech in ``mono``; ``None`` when silent.
+
+    Silero when given, else the energy VAD. A Silero failure falls back to
+    the energy VAD for this slice rather than losing the bounds.
+    """
+    if vad is not None:
+        try:
+            spans = vad.speech_spans(mono, sr)
+        except Exception as exc:  # noqa: BLE001 - ORT raises its own types
+            logger.warning("Silero VAD failed, using the energy VAD: %s", exc)
+        else:
+            return (spans[0][0], spans[-1][1]) if spans else None
     win_frames = max(1, int(round(sr * 0.010)))
     active = _energy_vad(_window_rms(mono, win_frames), abs_thresh)
     if active is None or active.size == 0:
         return None
-    onset_samples = int(active[0]) * win_frames
-    offset_samples = min(mono.size, (int(active[-1]) + 1) * win_frames)
+    return int(active[0]) * win_frames, min(mono.size, (int(active[-1]) + 1) * win_frames)
+
+
+def _cue_vad_bounds(
+    wav_file: Any, cue: Cue, abs_thresh: float, pad: int, vad: SileroVad | None = None
+) -> tuple[int, int] | None:
+    """VAD speech span of ``cue`` (padded, clamped to the cue), or ``None``."""
+    mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
+    if mono is None:
+        return None
+    sr = int(wav_file.samplerate)
+    extent = _speech_extent(mono, sr, abs_thresh, vad)
+    if extent is None:
+        return None
+    onset_samples, offset_samples = extent
     raw_start_ms = cue.start_ms + int(round(onset_samples * 1000.0 / sr))
     raw_end_ms = cue.start_ms + int(round(offset_samples * 1000.0 / sr))
     v_start = max(cue.start_ms, min(cue.end_ms, raw_start_ms - pad))
@@ -317,13 +348,14 @@ def assign_speakers_from_turns(
     turns: Sequence[RttmTurn],
     *,
     wav_path: str | Path | None = None,
+    data_dir: Path | None = None,
 ) -> list[Cue]:
     """Assign each ``Cue`` to the RTTM speaker turn with maximum temporal overlap."""
     if not cues:
         return []
     if not turns:
         out = [replace(c, speaker=c.speaker or "SPEAKER_01") for c in cues]
-        return refine_cues_speech_bounds(out, wav_path)
+        return refine_cues_speech_bounds(out, wav_path, data_dir=data_dir)
 
     out = []
     for cue in cues:
@@ -343,7 +375,7 @@ def assign_speakers_from_turns(
             )
             best_spk = nearest.speaker
         out.append(replace(cue, speaker=best_spk))
-    return refine_cues_speech_bounds(out, wav_path, turns=turns)
+    return refine_cues_speech_bounds(out, wav_path, turns=turns, data_dir=data_dir)
 
 
 #: One timed word: ``(start_ms, end_ms, text)`` in absolute media time — the
@@ -769,8 +801,12 @@ def _average_linkage_partitions(
     max_k: int,
     *,
     cancel_check: Callable[[], bool] | None = None,
+    merge_distances: list[float] | None = None,
 ) -> dict[int, list[int]]:
     """Average-linkage merge tree of ``dist``, as labels for every k <= ``max_k``.
+
+    ``merge_distances`` (optional) receives the average distance of each
+    merge in order; average linkage never decreases it.
 
     Merges the same pair as recomputing the full average-distance matrix each
     step and taking its row-major ``argmin``, which was O(n^3) overall (11 s
@@ -821,6 +857,8 @@ def _average_linkage_partitions(
             raise DiarizationCancelled("Đã hủy phân tách người nói.")
         a = int(np.argmin(nearest_dist))
         b = int(nearest[a])
+        if merge_distances is not None:
+            merge_distances.append(float(nearest_dist[a]))
         if a > b:
             a, b = b, a
         cluster_sum[a, :] += cluster_sum[b, :]
@@ -854,12 +892,18 @@ def _cluster_embeddings(
     max_speakers: int = 0,
     *,
     cancel_check: Callable[[], bool] | None = None,
+    stop_distance: float | None = None,
 ) -> list[int]:
     """Cosine agglomerative clustering returning 0-based speaker cluster indices.
 
     ``max_speakers`` is a ceiling, not an exact k: the best silhouette among
     2..ceiling wins. The previous exact-k behaviour turned "at most 4" into
     "exactly 4 labels", splitting a 2-person video into 4 speakers.
+
+    With ``stop_distance`` (calibrated neural embeddings) merging stops at
+    the first merge farther apart than it instead, still capped by the
+    ceiling: silhouette over-splits a single speaker whose embeddings are
+    never near-identical.
     """
     n = embeddings.shape[0]
     if n == 0:
@@ -875,11 +919,18 @@ def _cluster_embeddings(
     np.fill_diagonal(dist, 0.0)
 
     # If max pairwise distance is tiny, everyone is the same speaker.
-    if cap == 0 and float(np.max(dist)) < 0.08:
+    if stop_distance is None and cap == 0 and float(np.max(dist)) < 0.08:
         return [0] * n
 
     max_k = min(n, cap) if cap else min(6, n)
-    partitions = _average_linkage_partitions(dist, max_k, cancel_check=cancel_check)
+    merges: list[float] = []
+    partitions = _average_linkage_partitions(
+        dist, max_k, cancel_check=cancel_check, merge_distances=merges
+    )
+    if stop_distance is not None:
+        done = next((i for i, d in enumerate(merges) if d > stop_distance), len(merges))
+        k = min(n - done, max_k)
+        return _first_appearance_order(partitions[k] if k > 1 else [0] * n)
 
     best_k = 1
     best_score = 0.12  # minimum silhouette threshold to split into >=2 speakers
@@ -916,15 +967,13 @@ def _cluster_embeddings(
             best_score = mean_sil
             best_k = k
             best_labels = cand
-    raw_labels = best_labels if best_k > 1 else [0] * n
-    # Renumber clusters in order of first appearance (0 -> SPEAKER_01, 1 -> SPEAKER_02, ...)
+    return _first_appearance_order(best_labels if best_k > 1 else [0] * n)
+
+
+def _first_appearance_order(labels: Sequence[int]) -> list[int]:
+    """Renumber clusters by first appearance (0 -> SPEAKER_01, 1 -> SPEAKER_02, ...)."""
     remap: dict[int, int] = {}
-    ordered: list[int] = []
-    for lbl in raw_labels:
-        if lbl not in remap:
-            remap[lbl] = len(remap)
-        ordered.append(remap[lbl])
-    return ordered
+    return [remap.setdefault(lbl, len(remap)) for lbl in labels]
 
 
 TURNS_CACHE_FILENAME = "diar_turns_cache.json"
@@ -948,8 +997,12 @@ def _resolve_cli_backend(config: DiarizationConfig, data_dir: Path | None) -> st
         return "metal"
     if device == "vulkan" and installed_variant == "vulkan":
         return "vulkan"
-    # "auto", or a GPU the installed CPU/Metal runtime cannot serve: let the
-    # binary pick the best compiled backend instead of failing on "vulkan".
+    if device in ("cuda", "auto") and installed_variant.startswith("cuda"):
+        # A CUDA build (``cuda12.4``, ``cuda13.3``...) is installed for the
+        # NVIDIA GPU; "best" could still settle on a CPU backend.
+        return "cuda"
+    # "auto" on other builds, or a GPU the installed runtime cannot serve: let
+    # the binary pick the best compiled backend instead of failing on it.
     return "best"
 
 
@@ -1196,7 +1249,7 @@ def _run_nemotron_gguf_diarization(
     if cached is not None:
         if progress_cb is not None:
             progress_cb(1.0)
-        return assign_speakers_from_turns(cues, cached, wav_path=wav_path)
+        return assign_speakers_from_turns(cues, cached, wav_path=wav_path, data_dir=data_dir)
 
     if progress_cb is not None:
         progress_cb(_CLI_PROGRESS_START)
@@ -1288,7 +1341,7 @@ def _run_nemotron_gguf_diarization(
                 )
             if progress_cb is not None:
                 progress_cb(1.0)
-            return assign_speakers_from_turns(cues, [], wav_path=wav_path)
+            return assign_speakers_from_turns(cues, [], wav_path=wav_path, data_dir=data_dir)
         turns = parse_audiocpp_turns(
             turns_out.read_text(encoding="utf-8", errors="replace"),
             sample_rate=MODEL_SAMPLE_RATE,
@@ -1300,15 +1353,109 @@ def _run_nemotron_gguf_diarization(
                 )
             if progress_cb is not None:
                 progress_cb(1.0)
-            return assign_speakers_from_turns(cues, [], wav_path=wav_path)
+            return assign_speakers_from_turns(cues, [], wav_path=wav_path, data_dir=data_dir)
         _store_cached_turns(work_dir, cache_key, turns)
         if progress_cb is not None:
             progress_cb(1.0)
-        return assign_speakers_from_turns(cues, turns, wav_path=wav_path)
+        return assign_speakers_from_turns(cues, turns, wav_path=wav_path, data_dir=data_dir)
     finally:
         turns_temp.cleanup()
         with contextlib.suppress(OSError):
             turns_out.unlink(missing_ok=True)
+
+
+#: Average-linkage stop distance (1 - cosine) for the installed speaker
+#: embedding (CAM++): clusters farther apart than this are different people.
+#: Chosen on the DER benchmark, scripts/benchmarks/diarization_der.py.
+NEURAL_STOP_DISTANCE = 0.45
+#: Cues with less speech than this are attached to the speakers found on
+#: the longer ones instead of being clustered (see ``_neural_cue_labels``).
+_NEURAL_ANCHOR_MS = 1500
+
+
+def _neural_cue_vectors(
+    wav_path: Path,
+    cues: Sequence[Cue],
+    embedder: SpeakerEmbedder,
+    vad: SileroVad | None,
+    *,
+    progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[list[np.ndarray | None], list[int]]:
+    """Per cue: its speaker embedding (``None`` without audio) and its speech ms.
+
+    Each cue is embedded from its Silero speech only (the whole cue without
+    Silero or when it finds none).
+    """
+    import soundfile as sf
+
+    vectors: list[np.ndarray | None] = []
+    speech_ms: list[int] = []
+    with sf.SoundFile(str(wav_path)) as wav_file:
+        sr = int(wav_file.samplerate)
+        for i, cue in enumerate(cues):
+            if cancel_check is not None and cancel_check():
+                raise DiarizationCancelled("Đã hủy phân tách người nói.")
+            mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
+            vec = None
+            if mono is not None:
+                spans = vad.speech_spans(mono, sr) if vad is not None else []
+                if spans:
+                    mono = np.concatenate([mono[s:e] for s, e in spans])
+                vec = embedder.embed(mono, sr)
+            vectors.append(vec)
+            speech_ms.append(0 if vec is None else int(mono.size * 1000 // sr))
+            if progress_cb is not None:
+                progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
+    return vectors, speech_ms
+
+
+def _neural_cue_labels(
+    cues: Sequence[Cue],
+    vectors: Sequence[np.ndarray | None],
+    speech_ms: Sequence[int],
+    max_speakers: int,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    stop_distance: float | None = NEURAL_STOP_DISTANCE,
+) -> list[int]:
+    """Cluster labels of the cue embeddings.
+
+    Only cues with at least ``_NEURAL_ANCHOR_MS`` of speech are clustered: a
+    short "Vâng." embeds far from its speaker and became a speaker of its
+    own. Shorter cues join the nearest cluster centroid, and a cue without an
+    embedding takes the label of the nearest clustered cue in time.
+    """
+    known = [i for i, vec in enumerate(vectors) if vec is not None]
+    if not known:
+        return [0] * len(cues)
+    anchors = [i for i in known if speech_ms[i] >= _NEURAL_ANCHOR_MS]
+    if len(anchors) < 2:
+        anchors = known
+    anchor_labels = _cluster_embeddings(
+        np.vstack([vectors[i] for i in anchors]),
+        max_speakers=max_speakers,
+        cancel_check=cancel_check,
+        stop_distance=stop_distance,
+    )
+    by_index = dict(zip(anchors, anchor_labels, strict=True))
+    n_clusters = max(anchor_labels) + 1
+    centroids = np.zeros((n_clusters, np.asarray(vectors[anchors[0]]).size))
+    for i, lbl in by_index.items():
+        centroids[lbl] += vectors[i]
+    centroids /= np.maximum(np.linalg.norm(centroids, axis=1, keepdims=True), 1e-12)
+    for i in known:
+        if i not in by_index:
+            by_index[i] = int(np.argmax(centroids @ vectors[i]))
+    mids = [(cues[i].start_ms + cues[i].end_ms) / 2.0 for i in anchors]
+    labels = []
+    for i, cue in enumerate(cues):
+        if i not in by_index:
+            mid = (cue.start_ms + cue.end_ms) / 2.0
+            j = min(range(len(anchors)), key=lambda k: abs(mids[k] - mid))
+            by_index[i] = anchor_labels[j]
+        labels.append(by_index[i])
+    return _first_appearance_order(labels)
 
 
 def _run_acoustic_diarization(
@@ -1316,39 +1463,64 @@ def _run_acoustic_diarization(
     cues: Sequence[Cue],
     config: DiarizationConfig,
     *,
+    data_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[Cue]:
+    """Cluster cues by voice: the installed speaker model, else 24-dim features."""
     import soundfile as sf
 
-    info = sf.info(str(wav_path))
-    sr = int(info.samplerate)
-    total_frames = int(info.frames)
+    cluster_ids: list[int] | None = None
+    embedder = installed_speaker_embedder(data_dir)
+    if embedder is not None:
+        try:
+            vectors, speech_ms = _neural_cue_vectors(
+                wav_path,
+                cues,
+                embedder,
+                installed_silero_vad(data_dir),
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
+            )
+            cluster_ids = _neural_cue_labels(
+                cues,
+                vectors,
+                speech_ms,
+                max(0, int(config.max_speakers)),
+                cancel_check=cancel_check,
+            )
+        except DiarizationCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - ORT/fbank raise their own types
+            logger.warning("Speaker embedding failed, using the 24-dim fallback: %s", exc)
 
-    embeddings: list[np.ndarray] = []
-    for i, cue in enumerate(cues):
-        if cancel_check is not None and cancel_check():
-            raise DiarizationCancelled("Đã hủy phân tách người nói.")
-        start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
-        stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
-        samples, _ = read_wav_range(wav_path, start_f, stop_f)
-        embeddings.append(_cue_acoustic_embedding(samples, sr))
-        if progress_cb is not None:
-            progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
-
-    emb_matrix = np.vstack(embeddings) if embeddings else np.zeros((0, 24), dtype=np.float32)
-    cluster_ids = _cluster_embeddings(
-        emb_matrix,
-        max_speakers=max(0, int(config.max_speakers)),
-        cancel_check=cancel_check,
-    )
+    if cluster_ids is None:
+        info = sf.info(str(wav_path))
+        sr = int(info.samplerate)
+        total_frames = int(info.frames)
+        embeddings: list[np.ndarray] = []
+        for i, cue in enumerate(cues):
+            if cancel_check is not None and cancel_check():
+                raise DiarizationCancelled("Đã hủy phân tách người nói.")
+            start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
+            stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
+            samples, _ = read_wav_range(wav_path, start_f, stop_f)
+            embeddings.append(_cue_acoustic_embedding(samples, sr))
+            if progress_cb is not None:
+                progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
+        emb_matrix = np.vstack(embeddings) if embeddings else np.zeros((0, 24), dtype=np.float32)
+        cluster_ids = _cluster_embeddings(
+            emb_matrix,
+            max_speakers=max(0, int(config.max_speakers)),
+            cancel_check=cancel_check,
+        )
     if progress_cb is not None:
         progress_cb(1.0)
     tagged = [
         replace(cue, speaker=f"SPEAKER_{cid + 1:02d}")
         for cue, cid in zip(cues, cluster_ids, strict=True)
     ]
-    return refine_cues_speech_bounds(tagged, wav_path)
+    return refine_cues_speech_bounds(tagged, wav_path, data_dir=data_dir)
 
 
 def diarize_cues(
@@ -1415,11 +1587,14 @@ def diarize_cues(
 
         def _acoustic(scale_from: float = 0.0) -> list[Cue]:
             if progress_cb is None:
-                return _run_acoustic_diarization(wav_path, cues, cfg, cancel_check=cancel_check)
+                return _run_acoustic_diarization(
+                    wav_path, cues, cfg, data_dir=data_dir, cancel_check=cancel_check
+                )
             return _run_acoustic_diarization(
                 wav_path,
                 cues,
                 cfg,
+                data_dir=data_dir,
                 progress_cb=lambda p: progress_cb(scale_from + (1.0 - scale_from) * p),
                 cancel_check=cancel_check,
             )
@@ -1473,6 +1648,7 @@ def select_speaker_reference_clip(
     *,
     wav_path: str | Path | None = None,
     turns: Sequence[RttmTurn] | None = None,
+    data_dir: Path | None = None,
 ) -> tuple[int, int, str] | None:
     """Best ``(start_ms, end_ms, transcript)`` voice-cloning window for ``speaker``.
 
@@ -1482,10 +1658,11 @@ def select_speaker_reference_clip(
     gaps): no I/O, cheap enough for the GUI thread to key its clip cache on.
 
     With ``wav_path`` (the source WAV, any rate) each candidate is scored on
-    its audio (FR-4.4): duration within [3, 12] s, the energy-VAD speech
-    ratio, the RMS level, the clipped-sample ratio and how much of it overlaps
-    another speaker's turns; duration breaks ties. ``turns`` default to the
-    other speakers' cues. An unreadable WAV falls back to the cue-only choice.
+    its audio (FR-4.4): duration within [3, 12] s, the speech ratio (Silero
+    when installed under ``data_dir``, else the energy VAD), the RMS level,
+    the clipped-sample ratio and how much of it overlaps another speaker's
+    turns; duration breaks ties. ``turns`` default to the other speakers'
+    cues. An unreadable WAV falls back to the cue-only choice.
     """
     target = (speaker or "").strip()
     spk_cues = [c for c in cues if (c.speaker or "").strip() == target]
@@ -1499,7 +1676,9 @@ def select_speaker_reference_clip(
             others = [(c.start_ms, c.end_ms) for c in cues if (c.speaker or "").strip() != target]
         else:
             others = [(t.start_ms, t.end_ms) for t in turns if t.speaker.strip() != target]
-        return _reference_clip_from_audio(wav_file, spk_cues, others)
+        return _reference_clip_from_audio(
+            wav_file, spk_cues, others, installed_silero_vad(data_dir)
+        )
     finally:
         with contextlib.suppress(Exception):
             wav_file.close()
@@ -1553,7 +1732,10 @@ def _reference_clip_from_cues(spk_cues: Sequence[Cue]) -> tuple[int, int, str] |
 
 
 def _reference_clip_from_audio(
-    wav_file: Any, spk_cues: Sequence[Cue], others: Sequence[tuple[int, int]]
+    wav_file: Any,
+    spk_cues: Sequence[Cue],
+    others: Sequence[tuple[int, int]],
+    vad: SileroVad | None = None,
 ) -> tuple[int, int, str] | None:
     """Audio-scored choice (FR-4.4); see :func:`select_speaker_reference_clip`.
 
@@ -1582,7 +1764,7 @@ def _reference_clip_from_audio(
     for k in sorted(shortlist):  # source order, so a full tie keeps the earliest
         start_ms, end_ms, text, _gap = windows[k]
         mono = _read_mono_ms(wav_file, start_ms, end_ms)
-        score = -(cue_penalties[k] + _reference_audio_penalty(mono, sr))
+        score = -(cue_penalties[k] + _reference_audio_penalty(mono, sr, vad))
         key = (round(score, 2), end_ms - start_ms)
         if best_key is None or key > best_key:
             best_key = key
@@ -1590,15 +1772,24 @@ def _reference_clip_from_audio(
     return best
 
 
-def _reference_audio_penalty(mono: np.ndarray | None, sr: int) -> float:
+def _reference_audio_penalty(
+    mono: np.ndarray | None, sr: int, vad: SileroVad | None = None
+) -> float:
     """Penalty points for a clip's audio: silence, level outside the band, clipping."""
     if mono is None:
         return 30.0  # past the end of the audio: never preferred over real audio
-    win_frames = max(1, int(round(sr * 0.010)))
-    rms = _window_rms(mono, win_frames)
-    # Energy VAD for now; Task 5.4 swaps in Silero when it is installed.
-    active = _energy_vad(rms, float(10.0 ** (_REF_VAD_THRESHOLD_DB / 20.0)))
-    speech_ratio = 0.0 if active is None else active.size / rms.size
+    speech_ratio = None
+    if vad is not None:
+        try:
+            spans = vad.speech_spans(mono, sr)
+        except Exception as exc:  # noqa: BLE001 - ORT raises its own types
+            logger.warning("Silero VAD failed, using the energy VAD: %s", exc)
+        else:
+            speech_ratio = sum(end - start for start, end in spans) / mono.size
+    if speech_ratio is None:
+        rms = _window_rms(mono, max(1, int(round(sr * 0.010))))
+        active = _energy_vad(rms, float(10.0 ** (_REF_VAD_THRESHOLD_DB / 20.0)))
+        speech_ratio = 0.0 if active is None else active.size / rms.size
     level_db = 20.0 * np.log10(max(1e-5, float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))))
     low, high = _REF_LEVEL_BAND_DB
     clipped_ratio = float(np.mean(np.abs(mono) >= _REF_CLIP_LEVEL))
@@ -1634,6 +1825,10 @@ def _covered_ms(
     return total
 
 
+#: Voice-cloning reference clips are written as 48 kHz mono.
+REFERENCE_SAMPLE_RATE = 48_000
+
+
 def extract_speaker_reference_wav(
     media_path: str | Path,
     cues: Sequence[Cue],
@@ -1666,7 +1861,9 @@ def extract_speaker_reference_wav(
                 raise
             except DiarizationError as exc:
                 logger.warning("Reference clip scored on cues only: %s", exc)
-    sel = select_speaker_reference_clip(cues, speaker, wav_path=scoring_wav, turns=turns)
+    sel = select_speaker_reference_clip(
+        cues, speaker, wav_path=scoring_wav, turns=turns, data_dir=data_dir
+    )
     if sel is None:
         raise DiarizationError(f"Không tìm thấy đoạn thoại nào của người nói '{speaker}'.")
     start_ms, end_ms, transcript = sel
@@ -1677,22 +1874,27 @@ def extract_speaker_reference_wav(
     target.parent.mkdir(parents=True, exist_ok=True)
     if src.suffix.lower() == ".wav":
         import soundfile as sf
+        import soxr
 
-        info = sf.info(str(src))
-        sr = int(info.samplerate)
-        s_frame = max(0, int(round(start_ms * sr / 1000.0)))
-        e_frame = max(s_frame + 1, int(round(end_ms * sr / 1000.0)))
-        samples, _ = read_wav_range(src, s_frame, e_frame)
-        if samples.size == 0:
+        # 48 kHz mono like the video branch: a stereo source used to be written
+        # frame-interleaved (twice as long) and any other rate kept as-is.
+        with sf.SoundFile(str(src)) as wav_file:
+            sr = int(wav_file.samplerate)
+            mono = _read_mono_ms(wav_file, start_ms, max(end_ms, start_ms + 1))
+        if mono is None:
             raise DiarizationError("Đoạn mẫu giọng trích xuất bị rỗng.")
-        write_wav_file(samples, target, sample_rate=sr)
+        if sr != REFERENCE_SAMPLE_RATE:
+            mono = soxr.resample(mono, sr, REFERENCE_SAMPLE_RATE, quality="VHQ")
+        write_wav_file(
+            np.asarray(mono, dtype=np.float32), target, sample_rate=REFERENCE_SAMPLE_RATE
+        )
         return target, transcript
 
     try:
         extract_video_audio(
             src,
             target,
-            sample_rate=48_000,
+            sample_rate=REFERENCE_SAMPLE_RATE,
             mono=True,
             start_ms=start_ms,
             end_ms=end_ms,

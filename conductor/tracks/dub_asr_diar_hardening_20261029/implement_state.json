@@ -1,19 +1,20 @@
 {
-  "current_phase": "Phase 7: Controller integration & GUI responsiveness",
-  "current_phase_index": 6,
-  "current_task_index": 1,
+  "current_phase": "Phase 5: Diarization quality & throughput",
+  "current_phase_index": 4,
+  "current_task_index": 3,
   "completed_phases": [
     "Phase 1: Foundations \u2014 process helpers, background-op hygiene, shared 16 kHz prep",
     "Phase 2: Controller concurrency, lifecycle & persistence safety",
     "Phase 3: Native runtime & model provisioning",
     "Phase 4: ASR quality & throughput",
+    "Phase 5: Diarization quality & throughput",
     "Phase 6: Render, alignment & mux core"
   ],
   "in_flight_tasks": [
-    "phase5_task4",
     "phase7_task1",
-    "phase7_task2"
+    "phase7_task2",
+    "phase8_task1"
   ],
-  "last_updated": "2026-10-28T19:08:23Z",
+  "last_updated": "2026-10-28T19:12:32Z",
   "status": "in_progress"
 }

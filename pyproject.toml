@@ -17,6 +17,10 @@ dependencies = [
     "python-docx>=1.1",
     "pypdf>=6",  # MIT (PDF import) — chosen over AGPL PyMuPDF at Phase 0 (spike-report §7)
     "soxr>=1.0",  # LGPL-2.1 (dynamic); already pulled in by vieneu — streaming 16 kHz prep
+    # MIT / Apache-2.0; already pulled in by vieneu — optional Silero VAD and
+    # speaker-embedding models (core/onnx_audio.py)
+    "onnxruntime>=1.20.0",
+    "kaldi-native-fbank>=1.20",
 ]
 
 ## NOTE: bare `torch==2.8.0` resolves the CPU wheel from PyPI. The `gpu` extra

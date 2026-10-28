@@ -323,7 +323,7 @@ def test_reference_clip_scoring_prefers_a_clean_in_range_clip(tmp_path: Path) ->
     )
     out, text = extract_speaker_reference_wav(wav, cues, "SPEAKER_01", tmp_path / "ref.wav")
     assert text == eight_s[2]
-    assert read_wav(out)[0].size == 8 * sr
+    assert read_wav(out)[0].size == 8 * 48_000  # written at 48 kHz
 
     # Duration breaks ties: a clean 10 s clip scores like the 8 s one, and wins.
     clean = mix(speech(10.0), "clean.wav")
@@ -331,6 +331,33 @@ def test_reference_clip_scoring_prefers_a_clean_in_range_clip(tmp_path: Path) ->
     assert chosen is not None and chosen[:2] == (13000, 23000)
     # Without audio (the GUI thread's cache key) the cue-only choice is unchanged.
     assert select_speaker_reference_clip(cues, "SPEAKER_01") == eight_s
+
+
+def test_wav_reference_clip_is_written_at_48_khz(tmp_path: Path) -> None:
+    sr = 24_000
+    tone = (0.3 * np.sin(2 * np.pi * 220.0 * np.arange(sr * 6) / sr)).astype(np.float32)
+    src = write_wav_file(tone, tmp_path / "src24k.wav", sample_rate=sr)
+    cues = [Cue(1, 1000, 5000, "Bốn giây.", speaker="SPEAKER_01")]
+    out, _ = extract_speaker_reference_wav(src, cues, "SPEAKER_01", tmp_path / "ref.wav")
+    samples, out_sr = read_wav(out)
+    assert out_sr == 48_000
+    assert abs(samples.size - 4 * 48_000) <= 2
+
+
+def test_stereo_wav_reference_clip_is_downmixed_not_interleaved(tmp_path: Path) -> None:
+    import soundfile as sf
+
+    sr = 48_000
+    stereo = np.zeros((sr * 6, 2), dtype=np.float32)
+    stereo[:, 0], stereo[:, 1] = 0.6, 0.2
+    src = tmp_path / "stereo.wav"
+    sf.write(str(src), stereo, sr, subtype="FLOAT")
+    cues = [Cue(1, 1000, 5000, "Bốn giây.", speaker="SPEAKER_01")]
+    out, _ = extract_speaker_reference_wav(src, cues, "SPEAKER_01", tmp_path / "ref.wav")
+    samples, out_sr = read_wav(out)
+    assert out_sr == 48_000
+    assert samples.size == 4 * sr  # interleaving doubled it
+    np.testing.assert_allclose(samples, 0.4, atol=1e-6)
 
 
 def test_speaker_ceiling_merges_surplus_speakers() -> None:
@@ -407,3 +434,19 @@ def test_gpu_runtime_keeps_native_weight_type(tmp_path: Path) -> None:
     args = args_file.read_text(encoding="utf-8")
     assert "vulkan" in args.splitlines()
     assert "weight_type" not in args
+
+    # A CUDA build serves "cuda" (and "auto"); without one, "cuda" means "best".
+    for variant, device, backend in (
+        ("cuda12.4", "cuda", "cuda"),
+        ("cuda13.3", "auto", "cuda"),
+        ("cpu", "cuda", "best"),
+    ):
+        _install_fake_cli(tmp_path, _arg_logger(args_file, TURNS_TWO_SPEAKERS), variant=variant)
+        diarize_cues(
+            wav,
+            _cues(),
+            DiarizationConfig(backend="nemotron_gguf", device=device),
+            data_dir=tmp_path,
+        )
+        lines = args_file.read_text(encoding="utf-8").splitlines()
+        assert lines[lines.index("--backend") + 1] == backend, (variant, device)

@@ -2826,6 +2826,9 @@ name = "vienetts-app"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "kaldi-native-fbank" },
+    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.29.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "platformdirs" },
     { name = "pypdf" },
     { name = "pyside6" },
@@ -2849,6 +2852,8 @@ gpu = [
 
 [package.metadata]
 requires-dist = [
+    { name = "kaldi-native-fbank", specifier = ">=1.20" },
+    { name = "onnxruntime", specifier = ">=1.20.0" },
     { name = "platformdirs", specifier = ">=4" },
     { name = "pypdf", specifier = ">=6" },
     { name = "pyside6", specifier = ">=6.9" },

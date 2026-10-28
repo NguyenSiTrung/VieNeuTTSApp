@@ -273,7 +273,7 @@ Test seams and fakes:
     - Duration breaks ties.
   - Green implementation: add the scoring function, using the energy VAD (Silero when installed after Task 5.4).
 
-- [~] **Task 5.4: Optional ONNX Silero VAD + speaker embeddings, DER-chosen model (FR-4.5)**
+- [x] **Task 5.4: Optional ONNX Silero VAD + speaker embeddings, DER-chosen model (FR-4.5)**
   <!-- files: src/vienetts_app/core/onnx_audio.py, src/vienetts_app/core/diarization.py, src/vienetts_app/core/ai_models.py, tests/unit/test_onnx_audio.py, tests/unit/test_diarization.py, tests/unit/test_ai_models.py, scripts/benchmarks/diarization_der.py, pyproject.toml, uv.lock -->
   - Red tests (fake `session_factory`):
     - **Silero VAD:** 512-sample framing at 16 kHz carries the state tensor across frames, and the hysteresis thresholds produce the expected speech spans from scripted probabilities.
@@ -385,7 +385,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: phase3, phase7 -->
 
-- [ ] **Task 8.1: Settings › AI dubbing rows, Subtitles missing-runtime hints, smoke coverage, i18n (FR-7.1, FR-7.2, FR-7.3)**
+- [~] **Task 8.1: Settings › AI dubbing rows, Subtitles missing-runtime hints, smoke coverage, i18n (FR-7.1, FR-7.2, FR-7.3)**
   <!-- files: src/vienetts_app/ui/qml/settings/SettingsModels.qml, src/vienetts_app/ui/qml/components/SubtitleSourcePanel.qml, tests/smoke/test_ui_tabs.py, tests/unit/test_subtitle_components.py, src/vienetts_app/ui/i18n/vienetts_en.ts, src/vienetts_app/ui/i18n/vienetts_en.qm -->
   - Red tests (an existing consolidated smoke scenario; no new QML instantiation):
     - **New Settings controls exist:** `settingsFfmpegRuntimeRow` (install/remove/status/license link), `settingsWhisperVadRow`, `settingsSileroVadRow`, `settingsSpeakerEmbeddingRow` and `asrCloudFallbackToggle`.

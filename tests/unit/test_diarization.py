@@ -13,6 +13,12 @@ from tests.unit.diarization_reference import (
     reference_refine_cues_speech_bounds,
 )
 
+from vienetts_app.core import onnx_audio
+from vienetts_app.core.ai_models import (
+    AUDIO_MODELS,
+    SILERO_VAD_MODEL_ID,
+    SPEAKER_EMBEDDING_MODEL_ID,
+)
 from vienetts_app.core.asr import RawSegment
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.diarization import (
@@ -20,6 +26,7 @@ from vienetts_app.core.diarization import (
     DiarizationConfig,
     RttmTurn,
     _cluster_embeddings,
+    _neural_cue_labels,
     assign_speakers_from_turns,
     diarize_cues,
     extract_speaker_reference_wav,
@@ -470,3 +477,119 @@ def test_refine_cues_speech_bounds_sweeps_an_hour_within_budget(tmp_path: Path) 
     elapsed = time.perf_counter() - start
     assert len(refined) == 1500
     assert elapsed < 3.0, f"{elapsed:.2f}s"
+
+
+def _install_audio_model(data_dir: Path, model_id: str) -> None:
+    spec = AUDIO_MODELS[model_id]
+    path = data_dir / "models" / spec.subdir / spec.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as fh:  # sparse, at the catalog size
+        fh.truncate(spec.size_bytes)
+
+
+class _LoudFrameSilero:
+    """Fake Silero: a frame is speech when its RMS is above 0.1."""
+
+    def __init__(self) -> None:
+        self.frames = 0
+
+    def run(self, _outputs: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+        self.frames += 1
+        frame = feeds["input"][0, 64:]
+        prob = 0.9 if float(np.sqrt(np.mean(frame * frame))) > 0.1 else 0.05
+        return [np.array([[prob]], dtype=np.float32), feeds["state"]]
+
+
+class _AlternatingEmbedding:
+    """Fake speaker model: calls alternate between two orthogonal voices."""
+
+    def __init__(self) -> None:
+        self.inputs: list[np.ndarray] = []
+
+    def get_inputs(self) -> list[object]:
+        return [type("Input", (), {"name": "x"})()]
+
+    def run(self, _outputs: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+        vec = np.zeros((1, 512), dtype=np.float32)
+        vec[0, len(self.inputs) % 2] = 1.0
+        self.inputs.append(feeds["x"])
+        return [vec]
+
+
+def test_installed_onnx_models_replace_the_energy_vad_and_24_dim_embeddings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sr = 16_000
+    rng = np.random.default_rng(9)
+    # Four alike cues: 0.5 s hum (speech to the energy VAD, not to Silero),
+    # 1 s of loud speech, 0.5 s silence; 0.5 s gaps between cues.
+    cue_audio = np.concatenate(
+        [
+            0.05 * rng.standard_normal(sr // 2),
+            0.2 * rng.standard_normal(sr),
+            np.zeros(sr // 2),
+            np.zeros(sr // 2),
+        ]
+    ).astype(np.float32)
+    wav = write_wav_file(np.tile(cue_audio, 4), tmp_path / "source_16k.wav", sr)
+    cues = [Cue(i + 1, i * 2500, i * 2500 + 2000, f"Câu {i + 1}.") for i in range(4)]
+    plain = tmp_path / "plain"
+    models = tmp_path / "models_home"
+    _install_audio_model(models, SILERO_VAD_MODEL_ID)
+    _install_audio_model(models, SPEAKER_EMBEDDING_MODEL_ID)
+    silero, speaker = _LoudFrameSilero(), _AlternatingEmbedding()
+    silero_name = AUDIO_MODELS[SILERO_VAD_MODEL_ID].filename
+    monkeypatch.setattr(
+        onnx_audio,
+        "default_session_factory",
+        lambda path, _threads: silero if path.name == silero_name else speaker,
+    )
+
+    energy = refine_cues_speech_bounds(cues, wav, data_dir=plain)
+    assert [c.speech_start_ms for c in energy] == [c.start_ms for c in cues]
+    neural = refine_cues_speech_bounds(cues, wav, data_dir=models)
+    for cue, refined in zip(cues, neural, strict=True):
+        assert refined.speech_start_ms is not None and refined.speech_end_ms is not None
+        assert 400 <= refined.speech_start_ms - cue.start_ms <= 500
+        assert 1500 <= refined.speech_end_ms - cue.start_ms <= 1560
+    assert silero.frames > 0
+
+    # The acoustic fallback: 24-dim embeddings cannot tell these cues apart;
+    # the installed model's embeddings (of Silero-trimmed speech) can.
+    baseline = diarize_cues(wav, cues, DiarizationConfig(backend="acoustic"), data_dir=plain)
+    assert {c.speaker for c in baseline} == {"SPEAKER_01"}
+    assert speaker.inputs == []
+    tagged = diarize_cues(wav, cues, DiarizationConfig(backend="acoustic"), data_dir=models)
+    assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_02"] * 2
+    assert len(speaker.inputs) == 4
+    assert all(x.shape[1] < 150 for x in speaker.inputs)  # ~1 s of speech, not the 2 s cue
+
+    # Reference-clip scoring reads its speech ratio from Silero too.
+    before = silero.frames
+    select_speaker_reference_clip(tagged, "SPEAKER_01", wav_path=wav, data_dir=models)
+    assert silero.frames > before
+
+
+def test_neural_labels_cluster_long_cues_and_attach_short_ones() -> None:
+    rng = np.random.default_rng(4)
+
+    def voice(*weights: float) -> np.ndarray:
+        vec = np.zeros(8)
+        vec[: len(weights)] = weights
+        vec += 0.05 * rng.standard_normal(8)
+        return (vec / np.linalg.norm(vec)).astype(np.float32)
+
+    a, b = (1.0,), (0.0, 1.0)
+    # A short "Vâng." embeds far from everyone (0.65 from A): clustered with
+    # the long cues it became a third speaker. A cue with no audio (None)
+    # sits next to a B cue in time.
+    vectors = [voice(*a), voice(*b), voice(0.35, 0, 0, 0.94), voice(*a), None, voice(*b)]
+    vectors.append(voice(*a))
+    speech_ms = [3000, 3000, 600, 3000, 0, 3000, 3000]
+    cues = [Cue(i + 1, i * 3000, i * 3000 + 2500, f"c{i}") for i in range(7)]
+    cues[4] = Cue(5, 13900, 14400, "c4")
+
+    for max_speakers in (0, 2):
+        assert _neural_cue_labels(cues, vectors, speech_ms, max_speakers) == [0, 1, 0, 0, 1, 1, 0]
+    # Too few long cues to anchor on: every cue with audio is clustered.
+    assert _neural_cue_labels(cues[:3], vectors[:3], [600] * 3, 0) == [0, 1, 2]

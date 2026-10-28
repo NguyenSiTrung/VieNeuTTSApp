@@ -200,13 +200,29 @@ def _clamp_engine_fields(data: dict) -> dict:
     ):
         logger.warning("Ignoring invalid diarization_max_speakers %r; falling back to 0", max_spk)
         clamped.pop("diarization_max_speakers")
+    for field, low, high in (
+        ("llm_concurrency", 0, 8),
+        ("llm_timeout_s", 15, 600),
+        ("llm_batch_size", 5, 60),
+    ):
+        if field in clamped:
+            value = clamped[field]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                logger.warning("Ignoring invalid %s; using default", field)
+                clamped.pop(field)
     for str_field in (
         "asr_model",
         "asr_language",
+        "asr_api_base_url",
+        "asr_api_key",
+        "asr_api_model",
         "diarization_model",
         "llm_base_url",
         "llm_api_key",
         "llm_model",
+        "llm_model_refine",
+        "llm_model_translate",
+        "llm_model_fit",
     ):
         if str_field in clamped and not isinstance(clamped[str_field], str):
             clamped.pop(str_field)
@@ -241,6 +257,9 @@ def load_settings(data_dir: Path | None = None) -> Settings:
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     if not path.is_file():
         return Settings()
+    if os.name != "nt":
+        with contextlib.suppress(OSError):
+            path.chmod(0o600)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
@@ -263,7 +282,12 @@ def save_settings(settings: Settings, data_dir: Path | None = None) -> Path:
     payload = json.dumps(asdict(settings), indent=2)
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temp.write_text(payload, encoding="utf-8")
+        if os.name == "nt":
+            temp.write_text(payload, encoding="utf-8")
+        else:
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                output.write(payload)
         # Antivirus / OneDrive can hold the destination beyond a sub-second
         # retry window on Windows — budget ~1.2s before failing.
         for attempt in range(8):

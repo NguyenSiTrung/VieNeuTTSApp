@@ -234,6 +234,9 @@ class Settings:
     asr_language: str = "auto"
     asr_device: str = "auto"
     asr_threads: int = 0
+    asr_api_base_url: str = ""
+    asr_api_key: str = ""
+    asr_api_model: str = ""
     diarization_backend: str = "auto"
     diarization_model: str = "nemotron-3-diarization-q8_0"
     diarization_max_speakers: int = 0
@@ -247,6 +250,12 @@ class Settings:
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = ""
     llm_model: str = "qwen2.5:7b"
+    llm_model_refine: str = ""
+    llm_model_translate: str = ""
+    llm_model_fit: str = ""
+    llm_concurrency: int = 0
+    llm_timeout_s: int = 120
+    llm_batch_size: int = 25
 
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
@@ -315,13 +324,27 @@ class Settings:
             raise ValueError("diarization_threads must be an integer in [0, 64]")
         if not isinstance(self.subtitle_export_speaker_labels, bool):
             raise ValueError("subtitle_export_speaker_labels must be a bool")
+        for field, low, high in (
+            ("llm_concurrency", 0, 8),
+            ("llm_timeout_s", 15, 600),
+            ("llm_batch_size", 5, 60),
+        ):
+            value = getattr(self, field)
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(f"{field} must be an integer in [{low}, {high}]")
         for str_field in (
             "asr_model",
             "asr_language",
+            "asr_api_base_url",
+            "asr_api_key",
+            "asr_api_model",
             "diarization_model",
             "llm_base_url",
             "llm_api_key",
             "llm_model",
+            "llm_model_refine",
+            "llm_model_translate",
+            "llm_model_fit",
         ):
             if not isinstance(getattr(self, str_field), str):
                 raise ValueError(f"{str_field} must be a string")

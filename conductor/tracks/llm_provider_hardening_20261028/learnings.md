@@ -37,3 +37,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - Provider errors must redact the configured API key even when the provider echoes it in its response body.
 - Beads on this host does not support `bd ready --epic`; use `bd ready` and inspect the tracked issue IDs.
 - Full gate on linux-aarch64: 1590 passed, 5 skipped, 6 Qwen/GGUF manifest failures matching the documented unsupported x64 host baseline.
+
+## 2026-10-28 - Phase 1 Task 1.2: Settings validation and permissions
+- Settings files are created exclusively with POSIX mode 0600 even under a permissive umask; existing files are tightened on load.
+- Validate each new field independently on load and never include credential values in validation warnings.
+- Full gate: 1591 passed, 5 skipped and the same 6 documented ARM64 baseline failures.

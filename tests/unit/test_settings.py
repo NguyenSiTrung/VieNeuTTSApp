@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -471,7 +473,7 @@ class TestOrtKnobs:
 class TestAiDubbingSettings:
     """ASR, Diarization, and LLM provider settings persist and clamp safely."""
 
-    def test_ai_dubbing_settings_round_trip_and_clamp(self, tmp_path: Path) -> None:
+    def test_ai_dubbing_settings_round_trip_and_clamp(self, tmp_path: Path, caplog) -> None:
         custom = Settings(
             asr_backend="faster_whisper",
             asr_model="small",
@@ -487,6 +489,15 @@ class TestAiDubbingSettings:
             llm_base_url="http://localhost:11434/v1",
             llm_api_key="local-dev-key",
             llm_model="qwen2.5:14b",
+            asr_api_base_url="https://asr.example/v1",
+            asr_api_key="asr-secret",
+            asr_api_model="whisper-1",
+            llm_model_refine="refine",
+            llm_model_translate="translate",
+            llm_model_fit="fit",
+            llm_concurrency=4,
+            llm_timeout_s=180,
+            llm_batch_size=40,
         )
         save_settings(custom, data_dir=tmp_path)
         loaded = load_settings(data_dir=tmp_path)
@@ -520,6 +531,21 @@ class TestAiDubbingSettings:
             {"diarization_threads": 65},
             {"diarization_threads": True},
             {"subtitle_export_speaker_labels": "yes"},
+            {"llm_concurrency": -1},
+            {"llm_concurrency": 9},
+            {"llm_concurrency": True},
+            {"llm_timeout_s": 14},
+            {"llm_timeout_s": 601},
+            {"llm_timeout_s": 15.0},
+            {"llm_batch_size": 4},
+            {"llm_batch_size": 61},
+            {"llm_batch_size": False},
+            {"asr_api_base_url": None},
+            {"asr_api_key": 5},
+            {"asr_api_model": []},
+            {"llm_model_refine": 1},
+            {"llm_model_translate": None},
+            {"llm_model_fit": False},
         ):
             with pytest.raises(ValueError):
                 Settings(**bad)
@@ -535,6 +561,12 @@ class TestAiDubbingSettings:
                     "diarization_device": "tpu",
                     "diarization_threads": 999,
                     "subtitle_export_speaker_labels": "yes",
+                    "llm_batch_size": 999,
+                    "llm_concurrency": True,
+                    "llm_timeout_s": 10,
+                    "asr_api_key": 5,
+                    "llm_api_key": "must-not-be-logged",
+                    "llm_model_fit": None,
                     "output_dir": "/tmp/survives",
                 }
             ),
@@ -549,7 +581,26 @@ class TestAiDubbingSettings:
         assert clamped.diarization_device == "auto"
         assert clamped.diarization_threads == 0
         assert clamped.subtitle_export_speaker_labels is False
+        assert clamped.llm_batch_size == 25
+        assert clamped.llm_concurrency == 0
+        assert clamped.llm_timeout_s == 120
+        assert clamped.asr_api_key == ""
+        assert clamped.llm_api_key == "must-not-be-logged"
+        assert clamped.llm_model_fit == ""
+        assert "must-not-be-logged" not in caplog.text
         assert clamped.output_dir == "/tmp/survives"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+    def test_settings_permissions_are_owner_only(self, tmp_path: Path) -> None:
+        previous_umask = os.umask(0)
+        try:
+            path = save_settings(Settings(llm_api_key="secret"), data_dir=tmp_path)
+        finally:
+            os.umask(previous_umask)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        path.chmod(0o644)
+        assert load_settings(data_dir=tmp_path).llm_api_key == "secret"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
     def test_legacy_nemo_backend_is_migrated(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(

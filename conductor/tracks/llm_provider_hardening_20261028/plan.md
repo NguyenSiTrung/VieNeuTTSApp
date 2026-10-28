@@ -23,7 +23,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
     - Move `LlmConfig` (+ `max_retries=2`, `concurrency=0`, `batch_size=25`, `timeout_s=120.0`) and `LlmRefineError` into `llm_client.py`; add `ChatResult`, `http_error_detail`, `post_chat_completion`, the lock-guarded capability cache and the `_sleep` seam.
     - `llm_refine.py` re-exports `LlmConfig` / `LlmRefineError`; `_post_chat_completion` becomes a thin seam over `post_chat_completion` returning `ChatResult`; `probe_llm_connection` uses `max_retries=0`. Update existing `test_llm_refine.py` fakes to the new seam signature `(config, messages, *, temperature=0.2, json_mode=False, cancel_check=None) -> ChatResult` without changing their assertions.
 
-- [ ] **Task 1.2: Settings fields, per-field clamping and owner-only `settings.json`**
+- [x] **Task 1.2: Settings fields, per-field clamping and owner-only `settings.json`**
   <!-- files: src/vienetts_app/core/models.py, src/vienetts_app/core/settings.py, tests/unit/test_settings.py -->
   - Red tests:
     - `Settings(...)` rejects out-of-range or wrong-type values for `llm_concurrency` `[0, 8]`, `llm_timeout_s` `[15, 600]`, `llm_batch_size` `[5, 60]` (bool-as-int included) and non-string `asr_api_*` / `llm_model_*` values. Fold these into the existing settings validation test rather than adding default/round-trip micro-tests (zc8p low-value criteria).

@@ -17,6 +17,7 @@ from vienetts_app.core.asr import (
     AsrConfig,
     AsrError,
     RawSegment,
+    _asr_cache_key,
     normalize_asr_segments_to_cues,
     transcribe_media_to_cues,
 )
@@ -130,11 +131,13 @@ def test_transcribe_with_faster_whisper_adapter(
 
 def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
     wav = write_wav_file(np.zeros(8_000, dtype=np.float32), tmp_path / "clip.wav", 16_000)
+    bodies: list[bytes] = []
 
     class _Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length)
+            bodies.append(body)
             assert b"clip.wav" in body
             payload = {
                 "segments": [
@@ -161,7 +164,7 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
             wav,
             AsrConfig(
                 backend="openai_api",
-                model="whisper-1",
+                model="base",
                 language="vi",
                 api_base_url=f"http://127.0.0.1:{port}/v1",
             ),
@@ -169,6 +172,17 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
         assert len(cues) == 2
         assert cues[0].text == "Xin chào từ máy chủ ASR."
         assert cues[0].start_ms == 100 and cues[0].end_ms == 1400
+        assert b'name="model"\r\n\r\nwhisper-1\r\n' in bodies[-1]
+        transcribe_media_to_cues(
+            wav,
+            AsrConfig(
+                backend="openai_api",
+                model="base",
+                api_model="whisper-large-v3-turbo",
+                api_base_url=f"http://127.0.0.1:{port}/v1",
+            ),
+        )
+        assert b'name="model"\r\n\r\nwhisper-large-v3-turbo\r\n' in bodies[-1]
     finally:
         server.shutdown()
         server.server_close()
@@ -329,15 +343,66 @@ def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
     assert [c.text for c in cues] == ["Xin chào"]
     assert any("GPU init error" in n for n in notes)
 
-    # 3. If faster_whisper is also absent and only the Default Ollama URL is passed,
-    # auto surfaces the real whisper.cpp error instead of masking it with a generic error.
+    # 3. If faster_whisper is also absent and no ASR URL is passed,
+    # auto surfaces the real whisper.cpp error without contacting an API.
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    api_calls: list[str] = []
+
+    def fake_api(path, config, **kwargs):
+        api_calls.append(config.api_base_url)
+        return [RawSegment(0, 1000, "API")]
+
+    monkeypatch.setattr("vienetts_app.core.asr._run_openai_whisper_api", fake_api)
     with pytest.raises(AsrError, match="GPU init error"):
         transcribe_media_to_cues(
             wav,
-            AsrConfig(backend="auto", model="base", api_base_url="http://localhost:11434/v1"),
+            AsrConfig(backend="auto", model="base"),
             data_dir=tmp_path,
         )
+    assert not api_calls
+    cues = transcribe_media_to_cues(
+        wav,
+        AsrConfig(backend="auto", model="base", api_base_url="http://localhost:11434/v1"),
+        data_dir=tmp_path,
+    )
+    assert [cue.text for cue in cues] == ["API"]
+    assert api_calls == ["http://localhost:11434/v1"]
+
+
+def test_api_error_detail_redacts_key_and_cache_key_is_sparse(tmp_path: Path) -> None:
+    wav = write_wav_file(np.zeros(8000, dtype=np.float32), tmp_path / "error.wav", 16_000)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": {"message": "invalid secret"}}).encode())
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(AsrError) as caught:
+            transcribe_media_to_cues(
+                wav,
+                AsrConfig(
+                    backend="openai_api",
+                    api_base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                    api_key="secret",
+                ),
+            )
+        assert "invalid" in str(caught.value) and "secret" not in str(caught.value)
+    finally:
+        server.shutdown()
+        server.server_close()
+    base = _asr_cache_key(wav, AsrConfig())
+    assert _asr_cache_key(wav, AsrConfig(api_model="different")) == base
+    remote = AsrConfig(api_base_url="http://example.invalid/v1", api_model="remote-model")
+    assert _asr_cache_key(wav, remote) != base
+    assert "remote-model" in _asr_cache_key(wav, remote)
 
 
 def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:

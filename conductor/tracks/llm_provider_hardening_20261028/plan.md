@@ -70,7 +70,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
 <!-- execution: sequential -->
 <!-- depends: phase1 -->
 
-- [ ] **Task 3.1: ASR API model, readable errors, cache key and auto-mode gating**
+- [x] **Task 3.1: ASR API model, readable errors, cache key and auto-mode gating**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   - Red tests:
     - `backend="openai_api"` with `model="base"`, `api_model=""` sends the form field `model=whisper-1`; `api_model="whisper-large-v3-turbo"` is sent verbatim.

@@ -1,7 +1,7 @@
 {
   "current_phase": "Cloud Whisper ASR",
   "current_phase_index": 2,
-  "current_task_index": 0,
+  "current_task_index": 1,
   "completed_phases": ["Transport & Settings Foundation", "Refinement Engine Correctness & Throughput"],
   "last_updated": "2026-10-28",
   "status": "in_progress"

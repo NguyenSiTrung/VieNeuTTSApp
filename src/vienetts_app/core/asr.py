@@ -30,6 +30,7 @@ import numpy as np
 from vienetts_app.core.ai_models import resolve_asr_model_path, resolve_whisper_cpp_cli
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.diarization import refine_cues_speech_bounds
+from vienetts_app.core.llm_client import http_error_detail
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
@@ -45,12 +46,6 @@ MODEL_SAMPLE_RATE = 16_000
 SHARED_WAV_FILENAME = "source_16k.wav"
 WAV_INPUT_16K_FILENAME = "input_16k.wav"
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
-_DEFAULT_OLLAMA_URLS = frozenset(
-    {
-        "http://localhost:11434/v1",
-        "http://127.0.0.1:11434/v1",
-    }
-)
 _FASTER_WHISPER_CACHE: dict[tuple[Any, str, str, str, int], Any] = {}
 
 
@@ -72,6 +67,7 @@ class AsrConfig:
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "metal"
     threads: int = 0  # 0 = automatic (min(16, os.cpu_count() or 4))
     timeout_s: float = 0.0  # 0 = derive from audio duration
+    api_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -731,7 +727,7 @@ def _run_openai_whisper_api(
         raise AsrError("Chưa cấu hình địa chỉ máy chủ Whisper API.")
     url = f"{base_url}/audio/transcriptions"
     boundary = f"----VieNeuAsrBoundary{uuid.uuid4().hex}"
-    model_name = (config.model or "whisper-1").strip() or "whisper-1"
+    model_name = (config.api_model or "whisper-1").strip() or "whisper-1"
 
     parts: list[bytes] = []
 
@@ -772,8 +768,14 @@ def _run_openai_whisper_api(
     try:
         with urlopen(req, timeout=120) as resp:  # noqa: S310
             raw_resp = resp.read().decode("utf-8", errors="replace")
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        raise AsrError(f"Không thể kết nối máy chủ ASR ({url}): {exc}") from exc
+    except HTTPError as exc:
+        message = f"Máy chủ ASR HTTP {exc.code} ({url}): {http_error_detail(exc)}"
+        key = config.api_key.strip()
+        raise AsrError(message.replace(key, "[redacted]") if key else message) from None
+    except (URLError, TimeoutError, OSError) as exc:
+        message = f"Không thể kết nối máy chủ ASR ({url}): {exc}"
+        key = config.api_key.strip()
+        raise AsrError(message.replace(key, "[redacted]") if key else message) from None
 
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
@@ -959,7 +961,10 @@ def _asr_cache_key(wav_path: Path, config: AsrConfig) -> str:
     lang = (config.language or "auto").strip() or "auto"
     model = (config.model or "base").strip() or "base"
     backend = (config.backend or "auto").strip() or "auto"
-    return f"{wav_path.resolve()}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
+    key = f"{wav_path.resolve()}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
+    if config.api_base_url.strip():
+        key += f":{config.api_base_url.strip()}:{config.api_model.strip()}"
+    return key
 
 
 def _load_cached_segments(work_dir: Path | None, key: str) -> list[RawSegment] | None:
@@ -1111,7 +1116,7 @@ def transcribe_media_to_cues(
                     [wcpp_entry, fw_entry] if whisper_cpp_ready else [fw_entry, wcpp_entry]
                 )
                 api_url = cfg.api_base_url.strip().rstrip("/")
-                if api_url and api_url not in _DEFAULT_OLLAMA_URLS:
+                if api_url:
                     runners.append(
                         (
                             "openai_api",

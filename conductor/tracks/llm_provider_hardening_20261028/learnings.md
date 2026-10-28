@@ -52,3 +52,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - Submit only up to the worker count and re-check cancellation before scheduling more; assemble completed batches by source position.
 - Missing fit-timing cues must not be sent to the corrective pass: they retain original text even when still over budget.
 - Full gate: 1597 passed, 5 skipped and the same 6 documented ARM64 baseline failures.
+
+## 2026-10-28 - Phase 3 Task 3.1: Whisper API identity
+- API models are separate from local model names; local ASR cache keys remain byte-identical when the API URL is empty.
+- Explicit ASR URLs, including localhost, opt auto mode into the API; provider error details must redact echoed credentials.
+- Full gate: 1598 passed, 5 skipped and the same 6 documented ARM64 baseline failures.

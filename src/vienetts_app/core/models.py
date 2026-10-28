@@ -231,7 +231,9 @@ class Settings:
     recent_voices: RecentVoices = dataclass_field(default_factory=dict)
     # AI Subtitle / Video Dubbing settings (ASR, Diarization, LLM Provider).
     asr_backend: str = "auto"
-    asr_model: str = "base"
+    # Catalog id of the Q5_0 large-v3-turbo GGUF (ggml-large-v3-turbo-q5_0.bin); a
+    # stored choice (e.g. "base") keeps loading as itself.
+    asr_model: str = "large-v3-turbo"
     asr_language: str = "auto"
     asr_device: str = "auto"
     asr_threads: int = 0

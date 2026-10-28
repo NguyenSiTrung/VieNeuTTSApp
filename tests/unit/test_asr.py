@@ -196,7 +196,7 @@ def test_transcribe_with_faster_whisper_adapter(
 
     progress_steps: list[float] = []
     notes: list[str] = []
-    cfg = AsrConfig(backend="faster_whisper", model="base", language="vi")
+    cfg = AsrConfig(backend="faster_whisper", model="base")
     work_dir = tmp_path / "work"
     cues = transcribe_media_to_cues(
         wav,
@@ -212,14 +212,21 @@ def test_transcribe_with_faster_whisper_adapter(
         "Câu thứ hai.",
         "Cảm ơn các bạn đã theo dõi.",
     ]
+    # With language "auto", the language Whisper detected is reported.
     assert notes == [
-        "Đã lọc 2 đoạn nghi là ảo giác của Whisper: 1 không có lời nói, 1 câu kết/quảng bá kênh."
+        "Ngôn ngữ nhận diện được: vi.",
+        "Đã lọc 2 đoạn nghi là ảo giác của Whisper: 1 không có lời nói, 1 câu kết/quảng bá kênh.",
     ]
     assert cues[0].start_ms == 0 and cues[0].end_ms == 1800
     assert progress_steps and progress_steps[-1] == pytest.approx(1.0)
-    # The cache keeps the raw segments with their scores, so a cache hit filters the same.
+    # The cache keeps the raw segments with their scores and the detected language, so a
+    # cache hit filters and reports the same.
+    cached = json.loads((work_dir / "asr_segments_cache.json").read_text(encoding="utf-8"))
+    assert cached["language"] == "vi"
     fake_mod.WhisperModel = None  # type: ignore[attr-defined]
-    assert transcribe_media_to_cues(wav, cfg, work_dir=work_dir) == cues
+    hit_notes: list[str] = []
+    assert transcribe_media_to_cues(wav, cfg, work_dir=work_dir, notes=hit_notes) == cues
+    assert hit_notes == notes
 
 
 def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
@@ -233,6 +240,7 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
             bodies.append(body)
             assert b"clip.wav" in body
             payload = {
+                "language": "vietnamese",
                 "segments": [
                     {"start": 0.1, "end": 1.4, "text": "Xin chào từ máy chủ ASR."},
                     {"start": 1.6, "end": 2.9, "text": "Phụ đề thứ hai."},
@@ -245,7 +253,7 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
                         "no_speech_prob": 0.8,
                         "compression_ratio": 0.9,
                     },
-                ]
+                ],
             }
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -262,6 +270,7 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        notes: list[str] = []
         cues = transcribe_media_to_cues(
             wav,
             AsrConfig(
@@ -270,10 +279,16 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
                 language="vi",
                 api_base_url=f"http://127.0.0.1:{port}/v1",
             ),
+            notes=notes,
         )
         assert [c.text for c in cues] == ["Xin chào từ máy chủ ASR.", "Phụ đề thứ hai."]
         assert cues[0].start_ms == 100 and cues[0].end_ms == 1400
         assert b'name="model"\r\n\r\nwhisper-1\r\n' in bodies[-1]
+        assert notes == [
+            "Đã dùng Whisper API (đám mây)",
+            "Đã lọc 1 đoạn nghi là ảo giác của Whisper: 1 không có lời nói.",
+        ]
+        notes.clear()
         transcribe_media_to_cues(
             wav,
             AsrConfig(
@@ -282,8 +297,13 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
                 api_model="whisper-large-v3-turbo",
                 api_base_url=f"http://127.0.0.1:{port}/v1",
             ),
+            notes=notes,
         )
         assert b'name="model"\r\n\r\nwhisper-large-v3-turbo\r\n' in bodies[-1]
+        assert notes[:2] == [
+            "Đã dùng Whisper API (đám mây)",
+            "Ngôn ngữ nhận diện được: vietnamese.",
+        ]
     finally:
         server.shutdown()
         server.server_close()
@@ -424,7 +444,7 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     assert sf.info(str(shared)).frames == 32_000
 
 
-def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
+def test_auto_cancel_typed_missing_cloud_gating_and_fallback_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "cancel.wav", 16_000)
@@ -488,8 +508,8 @@ def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
     assert [c.text for c in cues] == ["Xin chào"]
     assert any("GPU init error" in n for n in notes)
 
-    # 3. If faster_whisper is also absent and no ASR URL is passed,
-    # auto surfaces the real whisper.cpp error without contacting an API.
+    # 3. With faster-whisper absent too, a real local failure (whisper.cpp crashed) is
+    # surfaced and never uploaded — even with an ASR URL and cloud fallback opted in.
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
     api_calls: list[str] = []
 
@@ -497,21 +517,119 @@ def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(
         api_calls.append(config.api_base_url)
         return [RawSegment(0, 1000, "API")]
 
-    monkeypatch.setattr("vienetts_app.core.asr._run_openai_whisper_api", fake_api)
-    with pytest.raises(AsrError, match="GPU init error"):
-        transcribe_media_to_cues(
-            wav,
-            AsrConfig(backend="auto", model="base"),
-            data_dir=tmp_path,
-        )
+    monkeypatch.setattr(asr, "_run_openai_whisper_api", fake_api)
+    url = "http://localhost:11434/v1"
+    for cloud in (False, True):
+        with pytest.raises(AsrError, match="GPU init error"):
+            transcribe_media_to_cues(
+                wav,
+                AsrConfig(backend="auto", model="base", api_base_url=url, cloud_fallback=cloud),
+                data_dir=tmp_path,
+            )
     assert not api_calls
-    cues = transcribe_media_to_cues(
-        wav,
-        AsrConfig(backend="auto", model="base", api_base_url="http://localhost:11434/v1"),
-        data_dir=tmp_path,
-    )
+
+    # 4. No local backend installed at all: auto uploads only when cloud fallback is
+    # opted in AND a URL is set, and every cloud transcription says so in notes.
+    model_file.unlink()
+    for config in (
+        AsrConfig(backend="auto", model="base", api_base_url=url),
+        AsrConfig(backend="auto", model="base", cloud_fallback=True),
+    ):
+        with pytest.raises(asr.AsrBackendMissing, match="Cài đặt"):
+            transcribe_media_to_cues(wav, config, data_dir=tmp_path)
+    assert not api_calls
+    cloud_cfg = AsrConfig(backend="auto", model="base", api_base_url=url, cloud_fallback=True)
+    notes = []
+    cues = transcribe_media_to_cues(wav, cloud_cfg, data_dir=tmp_path, notes=notes)
     assert [cue.text for cue in cues] == ["API"]
-    assert api_calls == ["http://localhost:11434/v1"]
+    assert api_calls == [url]
+    assert "Đã dùng Whisper API (đám mây)" in notes
+
+    # 5. "Missing" is the AsrBackendMissing type, never message text: any wording falls
+    # through to the cloud, while a plain AsrError with the old "not installed" wording
+    # is a real failure that is surfaced.
+    def raising(exc: AsrError):
+        def runner(*_args: object, **_kwargs: object) -> list[RawSegment]:
+            raise exc
+
+        return runner
+
+    monkeypatch.setattr(asr, "_run_faster_whisper", raising(asr.AsrBackendMissing("x")))
+    assert [c.text for c in transcribe_media_to_cues(wav, cloud_cfg, data_dir=tmp_path)] == ["API"]
+    old_wording = AsrError("Chưa cài đặt faster-whisper trên môi trường này.")
+    monkeypatch.setattr(asr, "_run_faster_whisper", raising(old_wording))
+    with pytest.raises(AsrError) as caught:
+        transcribe_media_to_cues(wav, cloud_cfg, data_dir=tmp_path)
+    assert caught.value is old_wording
+    assert api_calls == [url, url]
+
+
+def test_whisper_cpp_falls_back_to_largest_installed_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "speech.wav", 16_000)
+    bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True)
+    cli_path = bin_dir / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
+    models_log = tmp_path / "models.txt"
+    cli_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        f"with open({str(models_log.as_posix())!r}, 'a', encoding='utf-8') as fh:\n"
+        "    fh.write(args[args.index('-m') + 1] + '\\n')\n"
+        "Path(args[args.index('-of') + 1] + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,000\\nXin chào.\\n\\n', encoding='utf-8'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+    model_dir = tmp_path / "models" / "whisper"
+    model_dir.mkdir(parents=True)
+
+    def install(model_id: str) -> Path:
+        spec = WHISPER_GGUF_MODELS[model_id]
+        with (model_dir / spec.filename).open("wb") as fh:
+            fh.truncate(spec.size_bytes)
+        return model_dir / spec.filename
+
+    def models_run() -> list[str]:
+        return models_log.read_text(encoding="utf-8").splitlines()
+
+    cfg = AsrConfig(backend="whisper_cpp", model="base", language="vi")
+    # Nothing installed: a typed AsrBackendMissing naming the Settings download.
+    with pytest.raises(asr.AsrBackendMissing, match="Cài đặt"):
+        transcribe_media_to_cues(wav, cfg, data_dir=tmp_path)
+
+    install("tiny")
+    small = install("small")
+    notes: list[str] = []
+    work_dir = tmp_path / "cache"
+    cues = transcribe_media_to_cues(wav, cfg, work_dir=work_dir, data_dir=tmp_path, notes=notes)
+    assert [c.text for c in cues] == ["Xin chào."]
+    assert models_run() == [str(small)]
+    assert notes == ["Chưa tải mô hình Whisper base, đã dùng mô hình small có sẵn."]
+
+    # Auto prefers whisper.cpp whenever any catalog model is installed, not only the
+    # configured one (faster-whisper would download the configured model instead).
+    fw_calls: list[str] = []
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = lambda model, **_kw: fw_calls.append(model)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+    auto = AsrConfig(backend="auto", model="large-v3-turbo", language="vi")
+    transcribe_media_to_cues(wav, auto, data_dir=tmp_path)
+    assert models_run()[-1] == str(small) and not fw_calls
+
+    # Downloading the configured model re-runs instead of reusing the fallback's cache.
+    base = install("base")
+    notes.clear()
+    transcribe_media_to_cues(wav, cfg, work_dir=work_dir, data_dir=tmp_path, notes=notes)
+    assert models_run()[-1] == str(base) and notes == []
 
 
 def test_api_error_detail_redacts_key_and_cache_key_is_sparse(tmp_path: Path) -> None:
@@ -784,7 +902,10 @@ def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
     )
     # Segments come from the JSON-full output; the SRT written beside it is never read.
     assert [c.text for c in cues] == ["Xin chào các bạn.", "Tạm biệt"]
-    assert notes == ["Đã lọc 1 đoạn nghi là ảo giác của Whisper: 1 dòng lặp lại."]
+    assert notes == [
+        "Ngôn ngữ nhận diện được: vi.",
+        "Đã lọc 1 đoạn nghi là ảo giác của Whisper: 1 dòng lặp lại.",
+    ]
     assert (cues[1].start_ms, cues[1].end_ms) == (2000, 3500)
     assert (cues[1].speech_start_ms, cues[1].speech_end_ms) == (2100, 3500)
     (args,) = logged_args()

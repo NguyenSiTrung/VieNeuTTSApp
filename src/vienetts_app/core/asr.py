@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 import zlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -29,6 +29,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from vienetts_app.core.ai_models import (
+    WHISPER_GGUF_MODELS,
     WHISPER_VAD_MODEL_ID,
     audio_model_path,
     cli_command,
@@ -74,6 +75,17 @@ class AsrCancelled(AsrError):
     """The user cancelled speech recognition; auto fallback must never swallow this."""
 
 
+class AsrBackendMissing(AsrError):
+    """A backend is not installed (package, ``whisper-cli`` or model file).
+
+    Auto mode moves on to the next backend only on this type; any other
+    :class:`AsrError` is a real failure and is surfaced, never uploaded instead.
+    """
+
+
+_CLOUD_NOTE = "Đã dùng Whisper API (đám mây)"
+
+
 @dataclass(frozen=True)
 class AsrConfig:
     backend: str = "auto"  # "auto" | "faster_whisper" | "whisper_cpp" | "openai_api"
@@ -85,6 +97,21 @@ class AsrConfig:
     threads: int = 0  # 0 = automatic (min(16, os.cpu_count() or 4))
     timeout_s: float = 0.0  # 0 = derive from audio duration
     api_model: str = ""
+    # Auto mode uploads to ``api_base_url`` only when this is set and no local backend
+    # is installed; an explicit ``openai_api`` backend always uploads.
+    cloud_fallback: bool = False
+
+
+@dataclass
+class _RunReport:
+    """What one backend run learned besides its segments; kept only when the run succeeds."""
+
+    language: str = ""
+    notes: list[str] = field(default_factory=list)
+
+    def set_language(self, value: Any) -> None:
+        if not self.language and isinstance(value, str) and value.strip():
+            self.language = value.strip()[:32]
 
 
 @dataclass(frozen=True)
@@ -682,13 +709,14 @@ def _run_faster_whisper(
     *,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    report: _RunReport | None = None,
 ) -> list[RawSegment]:
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     try:
         import faster_whisper  # type: ignore[import-not-found]
     except Exception as exc:
-        raise AsrError(
+        raise AsrBackendMissing(
             "Chưa cài đặt faster-whisper trên môi trường này. "
             "Hãy cài đặt faster-whisper hoặc chọn máy chủ Whisper API trong Cài đặt."
         ) from exc
@@ -722,6 +750,8 @@ def _run_faster_whisper(
             word_timestamps=True,
         )
         total_s = float(getattr(info, "duration", 0.0) or 0.0)
+        if report is not None:
+            report.set_language(getattr(info, "language", None))
         raw_segments: list[RawSegment] = []
         for seg in segments_iter:
             if cancel_check is not None and cancel_check():
@@ -815,8 +845,8 @@ def _merge_whisper_tokens(
     return _extract_words(raw_words, seg_start_ms, seg_end_ms), avg_logprob
 
 
-def _parse_whisper_json(raw: bytes) -> list[RawSegment]:
-    """Segments with word timings from ``whisper-cli -ojf`` (JSON-full) output.
+def _parse_whisper_json(raw: bytes) -> tuple[list[RawSegment], str]:
+    """Segments with word timings, and the language, from ``whisper-cli -ojf`` output.
 
     Builds before b5454 write each token's bytes unescaped, so one character
     can be split across two tokens (invalid UTF-8 in each JSON string): the
@@ -827,6 +857,8 @@ def _parse_whisper_json(raw: bytes) -> list[RawSegment]:
     transcription = payload.get("transcription") if isinstance(payload, dict) else None
     if not isinstance(transcription, list):
         raise ValueError("missing 'transcription'")
+    result = payload.get("result")
+    language = result.get("language") if isinstance(result, dict) else None
     out: list[RawSegment] = []
     for item in transcription:
         if not isinstance(item, dict):
@@ -852,21 +884,60 @@ def _parse_whisper_json(raw: bytes) -> list[RawSegment]:
                 avg_logprob=avg_logprob,
             )
         )
-    return out
+    return out, language.strip() if isinstance(language, str) else ""
 
 
-def _read_whisper_cpp_output(json_out: Path, srt_out: Path) -> list[RawSegment]:
-    """Parse the JSON-full output; the SRT is read only when no valid JSON was written."""
+def _read_whisper_cpp_output(json_out: Path, srt_out: Path) -> tuple[list[RawSegment], str]:
+    """Parse the JSON-full output; the SRT (no language) is read only without valid JSON."""
     if json_out.is_file():
         with contextlib.suppress(OSError, ValueError):
             return _parse_whisper_json(json_out.read_bytes())
     if not srt_out.is_file() or srt_out.stat().st_size == 0:
-        return []
+        return [], ""
     try:
         cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
     except Exception as exc:
         raise AsrError(f"Tệp phụ đề từ whisper.cpp không hợp lệ: {exc}") from exc
-    return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues]
+    return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues], ""
+
+
+_WHISPER_MODEL_DOWNLOAD_HINT = "Hãy tải mô hình trong Cài đặt → Mô hình → Mô hình Whisper (GGUF)."
+
+
+def _whisper_model_choice(model: str, data_dir: Path | None) -> tuple[Path, str] | None:
+    """``(model file, catalog id it fell back to)`` — the id is "" for the configured model."""
+    path = resolve_asr_model_path((model or "base").strip() or "base", data_dir)
+    if path is not None:
+        return path, ""
+    if data_dir is None:
+        return None
+    for spec in sorted(WHISPER_GGUF_MODELS.values(), key=lambda s: s.size_bytes, reverse=True):
+        path = resolve_asr_model_path(spec.id, data_dir)
+        if path is not None:
+            return path, spec.id
+    return None
+
+
+def resolve_whisper_model(
+    model: str, data_dir: Path | None, *, notes: list[str] | None = None
+) -> Path:
+    """The whisper.cpp model file for ``model``.
+
+    The configured model when it is installed; otherwise the largest installed
+    catalog model, with a note. Raises :class:`AsrBackendMissing` naming the
+    Settings download when no model is installed.
+    """
+    requested = (model or "base").strip() or "base"
+    choice = _whisper_model_choice(requested, data_dir)
+    if choice is None:
+        raise AsrBackendMissing(
+            f"Chưa tải mô hình Whisper {requested} cho whisper.cpp. {_WHISPER_MODEL_DOWNLOAD_HINT}"
+        )
+    path, fallback = choice
+    if fallback and notes is not None:
+        shown = requested if requested in WHISPER_GGUF_MODELS else Path(requested).name
+        notes.append(f"Chưa tải mô hình Whisper {shown}, đã dùng mô hình {fallback} có sẵn.")
+    return path
 
 
 def _run_whisper_cpp(
@@ -877,16 +948,20 @@ def _run_whisper_cpp(
     data_dir: Path | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    report: _RunReport | None = None,
 ) -> list[RawSegment]:
     """Run ``whisper-cli``; its output files go to ``out_dir`` (the media cache) and are removed."""
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     binary = _resolve_whisper_cpp_bin(data_dir)
     if binary is None:
-        raise AsrError("Không tìm thấy thực thi whisper-cli (whisper.cpp).")
-    model_path = resolve_asr_model_path(config.model, data_dir)
-    if model_path is None or not model_path.is_file():
-        raise AsrError(f"Không tìm thấy tệp mô hình whisper.cpp: {config.model}")
+        raise AsrBackendMissing(
+            "Chưa cài runtime whisper.cpp (whisper-cli). "
+            "Hãy bấm 'Cài runtime whisper.cpp' trong Cài đặt → Mô hình."
+        )
+    model_path = resolve_whisper_model(
+        config.model, data_dir, notes=report.notes if report is not None else None
+    )
 
     if progress_cb is not None:
         progress_cb(0.2, "Đang chạy whisper.cpp…")
@@ -965,7 +1040,9 @@ def _run_whisper_cpp(
         if res.returncode != 0:
             detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["whisper-cli failed"]
             raise AsrError(f"whisper.cpp thất bại: {detail[0]}")
-        segments = _read_whisper_cpp_output(json_out, srt_out)
+        segments, language = _read_whisper_cpp_output(json_out, srt_out)
+        if report is not None:
+            report.set_language(language)
         if progress_cb is not None:
             progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
         return segments
@@ -983,6 +1060,7 @@ def _upload_whisper_api(
     cancel_check: Callable[[], bool] | None = None,
     prompt: str = "",
     timeout: float = 120,
+    report: _RunReport | None = None,
 ) -> list[RawSegment]:
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
@@ -1067,6 +1145,8 @@ def _upload_whisper_api(
     except json.JSONDecodeError as exc:
         raise AsrError(f"Phản hồi từ máy chủ ASR không hợp lệ: {exc}") from exc
 
+    if report is not None and isinstance(payload, dict):
+        report.set_language(payload.get("language"))
     segments = payload.get("segments") if isinstance(payload, dict) else None
     top_words_raw = payload.get("words") if isinstance(payload, dict) else None
     out: list[RawSegment] = []
@@ -1174,14 +1254,21 @@ def _run_openai_whisper_api(
     *,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    report: _RunReport | None = None,
 ) -> list[RawSegment]:
+    """Transcribe through ``/audio/transcriptions``, in silence-cut chunks for long audio."""
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     chunks = _plan_api_chunks(wav_path)
     if len(chunks) <= 1 and wav_path.stat().st_size < 24_900_000:
         timeout = max(120.0, 0.5 * _wav_duration_s(wav_path))
         return _upload_whisper_api(
-            wav_path, config, progress_cb=progress_cb, cancel_check=cancel_check, timeout=timeout
+            wav_path,
+            config,
+            progress_cb=progress_cb,
+            cancel_check=cancel_check,
+            timeout=timeout,
+            report=report,
         )
 
     import soundfile as sf
@@ -1206,6 +1293,7 @@ def _run_openai_whisper_api(
                 cancel_check=cancel_check,
                 prompt=prompt,
                 timeout=max(120.0, 0.5 * (stop - start) / rate),
+                report=report,
             )
             prompt = " ".join(segment.text for segment in segments)[-200:]
             offset = int(round(start * 1000 / rate))
@@ -1283,8 +1371,10 @@ def _asr_cache_key(
     """Segments-cache key for ``wav_path``; ``key_path`` names it as a legacy alias.
 
     ``:vad`` marks a backend that may run whisper.cpp while its Silero VAD model is
-    installed, so installing or removing the model re-runs; keys without it are
-    unchanged, so caches (and legacy aliases) from before still hit.
+    installed, and ``:fallback=<id>`` one that would run whisper.cpp with another
+    installed model than the configured one, so installing or removing either
+    re-runs; keys without them are unchanged, so caches (and legacy aliases) from
+    before still hit.
     """
     try:
         st = wav_path.stat()
@@ -1297,18 +1387,22 @@ def _asr_cache_key(
     key = f"{named}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
     if config.api_base_url.strip():
         key += f":{config.api_base_url.strip()}:{config.api_model.strip()}"
-    vad_model = audio_model_path(WHISPER_VAD_MODEL_ID, data_dir)
-    if backend in ("auto", "whisper_cpp") and vad_model is not None:
-        key += ":vad"
+    if backend in ("auto", "whisper_cpp"):
+        if audio_model_path(WHISPER_VAD_MODEL_ID, data_dir) is not None:
+            key += ":vad"
+        choice = _whisper_model_choice(model, data_dir)
+        if choice is not None and choice[1] and _resolve_whisper_cpp_bin(data_dir) is not None:
+            key += f":fallback={choice[1]}"
     return key
 
 
 def _load_cached_segments(
     work_dir: Path | None, key: str, *, aliases: Sequence[str] = ()
-) -> list[RawSegment] | None:
-    """Cached segments stored under ``key`` (or a legacy ``aliases`` key).
+) -> tuple[list[RawSegment], str] | None:
+    """``(segments, detected language)`` stored under ``key`` (or a legacy ``aliases`` key).
 
-    A cache from another :data:`ASR_VERSION` (or an unversioned one) is a miss.
+    A cache from another :data:`ASR_VERSION` (or an unversioned one) is a miss; the
+    optional ``language`` is "" in caches written before it was stored.
     """
     if work_dir is None or not key:
         return None
@@ -1358,10 +1452,15 @@ def _load_cached_segments(
                 **{name: _opt_float(item.get(name)) for name in _SCORE_FIELDS},
             )
         )
-    return out or None
+    if not out:
+        return None
+    language = data.get("language")
+    return out, language.strip() if isinstance(language, str) else ""
 
 
-def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[RawSegment]) -> None:
+def _store_cached_segments(
+    work_dir: Path | None, key: str, segments: Sequence[RawSegment], *, language: str = ""
+) -> None:
     if work_dir is None or not key or not segments:
         return
     raw: list[dict[str, Any]] = []
@@ -1383,12 +1482,99 @@ def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[R
             if score is not None:
                 item[name] = float(score)
         raw.append(item)
-    payload = {"asr_version": ASR_VERSION, "key": key, "segments": raw}
+    payload: dict[str, Any] = {"asr_version": ASR_VERSION, "key": key, "segments": raw}
+    if language:
+        payload["language"] = language
     with contextlib.suppress(OSError):
         work_dir.mkdir(parents=True, exist_ok=True)
         (work_dir / ASR_CACHE_FILENAME).write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
+
+
+def _run_asr_backends(
+    wav_path: Path,
+    cfg: AsrConfig,
+    *,
+    out_dir: Path,
+    data_dir: Path | None,
+    progress_cb: Callable[[float, str], None] | None,
+    cancel_check: Callable[[], bool] | None,
+) -> tuple[list[RawSegment], _RunReport]:
+    """Run the configured backend, or the ``auto`` chain.
+
+    Auto tries the local backends (whisper.cpp first when it has a model). Only
+    :class:`AsrBackendMissing` moves on: any other failure is real and is raised
+    once no local backend succeeded. The cloud API runs only when every local
+    backend is missing, ``cfg.cloud_fallback`` is set and an ASR URL is configured.
+    """
+
+    def faster_whisper(report: _RunReport) -> list[RawSegment]:
+        return _run_faster_whisper(
+            wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check, report=report
+        )
+
+    def whisper_cpp(report: _RunReport) -> list[RawSegment]:
+        return _run_whisper_cpp(
+            wav_path,
+            cfg,
+            out_dir=out_dir,
+            data_dir=data_dir,
+            progress_cb=progress_cb,
+            cancel_check=cancel_check,
+            report=report,
+        )
+
+    def openai_api(report: _RunReport) -> list[RawSegment]:
+        raw = _run_openai_whisper_api(
+            wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check, report=report
+        )
+        report.notes.append(_CLOUD_NOTE)  # every cloud transcription says so
+        return raw
+
+    backend = (cfg.backend or "auto").strip()
+    explicit = {
+        "faster_whisper": faster_whisper,
+        "whisper_cpp": whisper_cpp,
+        "openai_api": openai_api,
+    }.get(backend)
+    if explicit is not None:
+        report = _RunReport()
+        return explicit(report), report
+
+    # whisper.cpp goes first whenever it can run, on the configured or a fallback model.
+    local = [("whisper.cpp", whisper_cpp), ("faster-whisper", faster_whisper)]
+    whisper_cpp_model = _whisper_model_choice(cfg.model, data_dir)
+    if _resolve_whisper_cpp_bin(data_dir) is None or whisper_cpp_model is None:
+        local.reverse()
+    failures: list[str] = []
+    real_errors: list[AsrError] = []
+    missing: AsrBackendMissing | None = None
+    for name, runner in local:
+        report = _RunReport()
+        try:
+            raw = runner(report)
+        except AsrCancelled:
+            raise
+        except AsrError as exc:
+            failures.append(f"Không dùng được {name}: {exc}")
+            if isinstance(exc, AsrBackendMissing):
+                missing = exc
+            else:
+                real_errors.append(exc)
+            continue
+        report.notes[:0] = failures
+        return raw, report
+    if real_errors:
+        raise real_errors[0]
+    if cfg.cloud_fallback and cfg.api_base_url.strip():
+        report = _RunReport(notes=failures)
+        return openai_api(report), report
+    raise AsrBackendMissing(
+        "Không tìm thấy bộ nhận diện giọng nói (ASR) khả dụng. Hãy tải mô hình Whisper "
+        "và cài runtime whisper.cpp trong Cài đặt → Mô hình, hoặc cấu hình Whisper API "
+        "và bật dùng Whisper API (đám mây) khi không có ASR cục bộ."
+    ) from missing
 
 
 def transcribe_media_to_cues(
@@ -1428,100 +1614,28 @@ def transcribe_media_to_cues(
             for p in cache_key_paths(wav_path)[1:]
         ]
         cached = _load_cached_segments(work_dir, cache_key, aliases=aliases)
+        run_notes: list[str] = []
         if cached is not None:
             if progress_cb is not None:
                 progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
-            raw = cached
+            raw, language = cached
         else:
-            backend = (cfg.backend or "auto").strip()
-            if backend == "faster_whisper":
-                raw = _run_faster_whisper(
-                    wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-                )
-            elif backend == "whisper_cpp":
-                raw = _run_whisper_cpp(
-                    wav_path,
-                    cfg,
-                    out_dir=out_dir,
-                    data_dir=data_dir,
-                    progress_cb=progress_cb,
-                    cancel_check=cancel_check,
-                )
-            elif backend == "openai_api":
-                raw = _run_openai_whisper_api(
-                    wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-                )
-            else:
-                whisper_cpp_ready = (
-                    _resolve_whisper_cpp_bin(data_dir) is not None
-                    and resolve_asr_model_path(cfg.model, data_dir) is not None
-                )
-                fw_entry = (
-                    "faster-whisper",
-                    lambda: _run_faster_whisper(
-                        wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-                    ),
-                )
-                wcpp_entry = (
-                    "whisper.cpp",
-                    lambda: _run_whisper_cpp(
-                        wav_path,
-                        cfg,
-                        out_dir=out_dir,
-                        data_dir=data_dir,
-                        progress_cb=progress_cb,
-                        cancel_check=cancel_check,
-                    ),
-                )
-                runners: list[tuple[str, Callable[[], list[RawSegment]]]] = (
-                    [wcpp_entry, fw_entry] if whisper_cpp_ready else [fw_entry, wcpp_entry]
-                )
-                api_url = cfg.api_base_url.strip().rstrip("/")
-                if api_url:
-                    runners.append(
-                        (
-                            "openai_api",
-                            lambda: _run_openai_whisper_api(
-                                wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
-                            ),
-                        )
-                    )
-
-                raw = []
-                succeeded = False
-                prior_failures: list[str] = []
-                real_errors: list[AsrError] = []
-                last_err: AsrError | None = None
-                for name, runner in runners:
-                    try:
-                        raw = runner()
-                        succeeded = True
-                        break
-                    except AsrCancelled:
-                        raise
-                    except AsrError as exc:
-                        last_err = exc
-                        msg = str(exc)
-                        is_missing = (
-                            "Chưa cài đặt faster-whisper" in msg
-                            or "Không tìm thấy thực thi whisper-cli" in msg
-                            or "Không tìm thấy tệp mô hình whisper.cpp" in msg
-                        )
-                        if not is_missing:
-                            real_errors.append(exc)
-                        prior_failures.append(f"Không dùng được {name}: {msg}")
-                if succeeded:
-                    if notes is not None and prior_failures:
-                        notes.extend(prior_failures)
-                else:
-                    if real_errors:
-                        raise real_errors[0]
-                    raise AsrError(
-                        "Không tìm thấy bộ nhận diện giọng nói (ASR) khả dụng. "
-                        "Hãy cài đặt faster-whisper / whisper.cpp hoặc cấu hình ASR trong Cài đặt."
-                    ) from last_err
+            raw, report = _run_asr_backends(
+                wav_path,
+                cfg,
+                out_dir=out_dir,
+                data_dir=data_dir,
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
+            )
+            language = report.language
+            run_notes = report.notes
             if raw:
-                _store_cached_segments(work_dir, cache_key, raw)
+                _store_cached_segments(work_dir, cache_key, raw, language=language)
+        if notes is not None:
+            notes.extend(run_notes)
+            if language and (cfg.language or "auto").strip().lower() in ("", "auto"):
+                notes.append(f"Ngôn ngữ nhận diện được: {language}.")
 
         # The cache keeps the raw segments with their scores; filtering runs on every
         # load, so a better filter needs no re-transcription.

@@ -573,6 +573,7 @@ class TestAiDubbingSettings:
                     "llm_api_key": "must-not-be-logged",
                     "llm_model_fit": None,
                     "asr_cloud_fallback": 1,
+                    "asr_model": "base",
                     "output_dir": "/tmp/survives",
                 }
             ),
@@ -596,6 +597,8 @@ class TestAiDubbingSettings:
         assert "must-not-be-logged" not in caplog.text
         assert clamped.output_dir == "/tmp/survives"
         assert clamped.asr_cloud_fallback is False
+        # A stored model choice survives the large-v3-turbo default (FR-3.3).
+        assert clamped.asr_model == "base"
 
         # Every stored diarization device keeps loading; "cuda" (the Windows
         # audio.cpp CUDA builds) joins the vocabulary.
@@ -637,6 +640,13 @@ class TestAiDubbingSettings:
             bg_runner=run_sync,
         )
         try:
+            # The default is the catalog's large-v3-turbo (Q5_0 file), and the controller
+            # exposes it as-is rather than normalizing an unknown id to "base".
+            assert Settings().asr_model == "large-v3-turbo"
+            assert ai_models.WHISPER_GGUF_MODELS["large-v3-turbo"].filename == (
+                "ggml-large-v3-turbo-q5_0.bin"
+            )
+            assert ctrl.asrModel == "large-v3-turbo"
             assert ctrl.asrDevice == "auto"
             assert ctrl.asrThreads == 0
             ctrl.asrDevice = "cpu"

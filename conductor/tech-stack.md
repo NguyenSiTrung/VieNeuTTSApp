@@ -231,6 +231,24 @@ an explicit stored choice is never overridden):
   regen voice pre-selection, 1-click `studioExportVideo` (window splice +
   retimed `.srt` + `mux_dubbed_video`), and `studioPlayOriginalCue` source video
   cue audio audition.
+- Dubbing pipeline runtimes (track `dub_asr_diar_hardening_20261029`, epic
+  `VieNeuTTSApp-9hzp`): three direct dependencies that `vieneu` already pulled
+  in are now declared in `pyproject.toml` (`uv.lock` unchanged at 130
+  packages): `soxr>=1.0` (LGPL-2.1, dynamic) for the single streaming 16 kHz
+  prep (`core/audio_prep.ensure_source_16k`), and `onnxruntime>=1.20.0` +
+  `kaldi-native-fbank>=1.20` (MIT / Apache-2.0) for the optional Silero VAD
+  v6.2 and 3D-Speaker CAM++ models in `core/onnx_audio.py` (lazy imports,
+  CPU only). Native CLIs go through `core/processes.py` (`run_cli` /
+  `spawn_cli`: `CREATE_NO_WINDOW`, UTF-8 decoding, timeouts, cancellable
+  child registry). FFmpeg/ffprobe and the macOS whisper-cli are app-managed
+  packs built by the dispatch-only `.github/workflows/media-runtime-build.yml`
+  from `packaging/media-runtime-requirements.json`; the GPL FFmpeg cells in
+  `core/media_runtime_manifests.json` stay `published: false` until the
+  corresponding-source question (bead `VieNeuTTSApp-0j8g`) is settled, so the
+  app falls back to PATH and Homebrew/MacPorts directories for them.
+  Transcription runs through `core/transcribe_pipeline.run_transcription`
+  (ASR → hallucination filter → optional Nemotron turns; concurrent mode
+  exists but stays off until benchmarked, bead `VieNeuTTSApp-4p0t`).
 
 ## Performance & threading (perf_hardening_20261009, 2026-10-09)
 - GUI thread never does multi-hundred-ms work: book load/export, Studio

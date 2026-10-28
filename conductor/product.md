@@ -204,7 +204,13 @@ short snippet to a full document, fully offline.
       `NON_SPEECH_LABELS` filtering (`[BLANK_AUDIO]`, `[MUSIC]`, etc.),
       duration-aware segment splitting + bidirectional micro-fragment merging,
       `AsrCancelled` semantics that `auto` re-raises immediately, and
-      `asr_device` / `asr_threads` settings.
+      `asr_device` / `asr_threads` settings. Hardened again on 2026-10-29
+      (`dub_asr_diar_hardening_20261029`): Whisper Large-v3-Turbo Q5_0 is the
+      default with installed-model fallback, whisper.cpp runs with Silero VAD
+      and word timings, a cross-backend hallucination filter drops low-confidence,
+      looped or boilerplate lines, cloud ASR is an explicit opt-in ("Cho phép dự
+      phòng đám mây", off by default), the media cache is capped at 5 GiB / 30
+      days, and dubbing re-synthesizes only the subtitle units whose audio changed.
     - **Speaker diarization & multi-speaker cast (`core/diarization.py`, epic
       `VieNeuTTSApp-2ifr`)**: label cues by speaker (`SPEAKER_01`, `SPEAKER_02`,
       …) via `audio-cpp/Nemotron-3-Diarization-GGUF` (`Q8_0` / `BF16` through

@@ -112,7 +112,7 @@ Test seams and fakes:
     - Route every AI progress and result through `ProgressRelay`. This replaces the worker-thread `_set_ai_state` calls in `report_asr`/`report_diar` (`:2609-2623`) and in the LLM `progress_cb` lambda (`:2998`).
     - Add `_sample_generation` and a sidecar key for reference clips.
 
-- [~] **Task 2.3: Project switch, removal, cancel & shutdown; `projectsChanged` (FR-1.4, FR-1.5, FR-1.9 part, M1, M2, M4, M7, L2)**
+- [x] **Task 2.3: Project switch, removal, cancel & shutdown; `projectsChanged` (FR-1.4, FR-1.5, FR-1.9 part, M1, M2, M4, M7, L2)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Import during ASR:** `importSrt` while a fake ASR runs cancels it; its `done` is dropped and the imported project stays.
@@ -125,7 +125,7 @@ Test seams and fakes:
     - Capture `project_id` in every async closure.
     - Reorder `removeProject`; make `cancelRender` call `_fail_render("")`; extend `shutdown()`; add the emissions.
 
-- [ ] **Task 2.4: Persistence & export correctness; always-fresh cue rows (FR-1.6, FR-1.7, FR-1.9 part, L1, L4, M3, M5)**
+- [~] **Task 2.4: Persistence & export correctness; always-fresh cue rows (FR-1.6, FR-1.7, FR-1.9 part, L1, L4, M3, M5)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Setters keep the render:** on a rendered project, each of `videoMixMode`, `videoBgGainDb`, embed mode, subtitle language and `setLlmGlossary` keeps `stats`, `adjusted` and the fingerprint in `project.json`. Moving a policy knob away and back re-adopts the render with 0 synthesis. Re-importing the same file keeps the render.

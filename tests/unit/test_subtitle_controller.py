@@ -8,6 +8,7 @@ all exercised without an engine or an audio device.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import threading
 import uuid
@@ -224,6 +225,21 @@ def test_import_srt_builds_the_workspace(env, tmp_path):
     assert "active" not in rows[0]
     assert controller.activeCue == -1
 
+    # A legacy encoding decodes like the Audiobook import and says so on the
+    # warning channel — for an imported SRT and a video's companion alike.
+    legacy = tmp_path / "legacy.srt"
+    legacy.write_bytes(SRT.encode("utf-16-le"))
+    assert controller.importSrt(str(legacy)) is True
+    assert controller.cues[1]["text"] == "Tạm biệt"
+    assert controller.noticeLevel == "warning" and "UTF-16" in controller.errorText
+    controller.clearNotice()
+    legacy.write_bytes("1\n00:00:00,000 --> 00:00:02,000\nXin chào\n".encode("cp1258"))
+    video = tmp_path / "legacy.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    assert controller.hasVideo is True and controller.cues[0]["text"] == "Xin chào"
+    assert controller.noticeLevel == "warning" and "1258" in controller.errorText
+
 
 def test_import_rejections(env, tmp_path):
     controller, _, _ = env
@@ -396,6 +412,21 @@ def test_terminal_outcomes(env, tmp_path):
     )
     assert controller.rendering is False
     assert controller.errorText == ""
+
+    # M1: cancelling after the job already completed (its terminal still in
+    # flight) ends the render now; the late result submits nothing more.
+    fake.pending.clear()
+    controller.render()
+    job_id, text, listener = fake.pending.pop(0)
+    controller.cancelRender()
+    assert controller.rendering is False
+    artifact, wav = make_artifact(job_id, text, tmp_path)
+    listener.on_synthesis_terminal(
+        JobTerminal(job_id=job_id, owner="audiobook", state="completed", value=artifact)
+    )
+    assert fake.pending == [] and controller.rendering is False
+    assert controller.rendered is False and controller.errorText == ""
+    assert not wav.exists()  # the late artifact is released, never placed
 
 
 def test_render_open_failure_is_a_clean_error(env, tmp_path, monkeypatch):
@@ -1940,12 +1971,26 @@ def test_re_asr_is_gated_when_cue_edits_would_be_lost(tmp_path, monkeypatch):
     assert len(calls) == before + 1
 
 
-def test_project_lifecycle_lists_opens_and_removes(tmp_path):
+def test_project_lifecycle_lists_opens_and_removes(tmp_path, monkeypatch):
+    from vienetts_app.core.subtitles import Cue
+
     controller, fake, _ = _rendered_controller(tmp_path)
+    # FR-1.9 / L2: the picker list refreshes once per list-affecting change.
+    changes: list[int] = []
+    controller.projectsChanged.connect(lambda: changes.append(1))
+
+    def changed_once() -> bool:
+        count = len(changes)
+        changes.clear()
+        return count == 1
+
     first_id = controller.projectId
     second = tmp_path / "other.srt"
     second.write_text("1\n00:00:01,000 --> 00:00:02,000\nNội dung khác\n", encoding="utf-8")
     assert controller.importSrt(str(second)) is True
+    assert changed_once()  # import
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True and changed_once()  # render complete
     assert controller.projectId != first_id
     assert controller.projectCount == 2
     rows = controller.projects
@@ -1961,10 +2006,26 @@ def test_project_lifecycle_lists_opens_and_removes(tmp_path):
     assert controller.cueCount == 2
     assert controller.mode == "dub"
 
+    assert changed_once()
     assert controller.removeProject(first_id) is True
+    assert changed_once()  # remove (it clears the active project too)
     assert controller.loaded is False
     assert controller.projectCount == 1
     assert [row["id"] for row in controller.projects] == [controller.projects[0]["id"]]
+
+    assert controller.openProject(controller.projects[0]["id"]) is True
+    changes.clear()
+    controller.clear()
+    assert changed_once()  # clear
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+    )
+    assert controller.importVideo(str(video)) is True
+    assert controller.transcribeVideo(False) is True
+    assert controller.loaded is True and changed_once()  # ASR import
 
 
 def test_removing_the_active_project_returns_to_the_empty_state(tmp_path):
@@ -1974,6 +2035,234 @@ def test_removing_the_active_project_returns_to_the_empty_state(tmp_path):
     assert controller.loaded is False
     assert controller.cueCount == 0
     assert controller.projectCount == 0
+
+
+OTHER_SRT = "1\n00:00:01,000 --> 00:00:02,000\nNội dung khác\n"
+
+
+def test_switching_projects_cancels_ai_and_drops_its_late_results(tmp_path, monkeypatch):
+    # FR-1.4 / M2: an import cancels the running AI op, and whatever it
+    # delivers afterwards is dropped (generation + captured project_id).
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [replace(c, speaker="SPEAKER_09") for c in cues],
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [replace(c, text="Từ LLM") for c in cues],
+    )
+
+    def finish_last() -> None:
+        work, done, _ = runner.calls[-1]
+        done(work())
+
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    other = tmp_path / "other.srt"
+    other.write_text(OTHER_SRT, encoding="utf-8")
+
+    # Import during ASR: the ASR is cancelled and its result never replaces
+    # the imported project.
+    assert controller.importVideo(str(video)) is True
+    assert controller.transcribeVideo(False) is True and controller.aiBusy is True
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.aiBusy is False
+    movie_id = controller.projectId
+    finish_last()
+    assert controller.projectId == movie_id and controller.cues[0]["text"] == "Xin chào"
+
+    # Diarization of A, then B imported: A's result lands nowhere.
+    assert controller.attachVideo(str(video)) is True
+    assert controller.runDiarization() is True and controller.aiBusy is True
+    assert controller.importSrt(str(other)) is True and controller.aiBusy is False
+    finish_last()
+    assert controller.hasSpeakers is False
+    assert controller._store.require(movie_id).cues[0].speaker == ""  # noqa: SLF001
+
+    # LLM on B, then A reopened: B's result lands nowhere either.
+    other_id = controller.projectId
+    assert controller.refineWithLlm("refine_asr", "vi") is True and controller.aiBusy is True
+    assert controller.openProject(movie_id) is True and controller.aiBusy is False
+    finish_last()
+    assert controller.cues[0]["text"] == "Xin chào"
+    assert controller._store.require(other_id).cues[0].text == "Nội dung khác"  # noqa: SLF001
+
+
+def test_an_enrollment_lands_in_the_project_that_started_it(tmp_path, monkeypatch):
+    # FR-1.4: `on_enrolled` completes a clone asynchronously. It persists the
+    # voice into the enrolling project — not whichever is open by then — and
+    # is never refused by the busy owners (it finishes an op, starts none).
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    enrollments: list[Any] = []
+    fake.addVoice = lambda name, path, denoise, transcript, *, on_enrolled=None: enrollments.append(
+        on_enrolled
+    )
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav",
+        lambda vpath, cues, spk, out, **kw: (
+            write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000),
+            "Xin chào",
+        ),
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: list(cues),
+    )
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    other = tmp_path / "other.srt"
+    other.write_text(OTHER_SRT, encoding="utf-8")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+    movie_id = controller.projectId
+
+    def clone() -> Any:
+        assert controller.cloneSpeakerFromVideo("SPEAKER_01", "Giọng A") is True
+        work, done, _ = runner.calls[-1]
+        done(work())
+        return enrollments[-1]
+
+    # Enrolled after B was opened (and while B runs an AI op).
+    on_enrolled = clone()
+    assert controller.importSrt(str(other)) is True
+    assert controller.refineWithLlm("refine_asr", "vi") is True and controller.aiBusy is True
+    on_enrolled("clone-1")
+    assert controller._store.require(movie_id).speaker_voices == {"SPEAKER_01": "clone-1"}  # noqa: SLF001
+    assert controller._project.speaker_voices == {}  # noqa: SLF001
+    controller.cancelAiTask()
+
+    # Enrolled while its own project runs an AI op: applied, not refused.
+    assert controller.openProject(movie_id) is True
+    on_enrolled = clone()
+    assert controller.refineWithLlm("refine_asr", "vi") is True and controller.aiBusy is True
+    on_enrolled("clone-2")
+    assert controller.speakers[0]["voice"] == "clone-2"
+    assert controller._store.require(movie_id).speaker_voices == {"SPEAKER_01": "clone-2"}  # noqa: SLF001
+
+
+def test_remove_project_stops_owners_first_and_prunes_unreferenced_media(tmp_path, monkeypatch):
+    # FR-1.4 / M7: removing the active project cancels its render, export or
+    # AI op, clears, releases the video, and only then deletes the folder —
+    # and it drops the managed SRT / media cache nothing else references.
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    store = controller._store  # noqa: SLF001
+    events: list[str] = []
+    controller.renderingChanged.connect(
+        lambda: None if controller.rendering else events.append("cancel")
+    )
+    controller.exportingChanged.connect(
+        lambda: None if controller.exporting else events.append("cancel")
+    )
+    controller.aiBusyChanged.connect(lambda: None if controller.aiBusy else events.append("cancel"))
+    controller.loadedChanged.connect(lambda: None if controller.loaded else events.append("clear"))
+    controller.videoReleaseRequested.connect(lambda: events.append("release"))
+    real_remove = store.remove
+
+    def remove(project_id: str) -> None:
+        events.append("remove")
+        real_remove(project_id)
+
+    monkeypatch.setattr(store, "remove", remove)
+
+    def start(owner: str, n: int) -> None:
+        srt = tmp_path / f"take{n}.srt"
+        srt.write_text(SRT, encoding="utf-8")
+        assert controller.importSrt(str(srt)) is True
+        if owner != "render":
+            render_all(controller, fake, tmp_path)
+        if owner == "render":
+            controller.render()
+        elif owner == "export":
+            assert controller.exportTrack(str(tmp_path / "out")) != ""
+        else:
+            monkeypatch.setattr(
+                "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+                lambda cues, cfg, **kw: list(cues),
+            )
+            assert controller.refineWithLlm("refine_asr", "vi") is True
+            controller.confirmRenderInvalidation()
+        assert controller.busyOwner == owner
+
+    for n, owner in enumerate(("render", "export", "ai")):
+        start(owner, n)
+        pid = controller.projectId
+        events.clear()
+        assert controller.removeProject(pid) is True
+        assert events == ["cancel", "clear", "release", "remove"], owner
+        assert controller.busyOwner == "" and not store.project_dir(pid).exists()
+        fake.pending.clear()
+
+    # Media: an ASR project (managed SRT) and a companion-SRT project share
+    # one video, so its cache outlives the first removal but not the second.
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    (tmp_path / "talk.srt").write_text(OTHER_SRT, encoding="utf-8")
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+    )
+    assert controller.importVideo(str(video)) is True
+    companion_id = controller.projectId
+    assert controller.transcribeVideo(False) is True
+    work, done, _ = runner.calls[-1]
+    done(work())
+    managed_srt = Path(controller.sourcePath)
+    cache = controller._media_cache_dir(video)  # noqa: SLF001
+    assert managed_srt.parent == store.root and cache.is_dir()
+    assert controller.removeProject(controller.projectId) is True
+    assert not managed_srt.exists() and cache.is_dir()  # the companion project keeps it
+    assert controller.removeProject(companion_id) is True
+    assert not cache.exists()
+    assert (tmp_path / "talk.srt").is_file() and video.is_file()  # user files untouched
+
+
+def test_shutdown_cancels_ai_and_export_and_reaps_cli_children(tmp_path, monkeypatch):
+    # FR-1.5 / M4: quitting stops the AI op and voids the export, then
+    # terminates every registered native child (whisper-cli, ffmpeg, …).
+    import subprocess
+    import sys
+
+    from vienetts_app.core import processes
+
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [replace(c, text="Sau khi thoát") for c in cues],
+    )
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.refineWithLlm("refine_asr", "vi") is True and controller.aiBusy is True
+    export_generation = controller._export_generation  # noqa: SLF001
+    child = processes.spawn_cli([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        controller.shutdown()
+        assert child.poll() is not None  # terminated (or killed) and reaped
+        assert child not in processes.registered_children()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            child.wait(timeout=5)
+    assert controller.aiBusy is False
+    assert controller._export_generation == export_generation + 1  # noqa: SLF001
+    work, done, _ = runner.calls[-1]
+    done(work())  # the cancelled op's late result is dropped
+    assert controller.cues[0]["text"] == "Xin chào"
 
 
 def test_transcript_mode_uses_its_real_gap_cap(tmp_path):
@@ -2332,10 +2621,12 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
     assert controller.updateCue(1, "Tạm biệt", "SPEAKER_01") is True
     extracted: list[tuple[int, int]] = []
+    targets: list[Path] = []
 
     def extract(vpath, cues, spk, out, **kw):
         spoken = [cue for cue in cues if cue.speaker == spk]
         extracted.append((spoken[0].start_ms, spoken[0].end_ms))
+        targets.append(Path(out))
         write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000)
         return Path(out), spoken[0].text
 
@@ -2377,6 +2668,10 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     finish(runner.calls[-1])
     assert extracted == [(0, 2000), (3000, 5000), (3000, 5000)]
     assert player.played == [ref] * 4
+    # Each extraction writes its own temp file, renamed over the clip only
+    # when complete: two in flight never write one file.
+    assert len(set(targets)) == 3 and Path(ref) not in targets
+    assert not any(target.exists() for target in targets)
 
     # A newer playback request supersedes a pending audition …
     video.write_bytes(b"fake_mp4, edited again")

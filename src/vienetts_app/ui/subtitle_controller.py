@@ -58,6 +58,9 @@ import contextlib
 import datetime as _dt
 import hashlib
 import logging
+import os
+import shutil
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -89,6 +92,7 @@ from vienetts_app.core.diarization import (
 )
 from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
+from vienetts_app.core.processes import terminate_children
 from vienetts_app.core.subtitle_project import (
     SubtitleProject,
     SubtitleProjectError,
@@ -1445,9 +1449,12 @@ class SubtitleController(QObject):
         stem = sanitize_filename(video.stem, fallback="video")
         return self._store.root / f"{stem}_{self._video_path_digest(video)}.srt"
 
-    def _media_cache_dir(self, video: Path) -> Path:
+    def _media_cache_path(self, video: Path) -> Path:
         stem = sanitize_filename(video.stem, fallback="video")
-        cache_dir = self._store.root / "_media_cache" / f"{stem}_{self._video_path_digest(video)}"
+        return self._store.root / "_media_cache" / f"{stem}_{self._video_path_digest(video)}"
+
+    def _media_cache_dir(self, video: Path) -> Path:
+        cache_dir = self._media_cache_path(video)
         with contextlib.suppress(OSError):
             cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
@@ -1578,6 +1585,7 @@ class SubtitleController(QObject):
         self.durationChanged.emit()
         self.statsChanged.emit()
         self.renderProgressChanged.emit()
+        self.projectsChanged.emit()  # FR-1.9: import and ASR import
         return True
 
     @Slot(str, result=bool)
@@ -1589,10 +1597,9 @@ class SubtitleController(QObject):
         if not str(source) or not source.is_file():
             self._set_error(self.tr("Không tìm thấy tệp phụ đề: {name}").format(name=source.name))
             return False
-        self._stop_render()
-        self._stop_playback()
+        notes: list[str] = []
         try:
-            cues = read_cues(source)
+            cues = read_cues(source, notes=notes)
         except SubtitleError as exc:
             self._set_error(str(exc))
             return False
@@ -1611,7 +1618,11 @@ class SubtitleController(QObject):
                 ).format(name=source.name)
             )
             return False
-        return self._activate_cues_project(source, cues)
+        # FR-1.4: a valid import replaces the project — stop every owner first
+        # so none of their late deliveries can land on it.
+        self._cancel_owners()
+        self._stop_playback()
+        return self._activate_with_notes(source, cues, notes)
 
     @Slot(str, result=bool)
     def importVideo(self, path: str) -> bool:  # type: ignore[override]
@@ -1620,7 +1631,7 @@ class SubtitleController(QObject):
         if not str(source) or not source.is_file():
             self._set_error(self.tr("Không tìm thấy tệp video: {name}").format(name=source.name))
             return False
-        self._stop_render()
+        self._cancel_owners()  # FR-1.4, as in importSrt
         self._stop_playback()
         self._pending_video_path = str(source)
         companion = find_companion_srt(source)
@@ -1629,12 +1640,13 @@ class SubtitleController(QObject):
             if managed_srt.is_file():
                 companion = managed_srt
         if companion is not None:
+            notes: list[str] = []
             try:
-                cues = read_cues(companion)
+                cues = read_cues(companion, notes=notes)
             except (SubtitleError, OSError):
                 cues = []
             if cues:
-                return self._activate_cues_project(companion, cues, video_path=str(source))
+                return self._activate_with_notes(companion, cues, notes, video_path=str(source))
         if self._project is not None:
             updated_cues = self._project.cues
             wav_16k = self._media_cache_dir(source) / "source_16k.wav"
@@ -1657,7 +1669,18 @@ class SubtitleController(QObject):
                 self._store.save(self._project)
             if updated_cues != self._project.cues or wav_16k.is_file():
                 self._emit_cues()
+            self.projectsChanged.emit()  # the row's hasVideo
         self.videoChanged.emit()
+        return True
+
+    def _activate_with_notes(
+        self, source: Path, cues: list[Cue], notes: list[str], *, video_path: str = ""
+    ) -> bool:
+        """Activate a user SRT; a guessed encoding is reported as a warning."""
+        if not self._activate_cues_project(source, cues, video_path=video_path):
+            return False
+        if notes:
+            self._set_warning("\n".join(notes))
         return True
 
     @Slot(str, result=bool)
@@ -1760,11 +1783,8 @@ class SubtitleController(QObject):
             self._set_error(self.tr("Không mở được dự án phụ đề đã chọn."))
             return False
         self.videoReleaseRequested.emit()
-        self._stop_render()
+        self._cancel_owners()
         self._stop_playback()
-        self.cancelAiTask()
-        # Invalidated like clear(): a stale export callback must not touch it.
-        self._export_generation += 1
         policy = loaded.policy
         self._mode = policy.mode
         self._rate_cap = policy.rate_cap
@@ -1807,18 +1827,50 @@ class SubtitleController(QObject):
 
     @Slot(str, result=bool)
     def removeProject(self, project_id: str) -> bool:
-        """Delete a stored workspace; removing the active one returns to empty."""
+        """Delete a stored workspace; removing the active one returns to empty.
+
+        FR-1.4 / M7: cancel → clear → release the video → delete. The folder
+        used to go first, while a render still held its ``.part.wav`` open
+        (``rmtree`` fails on Windows) and an AI op could still deliver into
+        it. The project's managed SRT and media cache go too once no other
+        project references them.
+        """
         pid = str(project_id or "")
+        removed = self._store.load(pid)
+        if self._project is not None and self._project.id == pid:
+            self._cancel_owners()
+            # The ordered worker closes the aborted track before rmtree.
+            self._units_exec.flush()
+            self._clear_workspace(release_video=False)
         self.videoReleaseRequested.emit()
         try:
             self._store.remove(pid)
         except SubtitleProjectError as exc:
             self._set_error(str(exc))
+            self.projectsChanged.emit()
             return False
-        if self._project is not None and self._project.id == pid:
-            self.clear()
+        if removed is not None:
+            self._prune_unreferenced_media(removed)
         self.projectsChanged.emit()
         return True
+
+    def _prune_unreferenced_media(self, removed: SubtitleProject) -> None:
+        """Drop ``removed``'s managed SRT and media cache unless still referenced."""
+        remaining = self._store.list_projects()
+        root = self._store.root
+        source = Path(removed.source_path)
+        with contextlib.suppress(OSError):
+            managed = source.suffix.lower() == ".srt" and source.parent.resolve() == root.resolve()
+            if managed and not any(Path(p.source_path) == source for p in remaining):
+                source.unlink(missing_ok=True)
+        if not removed.video_path:
+            return
+        cache = self._media_cache_path(Path(removed.video_path))
+        in_use = [p.video_path for p in remaining if p.video_path]
+        if self.videoPath:  # e.g. a video staged for ASR with no project yet
+            in_use.append(self.videoPath)
+        if all(self._media_cache_path(Path(video)) != cache for video in in_use):
+            shutil.rmtree(cache, ignore_errors=True)
 
     @Slot()
     def refreshProjects(self) -> None:
@@ -1918,13 +1970,28 @@ class SubtitleController(QObject):
 
     @Slot()
     def cancelRender(self) -> None:
+        """End the render now, whatever its synthesis job's state (FR-1.5 / M1).
+
+        Waiting for the job's ``cancelled`` terminal left the render running
+        when that job had already completed: its ``completed`` terminal then
+        submitted the next unit. ``_fail_render`` cancels the in-flight job,
+        voids queued placements (generation) and forgets ``_job_id``, so the
+        late terminal is released unread.
+        """
         self._play_after_render = False
-        if self._job_id is not None:
-            with contextlib.suppress(Exception):
-                self._app.cancel_job(self._job_id)
-            return
-        if self._rendering:
+        if self._rendering or self._job_id is not None:
             self._fail_render("")
+
+    def _cancel_owners(self) -> None:
+        """Stop render, AI and export before the project is replaced or removed.
+
+        FR-1.4: each one's late delivery is then void — the bumped
+        generations drop it, and AI deliveries also compare the captured
+        ``project_id`` (``_ai_delivery_ok``).
+        """
+        self._stop_render()
+        self.cancelAiTask()
+        self.cancelExport()
 
     @Slot()
     def cancelExport(self) -> None:
@@ -2171,6 +2238,7 @@ class SubtitleController(QObject):
             if self._apply_deferred_invalidation():
                 # A change confirmed mid-render already outdated this track.
                 self._play_after_render = False
+            self.projectsChanged.emit()  # the row's rendered/duration (FR-1.9)
             self._after_render_ready()
 
         def failed(exc: BaseException) -> None:
@@ -2747,6 +2815,23 @@ class SubtitleController(QObject):
         self._ai_progress_relay.report(gen, progress, stage_text)
         return gen
 
+    def _active_project_id(self) -> str:
+        return self._project.id if self._project is not None else ""
+
+    def _ai_delivery_ok(self, gen: int, project_id: str) -> bool:
+        """True when an AI op's result may apply (FR-1.4).
+
+        A newer generation (cancel, project switch, another op) drops it
+        silently. A different active project drops it too, and releases the
+        busy state the op still held.
+        """
+        if gen != self._ai_generation:
+            return False
+        if self._active_project_id() != project_id:
+            self._set_ai_state(False, "", 0.0)
+            return False
+        return True
+
     @Slot()
     def cancelAiTask(self) -> None:
         """Cancel an in-flight ASR, diarization, or LLM refinement task."""
@@ -2789,6 +2874,7 @@ class SubtitleController(QObject):
         asr_text = self.tr("Đang nhận diện giọng nói (ASR)…")
         diar_text = self.tr("Đang phân tách người nói…")
         gen = self._begin_ai_op(asr_text, 0.05)
+        project_id = self._active_project_id()
         relay = self._ai_progress_relay
         asr_share = 0.7 if with_diarization else 1.0
 
@@ -2840,7 +2926,7 @@ class SubtitleController(QObject):
             return cues, "\n".join(warnings)
 
         def done(res: tuple[list[Cue], str]) -> None:
-            if gen != self._ai_generation:
+            if not self._ai_delivery_ok(gen, project_id):
                 return
             cues, warn = res
             self._set_ai_state(False, "", 1.0)
@@ -2896,6 +2982,7 @@ class SubtitleController(QObject):
         cues_in = project.cues
         diar_text = self.tr("Đang phân tách người nói…")
         gen = self._begin_ai_op(diar_text, 0.1)
+        project_id = project.id
         relay = self._ai_progress_relay
 
         def report_diar(progress: float) -> None:  # worker thread (FR-1.2)
@@ -2919,7 +3006,7 @@ class SubtitleController(QObject):
             return tagged, "\n".join(notes)
 
         def done(res: tuple[list[Cue], str]) -> None:
-            if gen != self._ai_generation or self._project is None:
+            if not self._ai_delivery_ok(gen, project_id):
                 return
             tagged, warn = res
             self._set_ai_state(False, "", 1.0)
@@ -2943,23 +3030,70 @@ class SubtitleController(QObject):
     @Slot(str, str, result=bool)
     def setSpeakerVoice(self, speaker: str, voice_key: str) -> bool:  # type: ignore[override]
         """Assign ``voice_key`` to ``speaker`` in ``project.speaker_voices``."""
-        project = self._project
         spk = (speaker or "").strip()
-        if project is None or not spk or self._refuse_if_busy():
+        if self._project is None or not spk or self._refuse_if_busy():
             return False
+        self._apply_speaker_voice(spk, voice_key)
+        return True
+
+    def _apply_speaker_voice(self, speaker: str, voice_key: str) -> None:
+        project = self._project
+        if project is None:
+            return
         updated_map = dict(project.speaker_voices)
         vkey = (voice_key or "").strip()
         if vkey:
-            updated_map[spk] = vkey
+            updated_map[speaker] = vkey
         else:
-            updated_map.pop(spk, None)
+            updated_map.pop(speaker, None)
         self._project = replace(project, speaker_voices=updated_map)
         self._rebuild_for_policy()
         with contextlib.suppress(SubtitleProjectError):
             self._store.save(self._project)
         self._emit_cues()
         self.speakersChanged.emit()
-        return True
+
+    def _store_enrolled_voice(self, project_id: str, speaker: str, voice_key: str) -> None:
+        """Give ``speaker`` its freshly enrolled voice in the project that cloned it.
+
+        FR-1.4: enrollment completes asynchronously, after the clone op ended
+        — another project may be open, or a render/AI op running, by then.
+        This finishes an op rather than starting one, so the busy owners do
+        not gate it; a project that is not open is updated on disk.
+        """
+        if self._active_project_id() == project_id:
+            self._apply_speaker_voice(speaker, voice_key)
+            return
+        stored = self._store.load(project_id)
+        if stored is None:
+            return  # removed meanwhile
+        voices = {**stored.speaker_voices, speaker: voice_key}
+        try:
+            # Rebuilt (not patched) so the fingerprint covers the new voice
+            # and the old render is no longer adopted as current.
+            updated = build_project(
+                stored.source_path,
+                stored.cues,
+                stored.policy,
+                sample_rate=stored.sample_rate,
+                voice_key=stored.voice_key,
+                title=stored.title,
+                created_at=stored.created_at,
+                context=stored.context,
+                video_path=stored.video_path,
+                speaker_voices=voices,
+                video_mix_mode=stored.video_mix_mode,
+                video_bg_gain_db=stored.video_bg_gain_db,
+                embed_subtitles=stored.embed_subtitles,
+                subtitle_embed_mode=stored.subtitle_embed_mode,
+                project_id=stored.id,
+                llm_glossary=stored.llm_glossary,
+            )
+            self._store.save(updated)
+        except SubtitleProjectError as exc:
+            self._set_error(str(exc))
+            return
+        self.projectsChanged.emit()  # the row's rendered flag
 
     @Slot(int, str, str, result=bool)
     @Slot(int, str, result=bool)
@@ -3016,13 +3150,22 @@ class SubtitleController(QObject):
         key_path = _speaker_ref_key_path(ref_out)
         with contextlib.suppress(OSError):
             key_path.unlink(missing_ok=True)  # a half-written clip is never reused
-        result = extract_speaker_reference_wav(
-            media, cues, speaker, ref_out, data_dir=self._data_dir
-        )
+        # A private temp file renamed over the clip once complete: two
+        # extractions in flight (a double-click, an audition during a clone)
+        # never write one file.
+        partial = ref_out.with_name(f"{ref_out.stem}.{uuid.uuid4().hex[:8]}.tmp.wav")
+        try:
+            _, transcript = extract_speaker_reference_wav(
+                media, cues, speaker, partial, data_dir=self._data_dir
+            )
+            os.replace(partial, ref_out)
+        finally:
+            with contextlib.suppress(OSError):
+                partial.unlink(missing_ok=True)
         if key:
             with contextlib.suppress(OSError):
                 key_path.write_text(key, encoding="utf-8")
-        return result
+        return ref_out, transcript
 
     @Slot(str, result=bool)
     def playSpeakerSample(self, speaker: str) -> bool:
@@ -3104,6 +3247,7 @@ class SubtitleController(QObject):
         cues_in = project.cues
         key = self._speaker_ref_key(vpath, cues_in, spk)
         gen = self._begin_ai_op(self.tr("Đang trích xuất mẫu giọng {spk}…").format(spk=spk), 0.2)
+        project_id = project.id
 
         def work() -> tuple[Path, str]:
             # Always re-extracted (the enrollment needs the transcript); the
@@ -3111,7 +3255,7 @@ class SubtitleController(QObject):
             return self._extract_speaker_ref(vpath, cues_in, spk, ref_out, key)
 
         def done(res: tuple[Path, str]) -> None:
-            if gen != self._ai_generation:
+            if not self._ai_delivery_ok(gen, project_id):
                 return
             wav_path, transcript = res
             self._set_ai_state(False, "", 1.0)
@@ -3127,18 +3271,19 @@ class SubtitleController(QObject):
                         str(wav_path),
                         denoise,
                         transcript,
-                        on_enrolled=lambda enrolled_id: self.setSpeakerVoice(
-                            spk, enrolled_id or name
+                        # Lands later, maybe after a project switch (FR-1.4).
+                        on_enrolled=lambda enrolled_id: self._store_enrolled_voice(
+                            project_id, spk, enrolled_id or name
                         ),
                     )
                 except TypeError:
                     with contextlib.suppress(Exception):
                         add_voice(name, str(wav_path), denoise, transcript)
-                    self.setSpeakerVoice(spk, name)
+                    self._store_enrolled_voice(project_id, spk, name)
                 except Exception as exc:  # noqa: BLE001
                     self._set_error(str(exc))
             else:
-                self.setSpeakerVoice(spk, name)
+                self._store_enrolled_voice(project_id, spk, name)
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
@@ -3190,6 +3335,7 @@ class SubtitleController(QObject):
         }
         stage_text = stage_map.get(task, stage_map["refine_asr"])
         gen = self._begin_ai_op(stage_text, 0.1)
+        project_id = project.id
         relay = self._ai_progress_relay
 
         def work() -> list[Cue]:
@@ -3208,7 +3354,7 @@ class SubtitleController(QObject):
             )
 
         def done(refined: list[Cue]) -> None:
-            if gen != self._ai_generation or self._project is None:
+            if not self._ai_delivery_ok(gen, project_id):
                 return
             self._set_ai_state(False, "", 1.0)
             self._update_project_cues(refined)
@@ -3287,7 +3433,12 @@ class SubtitleController(QObject):
 
     @Slot()
     def clear(self) -> None:
-        self.videoReleaseRequested.emit()
+        self._clear_workspace()
+        self.projectsChanged.emit()  # no row is active any more (FR-1.9)
+
+    def _clear_workspace(self, *, release_video: bool = True) -> None:
+        if release_video:
+            self.videoReleaseRequested.emit()
         self._stop_render()
         self._stop_playback()
         self.cancelAiTask()
@@ -3323,8 +3474,16 @@ class SubtitleController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        """App quit (FR-1.5 / M4): stop every owner, then reap native children."""
         self.videoReleaseRequested.emit()
         self._stop_render()
         self._stop_playback()
+        self.cancelAiTask()
+        # A running export's callback is void and its ffmpeg told to stop.
+        self._export_cancel = True
+        self._export_generation += 1
         # Queued placements are already no-ops; let the abort run (bounded).
         self._units_exec.flush()
+        # whisper-cli / audiocpp_cli / ffmpeg / ffprobe children used to
+        # outlive the app: terminate → bounded wait → kill whatever is left.
+        terminate_children()

@@ -56,7 +56,8 @@ _ASR_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 # Nemo is gone: the frozen Python runtime cannot import it, so the backend
 # silently degraded to the acoustic heuristic. settings.py migrates old files.
 _DIARIZATION_BACKENDS = frozenset(("auto", "nemotron_gguf", "acoustic"))
-_DIARIZATION_DEVICES = frozenset(("auto", "cpu", "vulkan", "metal"))
+# "cuda" picks the newest Windows audio.cpp CUDA build the NVIDIA driver runs.
+_DIARIZATION_DEVICES = frozenset(("auto", "cpu", "vulkan", "metal", "cuda"))
 
 
 # Recent voices (ui_shell_redesign FR-3.4): most recent first, per engine
@@ -237,11 +238,14 @@ class Settings:
     asr_api_base_url: str = ""
     asr_api_key: str = ""
     asr_api_model: str = ""
+    # Opt-in (FR-3.4): auto mode may upload the audio to the configured Whisper
+    # API only when this is set — a local backend failure never does it silently.
+    asr_cloud_fallback: bool = False
     diarization_backend: str = "auto"
     diarization_model: str = "nemotron-3-diarization-q8_0"
     diarization_max_speakers: int = 0
-    # "auto" keeps whatever runtime is installed; cpu/vulkan/metal name the
-    # runtime archive to install and the --backend value to pass.
+    # "auto" keeps whatever runtime is installed; cpu/vulkan/metal/cuda name
+    # the runtime archive to install and the --backend value to pass.
     diarization_device: str = "auto"
     # 0 = automatic (logical cores, capped at 16); a positive value is passed
     # to audiocpp_cli --threads.
@@ -324,6 +328,8 @@ class Settings:
             raise ValueError("diarization_threads must be an integer in [0, 64]")
         if not isinstance(self.subtitle_export_speaker_labels, bool):
             raise ValueError("subtitle_export_speaker_labels must be a bool")
+        if not isinstance(self.asr_cloud_fallback, bool):
+            raise ValueError("asr_cloud_fallback must be a bool")
         for field, low, high in (
             ("llm_concurrency", 0, 8),
             ("llm_timeout_s", 15, 600),

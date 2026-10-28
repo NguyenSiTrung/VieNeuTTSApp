@@ -176,6 +176,7 @@ def _clamp_engine_fields(data: dict) -> dict:
         "cpu",
         "vulkan",
         "metal",
+        "cuda",
     ):
         logger.warning("Ignoring unknown diarization_device %r; falling back to auto", diar_device)
         clamped.pop("diarization_device")
@@ -194,6 +195,12 @@ def _clamp_engine_fields(data: dict) -> dict:
             export_speakers,
         )
         clamped.pop("subtitle_export_speaker_labels")
+    if "asr_cloud_fallback" in clamped and not isinstance(clamped["asr_cloud_fallback"], bool):
+        # bool only: a stray 1/"yes"/null must not opt the user into uploads.
+        logger.warning(
+            "Ignoring invalid asr_cloud_fallback %r; falling back to false",
+            clamped.pop("asr_cloud_fallback"),
+        )
     max_spk = clamped.get("diarization_max_speakers")
     if max_spk is not None and (
         isinstance(max_spk, bool) or not isinstance(max_spk, int) or not (0 <= max_spk <= 16)

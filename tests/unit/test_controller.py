@@ -7,10 +7,13 @@ vieneu model, no QThread. Streaming tests run the REAL StreamPlaybackController
 against FakeSinks (fake at the audio seam, per project testing pattern).
 """
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +28,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
 from vienetts_app.core import (
+    ai_models,  # noqa: E402
     engine_profiles,  # noqa: E402
     qwen_runtime_manifest,  # noqa: E402
 )
@@ -1164,6 +1168,8 @@ class TestSettingsSeam:
             "asrApiBaseUrl": ("asr_api_base_url", "https://asr.example/v1"),
             "asrApiKey": ("asr_api_key", "whisper-key"),
             "asrApiModel": ("asr_api_model", "whisper-custom"),
+            "asrCloudFallback": ("asr_cloud_fallback", True),
+            "diarizationDevice": ("diarization_device", "cuda"),
             "llmModelRefine": ("llm_model_refine", "refine"),
             "llmModelTranslate": ("llm_model_translate", "translate"),
             "llmModelFit": ("llm_model_fit", "fit"),
@@ -1176,6 +1182,9 @@ class TestSettingsSeam:
         assert len(notifications) == len(ai_fields)
         harness.controller.llmConcurrency = True
         assert harness.controller.llmConcurrency == 3 and len(notifications) == len(ai_fields)
+        harness.controller.asrCloudFallback = 0  # bool flag: an int is refused
+        assert harness.controller.asrCloudFallback is True
+        assert len(notifications) == len(ai_fields)
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert all(data[key] == value for key, value in ai_fields.values())
         assert data["theme"] == "dark"
@@ -2118,6 +2127,344 @@ class TestBgOpsAsync:
         assert wait_until(lambda: controller.exporting is False, timeout=5.0)
         data, sr = read_wav(target)
         assert sr == 48_000 and len(data) == 4_800
+
+
+class _CountingRunner:
+    """``run_sync`` that counts the ops handed to the controller's bg runner."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, work, on_done, parent, *, on_error=None) -> None:
+        self.calls += 1
+        run_sync(work, on_done, parent, on_error=on_error)
+
+
+class _WorkerThreadRunner:
+    """bg runner whose work runs on a real worker thread (joined, then delivered).
+
+    ``progress_first`` pumps the GUI thread's queued events — the relayed
+    progress ticks — before ``on_done``, the production order. Without it the
+    op finishes first, so every tick still queued arrives late.
+    """
+
+    def __init__(self) -> None:
+        self.progress_first = True
+        self.worker_idents: list[int] = []
+
+    def __call__(self, work, on_done, _parent, *, on_error=None) -> None:
+        box: dict[str, Any] = {}
+
+        def run() -> None:
+            self.worker_idents.append(threading.get_ident())
+            try:
+                box["result"] = work()
+            except Exception as exc:  # noqa: BLE001 - delivered like the pool does
+                box["error"] = exc
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join()
+        if self.progress_first:
+            QCoreApplication.sendPostedEvents()
+        if "error" in box:
+            on_error(box["error"])
+        else:
+            on_done(box["result"])
+        QCoreApplication.sendPostedEvents()
+
+
+def _ffmpeg_status(*, managed: bool, downloadable: bool = True) -> Any:
+    exe = Path("/managed/bin/ffmpeg") if managed else None
+    return ai_models.FfmpegRuntimeStatus(
+        cell="linux-x64",
+        downloadable=downloadable,
+        managed=managed,
+        ffmpeg=exe,
+        ffprobe=exe.with_name("ffprobe") if exe else None,
+        version="7.1.1" if managed else "",
+        note="" if downloadable else "Gói ffmpeg dựng sẵn cho linux-x64 chưa được phát hành",
+    )
+
+
+class TestAiDubbingRuntimeSurface:
+    """Settings › AI dubbing: backend availability, optional models, managed ffmpeg."""
+
+    def test_asr_backends_follow_faster_whisper_availability(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_find_spec = importlib.util.find_spec
+        installed = {"faster_whisper": False}
+
+        def find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "faster_whisper":
+                return importlib.machinery.ModuleSpec(name, None) if installed[name] else None
+            return real_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+        write_settings_file(tmp_path, asr_backend="faster_whisper")
+        missing = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert _qml_read(missing, "asrBackends") == ["auto", "whisper_cpp", "openai_api"]
+        # The stored choice resolves to auto (what ASR then runs) with a note,
+        # and stays on disk for a build that ships the module.
+        assert missing.asrBackend == "auto"
+        assert "faster-whisper" in missing.asrBackendNote
+        missing.asrBackend = "faster_whisper"
+        assert "faster-whisper" in missing.errorText
+        stored = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert stored["asr_backend"] == "faster_whisper"
+        missing.asrBackend = "whisper_cpp"
+        assert (missing.asrBackend, missing.asrBackendNote) == ("whisper_cpp", "")
+
+        installed["faster_whisper"] = True
+        write_settings_file(tmp_path, asr_backend="faster_whisper")
+        present = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert present.asrBackends == ["auto", "faster_whisper", "whisper_cpp", "openai_api"]
+        assert (present.asrBackend, present.asrBackendNote) == ("faster_whisper", "")
+
+    def test_audio_model_slots_run_off_thread_report_status_and_gate(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        silero, speaker = ai_models.SILERO_VAD_MODEL_ID, ai_models.SPEAKER_EMBEDDING_MODEL_ID
+        runner = _CountingRunner()
+        controller = AppController(data_dir=tmp_path, bg_runner=runner)
+        rows = _qml_read(controller, "audioModels")
+        assert [r["id"] for r in rows] == [spec.id for spec in ai_models.audio_model_catalog()]
+        assert not any(r["installed"] or r["busy"] for r in rows)
+
+        during: list[tuple[str, bool]] = []
+
+        def fake_download(model_id, data_dir, *, progress_cb=None, cancel_check=None):
+            spec = ai_models.AUDIO_MODELS[model_id]
+            during.append((controller.audioModelBusyId, cancel_check()))
+            for step in range(1, 201):
+                progress_cb(step / 200)
+            target = Path(data_dir) / "models" / spec.subdir / spec.filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as fh:
+                fh.truncate(spec.size_bytes)  # sparse: "installed" is a size check
+            return target
+
+        monkeypatch.setattr(ai_models, "download_audio_model", fake_download)
+        assert controller.downloadAudioModel("not-in-catalog") is False
+        assert "not-in-catalog" in controller.audioModelStatus and runner.calls == 0
+
+        structural: list[int] = []
+        controller.audioModelsChanged.connect(lambda: structural.append(1))
+        assert controller.downloadAudioModel(silero) is True
+        assert runner.calls == 1 and during == [(silero, False)]
+        rows = {r["id"]: r for r in controller.audioModels}
+        assert rows[silero]["installed"] is True and rows[silero]["busy"] is False
+        assert (controller.audioModelBusyId, controller.audioModelProgress) == ("", 1.0)
+        assert "silero_vad.onnx" in controller.audioModelStatus
+        assert len(structural) == 2  # start + finish; progress ticks never rebuild rows
+
+        def failing(model_id, data_dir, **_kw):
+            raise ai_models.AiModelInstallError("Tệp tải về không khớp SHA-256.")
+
+        monkeypatch.setattr(ai_models, "download_audio_model", failing)
+        assert controller.downloadAudioModel(speaker) is True
+        assert "SHA-256" in controller.audioModelStatus
+        assert (controller.audioModelBusyId, controller.audioModelProgress) == ("", 0.0)
+
+        assert controller.removeAudioModel(silero) is True
+        assert runner.calls == 3
+        assert not {r["id"]: r for r in controller.audioModels}[silero]["installed"]
+        assert controller.removeAudioModel(silero) is True  # nothing there: reported
+        assert controller.audioModelStatus != ""
+
+        # One audio-model op at a time: a second download or a remove is
+        # refused while one is in flight.
+        deferred = _DeferredBackground()
+        controller._run_bg = deferred
+        monkeypatch.setattr(ai_models, "download_audio_model", fake_download)
+        assert controller.downloadAudioModel(speaker) is True
+        assert controller.downloadAudioModel(silero) is False
+        assert controller.removeAudioModel(speaker) is False
+        assert {r["id"]: r for r in controller.audioModels}[speaker]["busy"] is True
+        deferred.complete()
+        assert {r["id"]: r for r in controller.audioModels}[speaker]["installed"] is True
+
+    def test_ffmpeg_runtime_slots_install_remove_and_guidance(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = {"managed": False, "downloadable": True}
+        monkeypatch.setattr(
+            ai_models,
+            "ffmpeg_runtime_status",
+            lambda _data_dir: _ffmpeg_status(
+                managed=state["managed"], downloadable=state["downloadable"]
+            ),
+        )
+        installs: list[Path] = []
+
+        def fake_install(data_dir, *, progress_cb=None, cancel_check=None):
+            installs.append(Path(data_dir))
+            if cancel_check():
+                raise ai_models.AiModelDownloadCancelled("Đã huỷ cài đặt ffmpeg.")
+            progress_cb(0.5)
+            state["managed"] = True
+            return Path("/managed/bin/ffmpeg")
+
+        def fake_remove(_data_dir):
+            state["managed"] = False
+            return True
+
+        monkeypatch.setattr(ai_models, "install_ffmpeg_runtime", fake_install)
+        monkeypatch.setattr(ai_models, "remove_ffmpeg_runtime", fake_remove)
+        runner = _CountingRunner()
+        controller = AppController(data_dir=tmp_path, bg_runner=runner)
+        status = _qml_read(controller, "ffmpegRuntimeStatus")
+        assert (status["managed"], status["downloadable"], status["available"]) == (
+            False,
+            True,
+            False,
+        )
+
+        changes: list[int] = []
+        controller.ffmpegRuntimeChanged.connect(lambda: changes.append(1))
+        assert controller.installFfmpegRuntime() is True
+        assert installs == [tmp_path] and runner.calls == 1
+        status = controller.ffmpegRuntimeStatus
+        assert (status["managed"], status["available"], status["version"]) == (True, True, "7.1.1")
+        assert status["ffmpeg"].endswith("ffmpeg") and status["cell"] == "linux-x64"
+        assert (controller.ffmpegRuntimeBusy, controller.ffmpegRuntimeProgress) == (False, 1.0)
+        assert "7.1.1" in controller.ffmpegRuntimeMessage
+        assert len(changes) == 2  # start + finish
+
+        assert controller.removeFfmpegRuntime() is True
+        assert runner.calls == 2 and controller.ffmpegRuntimeStatus["managed"] is False
+
+        def failing(_data_dir, **_kw):
+            raise ai_models.AiModelInstallError("Gói ffmpeg tải về thiếu bộ mã hoá libx264.")
+
+        monkeypatch.setattr(ai_models, "install_ffmpeg_runtime", failing)
+        assert controller.installFfmpegRuntime() is True
+        assert "libx264" in controller.ffmpegRuntimeMessage
+        assert (controller.ffmpegRuntimeBusy, controller.ffmpegRuntimeProgress) == (False, 0.0)
+
+        # An unpublished cell is guidance only: never an install attempt.
+        state["downloadable"] = False
+        controller.refreshFfmpegRuntimeStatus()
+        assert controller.ffmpegRuntimeStatus["note"].startswith("Gói ffmpeg")
+        assert controller.installFfmpegRuntime() is False
+        assert controller.ffmpegRuntimeMessage == controller.ffmpegRuntimeStatus["note"]
+        assert runner.calls == 3
+
+        # Install and remove share one lane; quitting the app cancels the
+        # download in flight (an internal teardown does not).
+        state["downloadable"] = True
+        controller.refreshFfmpegRuntimeStatus()
+        monkeypatch.setattr(ai_models, "install_ffmpeg_runtime", fake_install)
+        deferred = _DeferredBackground()
+        controller._run_bg = deferred
+        assert controller.installFfmpegRuntime() is True
+        assert controller.ffmpegRuntimeBusy is True
+        assert controller.installFfmpegRuntime() is False
+        assert controller.removeFfmpegRuntime() is False
+        controller.shutdown(drain_pool=False)
+        assert deferred.calls[0][0]() is not None  # still installs
+        controller.shutdown()
+        work, _done, on_error = deferred.calls.pop(0)
+        with pytest.raises(ai_models.AiModelDownloadCancelled) as cancelled:
+            work()
+        on_error(cancelled.value)
+        assert controller.ffmpegRuntimeBusy is False
+        assert "huỷ" in controller.ffmpegRuntimeMessage
+
+    def test_audiocpp_runtime_download_accepts_cuda_builds(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        offered = dict.fromkeys(("cpu", "vulkan", "cuda12.4", "cuda13.3"))
+        monkeypatch.setattr(ai_models, "available_audiocpp_variants", lambda: offered)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", lambda _data_dir=None: False)
+        requested: list[str] = []
+
+        def fake_runtime(data_dir, *, variant="", progress_cb=None, **_kw):
+            requested.append(variant)
+            return Path(data_dir) / "audiocpp_cli"
+
+        monkeypatch.setattr(ai_models, "download_audiocpp_runtime", fake_runtime)
+        monkeypatch.setattr(
+            ai_models,
+            "download_diarization_model",
+            lambda model_id, data_dir, **_kw: Path(data_dir) / f"{model_id}.gguf",
+        )
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        controller.diarizationDevice = "cuda"
+        assert controller.diarizationDevice == "cuda"
+        # The "cuda" alias (newest build the driver runs), an explicit build,
+        # and the model download's runtime step all reach the installer.
+        assert controller.downloadAudiocppRuntime() is True
+        assert controller.downloadAudiocppRuntime("cuda12.4") is True
+        assert controller.downloadDiarizationModel() is True
+        assert requested == ["cuda", "cuda12.4", "cuda"]
+
+        # Without an NVIDIA driver no CUDA build is offered: refused with a
+        # reason, nothing downloaded.
+        offered.pop("cuda12.4")
+        offered.pop("cuda13.3")
+        assert controller.downloadAudiocppRuntime() is False
+        assert "cuda" in controller.diarizationDownloadStatus
+        assert controller.downloadAudiocppRuntime("cuda13.3") is False
+        assert "cuda13.3" in controller.diarizationDownloadStatus
+        assert requested == ["cuda", "cuda12.4", "cuda"]
+
+    def test_download_progress_reaches_gui_thread_throttled_and_late_ticks_drop(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_download(*_args, progress_cb=None, **_kw):
+            for step in range(1, 501):
+                progress_cb(step / 500)
+            target = tmp_path / "fake.bin"
+            target.write_bytes(b"ok")
+            return target
+
+        for name in (
+            "download_asr_model",
+            "download_diarization_model",
+            "download_audio_model",
+            "install_ffmpeg_runtime",
+        ):
+            monkeypatch.setattr(ai_models, name, fake_download)
+        monkeypatch.setattr(ai_models, "is_whisper_cpp_installed", lambda _data_dir=None: True)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", lambda _data_dir=None: True)
+        monkeypatch.setattr(
+            ai_models, "ffmpeg_runtime_status", lambda _data_dir: _ffmpeg_status(managed=False)
+        )
+        runner = _WorkerThreadRunner()
+        controller = AppController(data_dir=tmp_path, bg_runner=runner)
+        ops = (
+            (controller.downloadAsrModel, lambda: controller.asrDownloadProgress),
+            (controller.downloadDiarizationModel, lambda: controller.diarizationDownloadProgress),
+            (
+                lambda: controller.downloadAudioModel(ai_models.SILERO_VAD_MODEL_ID),
+                lambda: controller.audioModelProgress,
+            ),
+            (controller.installFfmpegRuntime, lambda: controller.ffmpegRuntimeProgress),
+        )
+        gui = threading.get_ident()
+        emitted_on: list[int] = []
+        # Direct: record the EMITTING thread (an auto connection would queue a
+        # worker-thread emit to the GUI thread and hide it).
+        controller.aiDownloadProgressChanged.connect(
+            lambda: emitted_on.append(threading.get_ident()), Qt.ConnectionType.DirectConnection
+        )
+        for start, progress in ops:
+            emitted_on.clear()
+            runner.progress_first = True
+            assert start() is True
+            assert runner.worker_idents[-1] != gui  # the download really ran off-thread
+            assert set(emitted_on) == {gui}
+            assert 10 <= len(emitted_on) <= 105  # ≥ 1 % steps, not 500 ticks
+            assert progress() == 1.0
+
+            # Ticks still queued when the op finished are stale: dropped.
+            emitted_on.clear()
+            runner.progress_first = False
+            assert start() is True
+            assert progress() == 1.0
+            assert emitted_on == [gui, gui]  # start + finish only
 
 
 class _FakeModelLocation:

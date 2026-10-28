@@ -492,6 +492,7 @@ class TestAiDubbingSettings:
             asr_api_base_url="https://asr.example/v1",
             asr_api_key="asr-secret",
             asr_api_model="whisper-1",
+            asr_cloud_fallback=True,
             llm_model_refine="refine",
             llm_model_translate="translate",
             llm_model_fit="fit",
@@ -502,6 +503,7 @@ class TestAiDubbingSettings:
         save_settings(custom, data_dir=tmp_path)
         loaded = load_settings(data_dir=tmp_path)
         assert loaded == custom
+        assert loaded.asr_cloud_fallback is True
         assert loaded.asr_backend == "faster_whisper"
         assert loaded.asr_model == "small"
         assert loaded.asr_language == "vi"
@@ -546,6 +548,9 @@ class TestAiDubbingSettings:
             {"llm_model_refine": 1},
             {"llm_model_translate": None},
             {"llm_model_fit": False},
+            # bool rule in the other direction: an int is not a bool flag.
+            {"asr_cloud_fallback": 1},
+            {"asr_cloud_fallback": "yes"},
         ):
             with pytest.raises(ValueError):
                 Settings(**bad)
@@ -567,6 +572,7 @@ class TestAiDubbingSettings:
                     "asr_api_key": 5,
                     "llm_api_key": "must-not-be-logged",
                     "llm_model_fit": None,
+                    "asr_cloud_fallback": 1,
                     "output_dir": "/tmp/survives",
                 }
             ),
@@ -589,6 +595,17 @@ class TestAiDubbingSettings:
         assert clamped.llm_model_fit == ""
         assert "must-not-be-logged" not in caplog.text
         assert clamped.output_dir == "/tmp/survives"
+        assert clamped.asr_cloud_fallback is False
+
+        # Every stored diarization device keeps loading; "cuda" (the Windows
+        # audio.cpp CUDA builds) joins the vocabulary.
+        for device in ("auto", "cpu", "vulkan", "metal", "cuda"):
+            (tmp_path / "settings.json").write_text(
+                json.dumps({"diarization_device": device, "asr_cloud_fallback": True}),
+                encoding="utf-8",
+            )
+            stored = load_settings(data_dir=tmp_path)
+            assert (stored.diarization_device, stored.asr_cloud_fallback) == (device, True)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
     def test_settings_permissions_are_owner_only(self, tmp_path: Path) -> None:

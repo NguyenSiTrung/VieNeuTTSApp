@@ -178,7 +178,7 @@ Test seams and fakes:
     - ffmpeg jobs fetch pinned upstream static builds, verify upstream checksums, add `LICENSE`/`SOURCE.txt`, and probe `-encoders`/`-filters`. Candidates are BtbN FFmpeg-Builds (GPL, win64/linux64/linuxarm64) and ffmpeg.martin-riedl.de (macOS); record the final picks in the requirements file.
     - Then lock → render → upload artifacts. With `publish=true`, push packs to gh-pages and commit the manifest to main, mirroring `qwen-gguf-runtime-build.yml`.
 
-- [~] **Task 3.3: AppController runtime/model surface, `asr_cloud_fallback` setting, thread-safe download progress (FR-2.5, FR-3.4 setting, FR-1.2 downloads)**
+- [x] **Task 3.3: AppController runtime/model surface, `asr_cloud_fallback` setting, thread-safe download progress (FR-2.5, FR-3.4 setting, FR-1.2 downloads)**
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/core/models.py, src/vienetts_app/core/settings.py, tests/unit/test_controller.py, tests/unit/test_settings.py -->
   <!-- depends: task1 -->
   - Red tests:

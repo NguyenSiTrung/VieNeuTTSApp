@@ -119,11 +119,12 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import hashlib
+import importlib.util
 import json
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -216,7 +217,7 @@ from vienetts_app.core.updates import (
     platform_display_name,
 )
 from vienetts_app.ui import playback as _playback
-from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
+from vienetts_app.ui.bg_ops import ProgressRelay, drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
 from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.stream_playback import StreamPlaybackController
@@ -539,6 +540,68 @@ def _default_audio_probe() -> bool:
     return _playback.audio_output_available()
 
 
+def _download_progress_cb(
+    relay: ProgressRelay, generation: int, base: float, span: float
+) -> Callable[[float], None]:
+    """Worker-side ``progress_cb`` mapping a 0..1 download onto ``[base, base + span]``.
+
+    Installers report once per 256 KiB chunk; only steps of at least 1 % cross
+    to the GUI thread, where ``relay`` delivers them for ``generation`` only.
+    """
+    last = -1.0
+
+    def report(fraction: float) -> None:
+        nonlocal last
+        value = max(base, min(0.99, base + float(fraction) * span))
+        if abs(value - last) >= 0.01:
+            last = value
+            relay.report(generation, value)
+
+    return report
+
+
+def _audiocpp_offers(variant: str, offered: Mapping[str, object]) -> bool:
+    """Whether ``variant`` — a build id, or the ``cuda`` alias — installs on this host.
+
+    ``cuda`` is the alias ``resolve_audiocpp_variant`` maps to the newest
+    Windows CUDA build (``cuda12.4``/``cuda13.3``) the NVIDIA driver runs.
+    """
+    if variant == "cuda":
+        return any(key.startswith("cuda") for key in offered)
+    return variant in offered
+
+
+def _ffmpeg_status_row(data_dir: Path) -> dict[str, Any]:
+    """The managed-ffmpeg status as a QML map; safe off the GUI thread.
+
+    ``available``: dubbing can run ffmpeg AND ffprobe (managed → PATH →
+    well-known dirs); ``managed``: the app-installed pack is present;
+    ``downloadable``: this host's pack is published, otherwise ``note`` is the
+    Homebrew/apt/winget guidance. ``license``/``source`` come from the cell.
+    """
+    from vienetts_app.core.ai_models import (
+        FFMPEG_RUNTIME,
+        ffmpeg_runtime_status,
+        load_media_runtime_manifest,
+    )
+
+    status = ffmpeg_runtime_status(data_dir)
+    cell = load_media_runtime_manifest().cell(FFMPEG_RUNTIME, status.cell) if status.cell else None
+    return {
+        "cell": status.cell,
+        "downloadable": status.downloadable,
+        "managed": status.managed,
+        "available": status.ffmpeg is not None and status.ffprobe is not None,
+        "ffmpeg": str(status.ffmpeg or ""),
+        "ffprobe": str(status.ffprobe or ""),
+        "version": status.version,
+        "note": status.note,
+        "license": cell.license if cell is not None else "",
+        "source": cell.source if cell is not None else "",
+        "sizeBytes": cell.size_bytes if cell is not None else 0,
+    }
+
+
 class _PreparingWorker:
     """Stand-in worker while a Qwen engine's installs are inspected off-thread.
 
@@ -671,6 +734,11 @@ class AppController(QObject):
     llmTestChanged = Signal()
     aiModelsInstallChanged = Signal()
     aiDownloadProgressChanged = Signal()
+    # Optional audio models and the managed ffmpeg pack: structural changes
+    # only (start/finish/remove) — progress ticks ride aiDownloadProgressChanged
+    # so they never rebuild the Settings rows.
+    audioModelsChanged = Signal()
+    ffmpegRuntimeChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -880,6 +948,48 @@ class AppController(QObject):
         self._diar_download_busy: bool = False
         self._diar_download_progress: float = 0.0
         self._diar_download_status: str = ""
+        # Optional VAD / speaker-embedding models: one op at a time ("" = idle).
+        self._audio_model_busy_id: str = ""
+        self._audio_model_progress: float = 0.0
+        self._audio_model_status: str = ""
+        # Managed ffmpeg pack: install/remove share one lane. The status row is
+        # read lazily (manifest + PATH lookup) and refreshed by each op.
+        self._ffmpeg_busy: bool = False
+        self._ffmpeg_progress: float = 0.0
+        self._ffmpeg_message: str = ""
+        self._ffmpeg_status: dict[str, Any] | None = None
+        # Set when the app quits: the media downloads stop at the next chunk,
+        # so the bounded pool drain is not left waiting on an 80 MB pack.
+        self._media_download_cancel = threading.Event()
+        self._faster_whisper_available: bool | None = None
+        # Download progress hops to the GUI thread through one generation-
+        # checked relay per lane (FR-1.2): workers never write controller
+        # state. The getter reads -1 while the lane is idle, so ticks still
+        # queued when an op finishes are dropped.
+        self._asr_download_generation = 0
+        self._diar_download_generation = 0
+        self._audio_model_generation = 0
+        self._ffmpeg_generation = 0
+        self._asr_download_relay = ProgressRelay(
+            lambda: self._asr_download_generation if self._asr_download_busy else -1,
+            lambda value, _text: self._set_download_progress("_asr_download_progress", value),
+            self,
+        )
+        self._diar_download_relay = ProgressRelay(
+            lambda: self._diar_download_generation if self._diar_download_busy else -1,
+            lambda value, _text: self._set_download_progress("_diar_download_progress", value),
+            self,
+        )
+        self._audio_model_relay = ProgressRelay(
+            lambda: self._audio_model_generation if self._audio_model_busy_id else -1,
+            lambda value, _text: self._set_download_progress("_audio_model_progress", value),
+            self,
+        )
+        self._ffmpeg_relay = ProgressRelay(
+            lambda: self._ffmpeg_generation if self._ffmpeg_busy else -1,
+            lambda value, _text: self._set_download_progress("_ffmpeg_progress", value),
+            self,
+        )
         # Profile a refused re-synthesis needs ("" = none pending) — the target
         # of the switch action the UI offers instead of a silent substitution.
         self._studio_regen_profile: str = ""
@@ -7798,6 +7908,8 @@ class AppController(QObject):
         # Internal teardown skips it — the GUI must not stall on an unrelated
         # pool task, and generation guards already drop stale callbacks.
         if drain_pool:
+            # App quit only: an internal teardown must not abort a download.
+            self._media_download_cancel.set()
             drain_thread_pool()
         self._retry_retired_workers()
         self._set_preparing_worker(None)
@@ -8273,17 +8385,64 @@ class AppController(QObject):
             return
         self._set_setting("output_dir", value)
 
+    def _faster_whisper_installed(self) -> bool:
+        """Whether this build can import faster-whisper (probed once, lazily)."""
+        if self._faster_whisper_available is None:
+            try:
+                found = importlib.util.find_spec("faster_whisper") is not None
+            except (ImportError, ValueError):
+                found = False
+            self._faster_whisper_available = found
+        return self._faster_whisper_available
+
+    @Property("QVariantList", constant=True)
+    def asrBackends(self) -> list[str]:
+        """ASR backends this build can run, in display order (FR-2.5).
+
+        The frozen app ships without faster-whisper, so it is offered only
+        when the module is importable.
+        """
+        local = ["faster_whisper"] if self._faster_whisper_installed() else []
+        return ["auto", *local, "whisper_cpp", "openai_api"]
+
     @Property(str, notify=aiSettingsChanged)
     def asrBackend(self) -> str:
-        return self._settings.asr_backend
+        # A stored backend this build cannot run resolves to auto (what ASR
+        # then uses, see asrBackendNote); the stored value itself is kept.
+        backend = self._settings.asr_backend
+        return backend if backend in self.asrBackends else "auto"
 
     @asrBackend.setter
     def asrBackend(self, value: str) -> None:
-        self._set_setting(
-            "asr_backend",
-            str(value or "auto").strip(),
-            allowed={"auto", "faster_whisper", "whisper_cpp", "openai_api"},
-        )
+        backend = str(value or "auto").strip()
+        if backend == "faster_whisper" and not self._faster_whisper_installed():
+            self._set_error(
+                self.tr(
+                    "faster-whisper không có trong bản cài đặt này — "
+                    "hãy chọn whisper.cpp hoặc Tự động."
+                )
+            )
+            return
+        self._set_setting("asr_backend", backend, allowed=set(self.asrBackends))
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrBackendNote(self) -> str:
+        """Why the effective ASR backend differs from the stored one ("" = it does not)."""
+        if self._settings.asr_backend == "faster_whisper" and not self._faster_whisper_installed():
+            return self.tr(
+                "faster-whisper không có trong bản cài đặt này — đang dùng chế độ Tự động."
+            )
+        return ""
+
+    @Property(bool, notify=aiSettingsChanged)
+    def asrCloudFallback(self) -> bool:
+        """Auto mode may upload the audio to the Whisper API (FR-3.4, opt-in)."""
+        return bool(self._settings.asr_cloud_fallback)
+
+    @asrCloudFallback.setter
+    def asrCloudFallback(self, value: bool) -> None:
+        if isinstance(value, bool):  # an int is not an opt-in
+            self._set_setting("asr_cloud_fallback", value)
 
     @Property(str, notify=aiSettingsChanged)
     def asrModel(self) -> str:
@@ -8414,7 +8573,7 @@ class AppController(QObject):
         self._set_setting(
             "diarization_device",
             str(value or "auto").strip().lower(),
-            allowed={"auto", "cpu", "vulkan", "metal"},
+            allowed={"auto", "cpu", "vulkan", "metal", "cuda"},
         )
 
     @Property(int, notify=aiSettingsChanged)
@@ -8631,17 +8790,14 @@ class AppController(QObject):
         need_runtime = self.asrBackend in ("auto", "whisper_cpp") and not is_whisper_cpp_installed(
             self._data_dir
         )
+        self._asr_download_generation += 1
+        generation = self._asr_download_generation
+        relay = self._asr_download_relay
         self._asr_download_busy = True
         self._asr_download_progress = 0.02
         self._asr_download_status = self.tr("Đang tải mô hình Whisper ({m})…").format(m=model_id)
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
-
-        def _on_asr_progress(p: float, base: float, span: float) -> None:
-            nxt = max(base, min(0.99, base + float(p) * span))
-            if abs(nxt - self._asr_download_progress) >= 0.01:
-                self._asr_download_progress = nxt
-                self.aiDownloadProgressChanged.emit()
 
         def work() -> tuple[str, str]:
             warning = ""
@@ -8650,7 +8806,7 @@ class AppController(QObject):
                     download_whisper_cpp_runtime(
                         self._data_dir,
                         variant=variant,
-                        progress_cb=lambda p: _on_asr_progress(p, 0.02, 0.23),
+                        progress_cb=_download_progress_cb(relay, generation, 0.02, 0.23),
                     )
                 except Exception as exc:  # noqa: BLE001 - reported, not fatal
                     warning = str(exc)
@@ -8658,7 +8814,7 @@ class AppController(QObject):
             path = download_asr_model(
                 model_id,
                 self._data_dir,
-                progress_cb=lambda p: _on_asr_progress(p, base_p, span_p),
+                progress_cb=_download_progress_cb(relay, generation, base_p, span_p),
             )
             return str(path), warning
 
@@ -8711,23 +8867,21 @@ class AppController(QObject):
             ).format(device=self.asrDevice)
             self.aiModelsInstallChanged.emit()
             return False
+        self._asr_download_generation += 1
+        progress_cb = _download_progress_cb(
+            self._asr_download_relay, self._asr_download_generation, 0.02, 0.98
+        )
         self._asr_download_busy = True
         self._asr_download_progress = 0.02
         self._asr_download_status = self.tr("Đang tải runtime whisper.cpp…")
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
-        def _on_runtime_progress(p: float) -> None:
-            nxt = max(0.02, min(0.99, float(p)))
-            if abs(nxt - self._asr_download_progress) >= 0.01:
-                self._asr_download_progress = nxt
-                self.aiDownloadProgressChanged.emit()
-
         def work() -> str:
             cli = download_whisper_cpp_runtime(
                 self._data_dir,
                 variant=variant,
-                progress_cb=_on_runtime_progress,
+                progress_cb=progress_cb,
             )
             return str(cli)
 
@@ -8818,10 +8972,15 @@ class AppController(QObject):
         return sorted(available_audiocpp_variants())
 
     def _diar_runtime_variant(self) -> str:
+        """The audio.cpp build the diarization device asks for ("" = the default build).
+
+        ``cuda`` is passed on as the alias the installer resolves to the
+        newest CUDA build the driver runs.
+        """
         from vienetts_app.core.ai_models import available_audiocpp_variants
 
         device = self.diarizationDevice
-        return device if device in available_audiocpp_variants() else ""
+        return device if _audiocpp_offers(device, available_audiocpp_variants()) else ""
 
     @Slot(result=bool)
     def downloadDiarizationModel(self) -> bool:
@@ -8842,17 +9001,14 @@ class AppController(QObject):
             return False
         model_id = self.diarizationModel
         variant = self._diar_runtime_variant()
+        self._diar_download_generation += 1
+        generation = self._diar_download_generation
+        relay = self._diar_download_relay
         self._diar_download_busy = True
         self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải {m} & runtime audio.cpp…").format(m=model_id)
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
-
-        def _on_diar_progress(p: float, base: float, span: float) -> None:
-            nxt = max(base, min(0.99, base + float(p) * span))
-            if abs(nxt - self._diar_download_progress) >= 0.01:
-                self._diar_download_progress = nxt
-                self.aiDownloadProgressChanged.emit()
 
         def work() -> tuple[str, str]:
             warning = ""
@@ -8861,14 +9017,14 @@ class AppController(QObject):
                     download_audiocpp_runtime(
                         self._data_dir,
                         variant=variant,
-                        progress_cb=lambda p: _on_diar_progress(p, 0.02, 0.28),
+                        progress_cb=_download_progress_cb(relay, generation, 0.02, 0.28),
                     )
                 except Exception as exc:  # noqa: BLE001 - reported, not fatal
                     warning = str(exc)
             path = download_diarization_model(
                 model_id,
                 self._data_dir,
-                progress_cb=lambda p: _on_diar_progress(p, 0.30, 0.69),
+                progress_cb=_download_progress_cb(relay, generation, 0.30, 0.69),
             )
             return str(path), warning
 
@@ -8902,8 +9058,15 @@ class AppController(QObject):
         return True
 
     @Slot(result=bool)
-    def downloadAudiocppRuntime(self) -> bool:
-        """Download (or reinstall) the `audio.cpp` CLI for the selected device."""
+    @Slot(str, result=bool)
+    def downloadAudiocppRuntime(self, variant: str = "") -> bool:
+        """Download (or reinstall) the `audio.cpp` CLI.
+
+        ``variant`` names one build from ``audiocppAvailableVariants`` (e.g.
+        ``cuda12.4``); empty follows the diarization device, where ``cuda``
+        takes the newest CUDA build the driver runs. A GPU build this host is
+        not offered is refused with a reason instead of installing another.
+        """
         from vienetts_app.core.ai_models import (
             available_audiocpp_variants,
             download_audiocpp_runtime,
@@ -8911,33 +9074,37 @@ class AppController(QObject):
 
         if self._diar_download_busy:
             return False
-        variant = self._diar_runtime_variant()
-        if (
-            self.diarizationDevice in {"vulkan", "metal"}
-            and self.diarizationDevice not in available_audiocpp_variants()
-        ):
+        offered = available_audiocpp_variants()
+        requested = str(variant or "").strip().lower()
+        if requested in ("", "auto"):
+            device = self.diarizationDevice
+            gpu = device in {"vulkan", "metal", "cuda"}
+            refused = device if gpu and not _audiocpp_offers(device, offered) else ""
+            target = self._diar_runtime_variant()
+        else:
+            refused = "" if _audiocpp_offers(requested, offered) else requested
+            target = requested
+        if refused:
             self._diar_download_status = self.tr(
                 "Không có bản runtime audio.cpp cho thiết bị {device} trên hệ điều hành này."
-            ).format(device=self.diarizationDevice)
+            ).format(device=refused)
             self.aiModelsInstallChanged.emit()
             return False
+        self._diar_download_generation += 1
+        progress_cb = _download_progress_cb(
+            self._diar_download_relay, self._diar_download_generation, 0.02, 0.98
+        )
         self._diar_download_busy = True
         self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải runtime audio.cpp…")
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
-        def _on_runtime_progress(p: float) -> None:
-            nxt = max(0.02, min(0.99, float(p)))
-            if abs(nxt - self._diar_download_progress) >= 0.01:
-                self._diar_download_progress = nxt
-                self.aiDownloadProgressChanged.emit()
-
         def work() -> str:
             cli = download_audiocpp_runtime(
                 self._data_dir,
-                variant=variant,
-                progress_cb=_on_runtime_progress,
+                variant=target,
+                progress_cb=progress_cb,
             )
             return str(cli)
 
@@ -8989,6 +9156,265 @@ class AppController(QObject):
         )
         self.aiModelsInstallChanged.emit()
         return removed
+
+    def _set_download_progress(self, attr: str, value: float) -> None:
+        """GUI-thread write of one lane's download progress (a relay delivery)."""
+        if getattr(self, attr) != value:
+            setattr(self, attr, value)
+            self.aiDownloadProgressChanged.emit()
+
+    def _start_download_op(
+        self,
+        work: Callable[[], Any],
+        done: Callable[[Any], None],
+        failed: Callable[[BaseException], None],
+    ) -> bool:
+        """Hand one op to the bg runner; a runner that raises fails the op instead."""
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    # ── Optional audio models (Silero VAD, speaker embedding) ───────────────
+
+    @Property("QVariantList", notify=audioModelsChanged)
+    def audioModels(self) -> list[dict[str, Any]]:
+        """One row per optional audio model, in catalog order.
+
+        ``{id, label, filename, sizeBytes, license, source, installed, path,
+        busy}`` — rows change on start/finish/remove only; the running op's
+        progress is ``audioModelProgress``.
+        """
+        from vienetts_app.core.ai_models import audio_model_catalog, audio_model_path
+
+        rows: list[dict[str, Any]] = []
+        for spec in audio_model_catalog():
+            path = audio_model_path(spec.id, self._data_dir)
+            rows.append(
+                {
+                    "id": spec.id,
+                    "label": spec.label,
+                    "filename": spec.filename,
+                    "sizeBytes": spec.size_bytes,
+                    "license": spec.license,
+                    "source": spec.source,
+                    "installed": path is not None,
+                    "path": str(path) if path is not None else "",
+                    "busy": spec.id == self._audio_model_busy_id,
+                }
+            )
+        return rows
+
+    @Property(str, notify=audioModelsChanged)
+    def audioModelBusyId(self) -> str:
+        """The model a download/remove is running for ("" = idle)."""
+        return self._audio_model_busy_id
+
+    @Property(float, notify=aiDownloadProgressChanged)
+    def audioModelProgress(self) -> float:
+        return self._audio_model_progress
+
+    @Property(str, notify=audioModelsChanged)
+    def audioModelStatus(self) -> str:
+        return self._audio_model_status
+
+    def _audio_model_spec(self, model_id: str) -> Any | None:
+        from vienetts_app.core.ai_models import AUDIO_MODELS
+
+        spec = AUDIO_MODELS.get(str(model_id or "").strip())
+        if spec is None:
+            self._audio_model_status = self.tr(
+                "Mô hình {m} không có trong danh mục của ứng dụng."
+            ).format(m=model_id)
+            self.audioModelsChanged.emit()
+        return spec
+
+    def _finish_audio_model_op(self, progress: float, status: str) -> None:
+        self._audio_model_busy_id = ""
+        self._audio_model_progress = progress
+        self._audio_model_status = status
+        self.aiDownloadProgressChanged.emit()
+        self.audioModelsChanged.emit()
+
+    @Slot(str, result=bool)
+    def downloadAudioModel(self, model_id: str) -> bool:
+        """Download (or repair) one optional audio model, verified by size + SHA-256."""
+        from vienetts_app.core.ai_models import download_audio_model
+
+        if self._audio_model_busy_id:
+            return False
+        spec = self._audio_model_spec(model_id)
+        if spec is None:
+            return False
+        self._audio_model_generation += 1
+        progress_cb = _download_progress_cb(
+            self._audio_model_relay, self._audio_model_generation, 0.02, 0.97
+        )
+        cancel_check = self._media_download_cancel.is_set
+        data_dir = self._data_dir
+        self._audio_model_busy_id = spec.id
+        self._audio_model_progress = 0.02
+        self._audio_model_status = self.tr("Đang tải {label}…").format(label=spec.label)
+        self.aiDownloadProgressChanged.emit()
+        self.audioModelsChanged.emit()
+
+        def work() -> str:
+            path = download_audio_model(
+                spec.id, data_dir, progress_cb=progress_cb, cancel_check=cancel_check
+            )
+            return str(path)
+
+        def done(path: str) -> None:
+            self._finish_audio_model_op(
+                1.0, self.tr("Đã tải xong: {name}").format(name=Path(path).name)
+            )
+
+        def failed(exc: BaseException) -> None:
+            self._finish_audio_model_op(0.0, str(exc))
+
+        return self._start_download_op(work, done, failed)
+
+    @Slot(str, result=bool)
+    def removeAudioModel(self, model_id: str) -> bool:
+        """Remove an installed optional audio model (never a file outside its model dir)."""
+        from vienetts_app.core.ai_models import remove_audio_model
+
+        if self._audio_model_busy_id:
+            return False
+        spec = self._audio_model_spec(model_id)
+        if spec is None:
+            return False
+        data_dir = self._data_dir
+        self._audio_model_busy_id = spec.id
+        self._audio_model_status = self.tr("Đang gỡ {label}…").format(label=spec.label)
+        self.audioModelsChanged.emit()
+
+        def done(removed: bool) -> None:
+            self._finish_audio_model_op(
+                0.0,
+                self.tr("Đã gỡ {name}.").format(name=spec.filename)
+                if removed
+                else self.tr(
+                    "Không thể gỡ {name}: chưa cài đặt hoặc nằm ngoài thư mục ứng dụng."
+                ).format(name=spec.filename),
+            )
+
+        def failed(exc: BaseException) -> None:
+            self._finish_audio_model_op(0.0, str(exc))
+
+        return self._start_download_op(lambda: remove_audio_model(spec.id, data_dir), done, failed)
+
+    # ── Managed ffmpeg runtime (ffmpeg + ffprobe) ────────────────────────────
+
+    @Property("QVariantMap", notify=ffmpegRuntimeChanged)
+    def ffmpegRuntimeStatus(self) -> dict[str, Any]:
+        """What dubbing runs for ffmpeg and whether this host can install it (FR-2.3).
+
+        ``{cell, downloadable, managed, available, ffmpeg, ffprobe, version,
+        note, license, source, sizeBytes}`` (see ``_ffmpeg_status_row``). Read
+        lazily, refreshed by install/remove and ``refreshFfmpegRuntimeStatus()``.
+        """
+        if self._ffmpeg_status is None:
+            self._ffmpeg_status = _ffmpeg_status_row(self._data_dir)
+        return dict(self._ffmpeg_status)
+
+    @Property(bool, notify=ffmpegRuntimeChanged)
+    def ffmpegRuntimeBusy(self) -> bool:
+        return self._ffmpeg_busy
+
+    @Property(float, notify=aiDownloadProgressChanged)
+    def ffmpegRuntimeProgress(self) -> float:
+        return self._ffmpeg_progress
+
+    @Property(str, notify=ffmpegRuntimeChanged)
+    def ffmpegRuntimeMessage(self) -> str:
+        return self._ffmpeg_message
+
+    @Slot()
+    def refreshFfmpegRuntimeStatus(self) -> None:
+        """Re-resolve ffmpeg/ffprobe (e.g. after a Homebrew/apt/winget install)."""
+        self._ffmpeg_status = _ffmpeg_status_row(self._data_dir)
+        self.ffmpegRuntimeChanged.emit()
+
+    def _finish_ffmpeg_op(self, progress: float, message: str) -> None:
+        self._ffmpeg_busy = False
+        self._ffmpeg_progress = progress
+        self._ffmpeg_message = message
+        self.aiDownloadProgressChanged.emit()
+        self.ffmpegRuntimeChanged.emit()
+
+    @Slot(result=bool)
+    def installFfmpegRuntime(self) -> bool:
+        """Download, verify, probe and install (or repair) the managed ffmpeg pack.
+
+        An unpublished host cell never downloads: the status note (Homebrew /
+        apt / winget guidance) becomes the message instead.
+        """
+        from vienetts_app.core.ai_models import install_ffmpeg_runtime
+
+        if self._ffmpeg_busy:
+            return False
+        status = self.ffmpegRuntimeStatus
+        if not status["downloadable"]:
+            self._ffmpeg_message = status["note"]
+            self.ffmpegRuntimeChanged.emit()
+            return False
+        self._ffmpeg_generation += 1
+        progress_cb = _download_progress_cb(self._ffmpeg_relay, self._ffmpeg_generation, 0.02, 0.97)
+        cancel_check = self._media_download_cancel.is_set
+        data_dir = self._data_dir
+        self._ffmpeg_busy = True
+        self._ffmpeg_progress = 0.02
+        self._ffmpeg_message = self.tr("Đang tải và kiểm tra ffmpeg…")
+        self.aiDownloadProgressChanged.emit()
+        self.ffmpegRuntimeChanged.emit()
+
+        def work() -> dict[str, Any]:
+            install_ffmpeg_runtime(data_dir, progress_cb=progress_cb, cancel_check=cancel_check)
+            return _ffmpeg_status_row(data_dir)
+
+        def done(row: dict[str, Any]) -> None:
+            self._ffmpeg_status = row
+            self._finish_ffmpeg_op(
+                1.0, self.tr("Đã cài đặt ffmpeg {version}.").format(version=row["version"])
+            )
+
+        def failed(exc: BaseException) -> None:
+            self._finish_ffmpeg_op(0.0, str(exc))
+
+        return self._start_download_op(work, done, failed)
+
+    @Slot(result=bool)
+    def removeFfmpegRuntime(self) -> bool:
+        """Remove the managed ffmpeg pack; a system ffmpeg is never touched."""
+        from vienetts_app.core.ai_models import remove_ffmpeg_runtime
+
+        if self._ffmpeg_busy:
+            return False
+        data_dir = self._data_dir
+        self._ffmpeg_busy = True
+        self._ffmpeg_message = self.tr("Đang gỡ ffmpeg…")
+        self.ffmpegRuntimeChanged.emit()
+
+        def work() -> tuple[bool, dict[str, Any]]:
+            return remove_ffmpeg_runtime(data_dir), _ffmpeg_status_row(data_dir)
+
+        def done(result: tuple[bool, dict[str, Any]]) -> None:
+            removed, row = result
+            self._ffmpeg_status = row
+            self._finish_ffmpeg_op(
+                0.0,
+                self.tr("Đã gỡ ffmpeg do ứng dụng cài.")
+                if removed
+                else self.tr("Chưa có ffmpeg do ứng dụng cài để gỡ."),
+            )
+
+        def failed(exc: BaseException) -> None:
+            self._finish_ffmpeg_op(0.0, str(exc))
+
+        return self._start_download_op(work, done, failed)
 
     @Property(str, notify=outputDirChanged)
     def outputDirUrl(self) -> str:
@@ -9184,6 +9610,7 @@ class AppController(QObject):
             ("asr_api_base_url", self.aiSettingsChanged),
             ("asr_api_key", self.aiSettingsChanged),
             ("asr_api_model", self.aiSettingsChanged),
+            ("asr_cloud_fallback", self.aiSettingsChanged),
             ("diarization_backend", self.aiSettingsChanged),
             ("diarization_model", self.aiSettingsChanged),
             ("diarization_max_speakers", self.aiSettingsChanged),

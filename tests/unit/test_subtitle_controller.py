@@ -1537,6 +1537,38 @@ def test_asr_config_reads_device_and_threads_settings(env):
     assert cfg.language == "vi"
     assert cfg.device == "cuda"
     assert cfg.threads == 10
+    fake.llmBaseUrl = "http://llm/v1"
+    fake.llmApiKey = "llm-secret"
+    fake.asrApiBaseUrl = "http://asr/v1"
+    fake.asrApiKey = ""
+    fake.asrApiModel = "whisper-custom"
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert (cfg.api_base_url, cfg.api_key, cfg.api_model) == ("http://asr/v1", "", "whisper-custom")
+    fake.asrApiBaseUrl = ""
+    fake.asrBackend = "openai_api"
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert (cfg.api_base_url, cfg.api_key) == ("http://llm/v1", "llm-secret")
+    fake.asrBackend = "auto"
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert (cfg.api_base_url, cfg.api_key) == ("", "")
+    fake.asrBackend = "openai_api"
+    fake.llmBaseUrl = ""
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert (cfg.api_base_url, cfg.api_key) == ("", "")
+    fake.llmBaseUrl = "http://llm/v1"
+    fake.llmModel = "default"
+    fake.llmModelTranslate = "translation"
+    fake.llmConcurrency = 3
+    fake.llmTimeoutS = 180
+    fake.llmBatchSize = 40
+    cfg = controller._llm_config("translate_dub")  # noqa: SLF001
+    assert (cfg.model, cfg.concurrency, cfg.timeout_s, cfg.batch_size) == (
+        "translation",
+        3,
+        180,
+        40,
+    )
+    assert controller._llm_config("refine_asr").model == "default"  # noqa: SLF001
 
 
 def test_managed_srt_disambiguates_same_stem_videos_and_persists_media_cache_and_asr_notes(
@@ -1740,19 +1772,51 @@ def test_diarization_and_llm_refinement_are_gated(tmp_path, monkeypatch):
     assert controller.cues[0]["text"] == "Đã làm sạch"
 
 
+def test_glossary_survives_reimport_and_edits_during_render(env, tmp_path):
+    controller, fake, _ = env
+    path = load_srt(tmp_path)
+    assert controller.importSrt(path)
+    controller.setLlmGlossary("saved")
+    assert controller.importSrt(path)
+    assert controller.llmGlossary == "saved"
+    controller.render()
+    assert controller.rendering
+    controller.setLlmGlossary("edited while rendering")
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered
+    assert controller.llmGlossary == "edited while rendering"
+    assert controller._store.require(controller.projectId).llm_glossary == controller.llmGlossary  # noqa: SLF001
+
+
 def test_llm_refinement_on_a_live_render_is_gated(tmp_path, monkeypatch):
     from vienetts_app.core.subtitles import Cue
 
     controller, _, _ = _rendered_controller(tmp_path)
+    signal_count = []
+    controller.llmGlossaryChanged.connect(lambda: signal_count.append(1))
+    controller.setLlmGlossary("term: name")
+    assert controller.llmGlossary == "term: name"
+    assert controller.invalidationPending is False and controller.rendered is True
+    assert controller._store.require(controller.projectId).llm_glossary == "term: name"  # noqa: SLF001
+    assert signal_count
+
+    def refine(cues, cfg, **kw):
+        assert kw["glossary"] == "term: name"
+        kw["notes"].append("partial result")
+        return [Cue(1, 0, 2000, "Đã làm sạch")]
+
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
-        lambda cues, cfg, **kw: [Cue(1, 0, 2000, "Đã làm sạch")],
+        refine,
     )
     assert controller.refineWithLlm("refine_asr", "vi") is True
     assert controller.invalidationReason == "llm"
     assert controller.cues[0]["text"] == "Xin chào"
     controller.confirmRenderInvalidation()
     assert controller.cues[0]["text"] == "Đã làm sạch"
+    assert controller.llmGlossary == "term: name"
+    assert "partial result" in controller.hintText
 
 
 def test_re_asr_is_gated_when_cue_edits_would_be_lost(tmp_path, monkeypatch):

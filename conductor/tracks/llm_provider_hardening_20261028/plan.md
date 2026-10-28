@@ -98,7 +98,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
 <!-- execution: parallel -->
 <!-- depends: phase2, phase3 -->
 
-- [ ] **Task 4.1: AppController properties, per-task/ASR config resolution, project glossary and refinement notes**
+- [x] **Task 4.1: AppController properties, per-task/ASR config resolution, project glossary and refinement notes**
   <!-- files: src/vienetts_app/core/subtitle_project.py, src/vienetts_app/ui/controller.py, src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_project.py, tests/unit/test_subtitle_controller.py, tests/unit/test_controller.py -->
   - Red tests:
     - `SubtitleProject.llm_glossary` round-trips as `"llmGlossary"` only when non-empty and is capped at 4000 chars; `render_fingerprint` digests are unchanged with and without a glossary (golden pin).

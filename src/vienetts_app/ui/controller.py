@@ -8336,6 +8336,33 @@ class AppController(QObject):
         self._set_setting("asr_threads", clamped)
 
     @Property(str, notify=aiSettingsChanged)
+    def asrApiBaseUrl(self) -> str:
+        return self._settings.asr_api_base_url
+
+    @asrApiBaseUrl.setter
+    def asrApiBaseUrl(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("asr_api_base_url", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrApiKey(self) -> str:
+        return self._settings.asr_api_key
+
+    @asrApiKey.setter
+    def asrApiKey(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("asr_api_key", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrApiModel(self) -> str:
+        return self._settings.asr_api_model
+
+    @asrApiModel.setter
+    def asrApiModel(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("asr_api_model", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
     def diarizationBackend(self) -> str:
         return self._settings.diarization_backend
 
@@ -8439,6 +8466,66 @@ class AppController(QObject):
         if not isinstance(value, str):
             return
         self._set_setting("llm_model", value.strip() or "qwen2.5:7b")
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmModelRefine(self) -> str:
+        return self._settings.llm_model_refine
+
+    @llmModelRefine.setter
+    def llmModelRefine(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("llm_model_refine", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmModelTranslate(self) -> str:
+        return self._settings.llm_model_translate
+
+    @llmModelTranslate.setter
+    def llmModelTranslate(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("llm_model_translate", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmModelFit(self) -> str:
+        return self._settings.llm_model_fit
+
+    @llmModelFit.setter
+    def llmModelFit(self, value: str) -> None:
+        if isinstance(value, str):
+            self._set_setting("llm_model_fit", value.strip())
+
+    def _set_ai_number(self, field: str, value: int, low: int, high: int) -> None:
+        if isinstance(value, bool):
+            return
+        try:
+            value = max(low, min(high, int(value)))
+        except (TypeError, ValueError):
+            return
+        self._set_setting(field, value)
+
+    @Property(int, notify=aiSettingsChanged)
+    def llmConcurrency(self) -> int:
+        return self._settings.llm_concurrency
+
+    @llmConcurrency.setter
+    def llmConcurrency(self, value: int) -> None:
+        self._set_ai_number("llm_concurrency", value, 0, 8)
+
+    @Property(int, notify=aiSettingsChanged)
+    def llmTimeoutS(self) -> int:
+        return self._settings.llm_timeout_s
+
+    @llmTimeoutS.setter
+    def llmTimeoutS(self, value: int) -> None:
+        self._set_ai_number("llm_timeout_s", value, 15, 600)
+
+    @Property(int, notify=aiSettingsChanged)
+    def llmBatchSize(self) -> int:
+        return self._settings.llm_batch_size
+
+    @llmBatchSize.setter
+    def llmBatchSize(self, value: int) -> None:
+        self._set_ai_number("llm_batch_size", value, 5, 60)
 
     @Property(bool, notify=llmTestChanged)
     def llmTesting(self) -> bool:
@@ -9048,7 +9135,10 @@ class AppController(QObject):
         engine_affecting: bool = False,
     ) -> None:
         if allowed is not None and value not in allowed:
-            self._set_error(f"{key} must be one of {sorted(allowed)}, got {value!r}")
+            if key in ("llm_api_key", "asr_api_key"):
+                self._set_error(f"Invalid {key}")
+            else:
+                self._set_error(f"{key} must be one of {sorted(allowed)}, got {value!r}")
             return
         if getattr(self._settings, key) == value:
             return
@@ -9091,6 +9181,9 @@ class AppController(QObject):
             ("asr_language", self.aiSettingsChanged),
             ("asr_device", self.aiSettingsChanged),
             ("asr_threads", self.aiSettingsChanged),
+            ("asr_api_base_url", self.aiSettingsChanged),
+            ("asr_api_key", self.aiSettingsChanged),
+            ("asr_api_model", self.aiSettingsChanged),
             ("diarization_backend", self.aiSettingsChanged),
             ("diarization_model", self.aiSettingsChanged),
             ("diarization_max_speakers", self.aiSettingsChanged),
@@ -9100,6 +9193,12 @@ class AppController(QObject):
             ("llm_base_url", self.aiSettingsChanged),
             ("llm_api_key", self.aiSettingsChanged),
             ("llm_model", self.aiSettingsChanged),
+            ("llm_model_refine", self.aiSettingsChanged),
+            ("llm_model_translate", self.aiSettingsChanged),
+            ("llm_model_fit", self.aiSettingsChanged),
+            ("llm_concurrency", self.aiSettingsChanged),
+            ("llm_timeout_s", self.aiSettingsChanged),
+            ("llm_batch_size", self.aiSettingsChanged),
         ):
             if name == key:
                 signal.emit()

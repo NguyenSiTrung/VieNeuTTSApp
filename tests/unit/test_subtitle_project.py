@@ -9,6 +9,7 @@ fingerprint still matches.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +220,7 @@ def test_writer_exit_contract(tmp_path, monkeypatch) -> None:
 def test_identity_and_id() -> None:
     cues = parse_cues(SAMPLE_SRT)
     base = render_fingerprint(cues, FitPolicy.dub(), SR, "v1")
+    assert base == "050f95d486dc7faf27b71ac36a83ccb38c69feacb07c385394f312632b5521a1"
     assert base == render_fingerprint(cues, FitPolicy.dub(), SR, "v1")
     assert base != render_fingerprint(cues, FitPolicy.dub(rate_cap=1.4), SR, "v1")
     assert base != render_fingerprint(cues, FitPolicy.transcript(), SR, "v1")
@@ -255,6 +257,13 @@ def test_build_project(tmp_path) -> None:
 def test_store_io(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
+    store.save(project)
+    assert "llmGlossary" not in json.loads(store.project_path(project.id).read_text())
+    with_glossary = replace(project, llm_glossary="x" * 5000)
+    store.save(with_glossary)
+    loaded = store.require(project.id)
+    assert loaded.llm_glossary == "x" * 4000
+    assert loaded.fingerprint == project.fingerprint
     store.save(project)
 
     loaded = store.load(project.id)

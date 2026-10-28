@@ -62,3 +62,10 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - The app's WAV writer produces float32 files: even a sub-600-second 16 kHz file can exceed 25 MB. Convert oversized single-request inputs to temporary PCM16 too.
 - Find quiet cuts with bounded range reads, prefer the latest equally quiet 200 ms frame, and offset word and speech bounds as well as segment times.
 - Full gate: 1600 passed, 5 skipped and the same 6 documented ARM64 baseline failures.
+
+## 2026-10-28 - Phase 4 Task 4.1: Controller config and project glossary
+- `AsrConfig` on the controller must be rebuilt from `asrApiBaseUrl`/`asrApiModel`/`asrApiKey` independently of the LLM settings; when the ASR host differs from the LLM host the ASR key is sent and the LLM key is never copied across.
+- `SubtitleProject.llm_glossary` serializes as `"llmGlossary"` only when non-empty and is capped at 4000 chars; keep it out of `render_fingerprint` so glossary edits do not invalidate rendered audio.
+- Refinement notes surface through the subtitle controller hint; failed batches keep original cue text and append notes rather than dropping cues.
+- QML boolean setters reached via Python `Property` setters must ignore `bool` values — QML `CheckBox.checked` is bool and would bypass the int clamp otherwise.
+- Focused gate: 101 controller/subtitle tests green; full gate 1600 passed, 5 skipped, same 6 ARM64 baseline failures, plus a flaky `test_worker_thread_safety_smoke` xdist worker crash (passes standalone, unrelated to this track).

@@ -1158,7 +1158,26 @@ class TestSettingsSeam:
         harness.controller.defaultVoice = "Minh Đức"
         harness.controller.outputDir = "/tmp/xyz"
 
+        notifications = []
+        harness.controller.aiSettingsChanged.connect(lambda: notifications.append(1))
+        ai_fields = {
+            "asrApiBaseUrl": ("asr_api_base_url", "https://asr.example/v1"),
+            "asrApiKey": ("asr_api_key", "whisper-key"),
+            "asrApiModel": ("asr_api_model", "whisper-custom"),
+            "llmModelRefine": ("llm_model_refine", "refine"),
+            "llmModelTranslate": ("llm_model_translate", "translate"),
+            "llmModelFit": ("llm_model_fit", "fit"),
+            "llmConcurrency": ("llm_concurrency", 3),
+            "llmTimeoutS": ("llm_timeout_s", 180),
+            "llmBatchSize": ("llm_batch_size", 30),
+        }
+        for name, (_, value) in ai_fields.items():
+            setattr(harness.controller, name, value)
+        assert len(notifications) == len(ai_fields)
+        harness.controller.llmConcurrency = True
+        assert harness.controller.llmConcurrency == 3 and len(notifications) == len(ai_fields)
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert all(data[key] == value for key, value in ai_fields.values())
         assert data["theme"] == "dark"
         assert data["language"] == "en"
         assert data["model_repo"] == "someone/vieneu-tts-custom"
@@ -1170,6 +1189,7 @@ class TestSettingsSeam:
         # Persistence, not just the in-memory round-trip: a FRESH controller
         # over the same data_dir reads the applied values back from disk.
         reloaded = AppController(data_dir=harness.tmp_path, bg_runner=run_sync)
+        assert all(getattr(reloaded, name) == value for name, (_, value) in ai_fields.items())
         assert reloaded.theme == "dark"
         assert reloaded.language == "en"
         assert reloaded.modelRepo == "someone/vieneu-tts-custom"

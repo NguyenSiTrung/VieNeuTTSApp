@@ -299,6 +299,7 @@ class SubtitleProject:
     #: How embedded subtitles ship: ``"soft"`` (player-toggleable track) or
     #: ``"burn"`` (drawn into the picture; the export re-encodes the video).
     subtitle_embed_mode: str = "soft"
+    llm_glossary: str = ""
 
     @property
     def cue_count(self) -> int:
@@ -330,6 +331,7 @@ def build_project(
     embed_subtitles: bool = True,
     subtitle_embed_mode: str = "soft",
     project_id: str = "",
+    llm_glossary: str = "",
 ) -> SubtitleProject:
     """Assemble a workspace from parsed cues; raises when there is nothing to read.
 
@@ -366,6 +368,7 @@ def build_project(
         video_bg_gain_db=bg_gain,
         embed_subtitles=bool(embed_subtitles),
         subtitle_embed_mode="burn" if str(subtitle_embed_mode) == "burn" else "soft",
+        llm_glossary=str(llm_glossary or "")[:4000],
     )
 
 
@@ -490,6 +493,8 @@ class SubtitleProjectStore:
             "embedSubtitles": bool(project.embed_subtitles),
             "subtitleEmbedMode": project.subtitle_embed_mode,
         }
+        if project.llm_glossary:
+            payload["llmGlossary"] = project.llm_glossary[:4000]
         try:
             self.project_dir(project.id).mkdir(parents=True, exist_ok=True)
             _write_json_atomic(target, payload)
@@ -569,6 +574,7 @@ class SubtitleProjectStore:
                 video_bg_gain_db=bg_gain_db,
                 embed_subtitles=embed_subs,
                 subtitle_embed_mode=embed_mode,
+                llm_glossary=str(data.get("llmGlossary") or "")[:4000],
             )
         except (TypeError, ValueError):
             return None

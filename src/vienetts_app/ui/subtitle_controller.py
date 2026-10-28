@@ -150,6 +150,7 @@ API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
         "cues",
         "exportBlockedReason",
         "invalidationReason",
+        "llmGlossary",
         "policySummary",
         "sourcePath",
         "state",
@@ -207,6 +208,7 @@ class SubtitleController(QObject):
     """SRT timeline studio exposed to QML; dependencies injectable."""
 
     loadedChanged = Signal()
+    llmGlossaryChanged = Signal()
     titleChanged = Signal()
     sourcePathChanged = Signal()
     cuesChanged = Signal()
@@ -363,6 +365,7 @@ class SubtitleController(QObject):
 
         self.renderedChanged.connect(self._invalidate_overrun)
         self.videoChanged.connect(self._invalidate_overrun)
+        self.loadedChanged.connect(self.llmGlossaryChanged.emit)
 
         self._wire_player()
 
@@ -703,6 +706,26 @@ class SubtitleController(QObject):
     @Property(str, notify=loadedChanged)
     def projectId(self) -> str:
         return "" if self._project is None else self._project.id
+
+    @Property(str, notify=llmGlossaryChanged)
+    def llmGlossary(self) -> str:
+        return "" if self._project is None else self._project.llm_glossary
+
+    @Slot(str)
+    def setLlmGlossary(self, text: str) -> None:
+        if self._project is None:
+            return
+        text = str(text or "")[:4000]
+        if text == self._project.llm_glossary:
+            return
+        project = replace(self._project, llm_glossary=text)
+        try:
+            self._store.save(project)
+        except SubtitleProjectError as exc:
+            self._set_error(str(exc))
+            return
+        self._project = project
+        self.llmGlossaryChanged.emit()
 
     @Property(str, notify=titleChanged)
     def title(self) -> str:
@@ -1244,6 +1267,7 @@ class SubtitleController(QObject):
             embed_subtitles=self._project.embed_subtitles,
             subtitle_embed_mode=self._project.subtitle_embed_mode,
             project_id=self._project.id,
+            llm_glossary=self._project.llm_glossary,
         )
         # A refused combination adopts nothing: its cache belongs to an engine
         # the active profile cannot vouch for.
@@ -1257,6 +1281,7 @@ class SubtitleController(QObject):
                 video_bg_gain_db=self._project.video_bg_gain_db,
                 embed_subtitles=self._project.embed_subtitles,
                 subtitle_embed_mode=self._project.subtitle_embed_mode,
+                llm_glossary=self._project.llm_glossary,
             )
         previous_cues = self._project.cues
         self._project = cached or candidate
@@ -1357,6 +1382,7 @@ class SubtitleController(QObject):
                 video_bg_gain_db=bg_gain,
                 embed_subtitles=embed_subs,
                 subtitle_embed_mode=embed_mode,
+                llm_glossary=stored.llm_glossary if stored is not None else "",
             )
             cached = None if refused else self._store.cached_render(base_project)
             if cached is None and eff_video:
@@ -1379,6 +1405,7 @@ class SubtitleController(QObject):
                         video_bg_gain_db=bg_gain,
                         embed_subtitles=embed_subs,
                         subtitle_embed_mode=embed_mode,
+                        llm_glossary=stored.llm_glossary if stored is not None else "",
                     )
                     cached = None if refused else self._store.cached_render(base_project)
             project = base_project
@@ -1539,6 +1566,7 @@ class SubtitleController(QObject):
             return False
         self._stop_playback()
         self._project = loaded
+        self.llmGlossaryChanged.emit()
         self._load_reader()
         self._reset_stale_span_after_reload()
         self._emit_cues()
@@ -1977,6 +2005,12 @@ class SubtitleController(QObject):
         def finished(loaded: SubtitleProject | None) -> None:
             if generation != self._render_generation or loaded is None:
                 return
+            if self._project is not None and loaded.llm_glossary != self._project.llm_glossary:
+                loaded = replace(loaded, llm_glossary=self._project.llm_glossary)
+                try:
+                    self._store.save(loaded)
+                except SubtitleProjectError as exc:
+                    self._set_error(str(exc))
             # The renderer is done: the promoted track is live.
             self._renderer = None
             self._project = loaded
@@ -2451,14 +2485,21 @@ class SubtitleController(QObject):
             threads = int(getattr(self._app, "asrThreads", 0) or 0)
         except (TypeError, ValueError):
             threads = 0
-        base_url = str(getattr(self._app, "llmBaseUrl", "") or "")
-        api_key = str(getattr(self._app, "llmApiKey", "") or "")
+        base_url = str(getattr(self._app, "asrApiBaseUrl", "") or "").strip()
+        api_key = str(getattr(self._app, "asrApiKey", "") or "")
+        if not base_url:
+            api_key = ""
+            if backend == "openai_api":
+                base_url = str(getattr(self._app, "llmBaseUrl", "") or "").strip()
+                if base_url:
+                    api_key = str(getattr(self._app, "llmApiKey", "") or "")
         return AsrConfig(
             backend=backend,
             model=model,
             language=lang,
             api_base_url=base_url,
             api_key=api_key,
+            api_model=str(getattr(self._app, "asrApiModel", "") or ""),
             device=device,
             threads=threads,
         )
@@ -2486,14 +2527,30 @@ class SubtitleController(QObject):
             threads=threads,
         )
 
-    def _llm_config(self) -> LlmConfig:
+    def _llm_config(self, task: str = "refine_asr") -> LlmConfig:
         base_url = str(
             getattr(self._app, "llmBaseUrl", "http://localhost:11434/v1")
             or "http://localhost:11434/v1"
         )
         api_key = str(getattr(self._app, "llmApiKey", "") or "")
-        model = str(getattr(self._app, "llmModel", "qwen2.5:7b") or "qwen2.5:7b")
-        return LlmConfig(base_url=base_url, api_key=api_key, model=model)
+        override = {
+            "refine_asr": "llmModelRefine",
+            "translate_dub": "llmModelTranslate",
+            "fit_timing": "llmModelFit",
+        }.get(task, "")
+        model = str(
+            getattr(self._app, override, "")
+            or getattr(self._app, "llmModel", "qwen2.5:7b")
+            or "qwen2.5:7b"
+        )
+        return LlmConfig(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            concurrency=int(getattr(self._app, "llmConcurrency", 0)),
+            timeout_s=float(getattr(self._app, "llmTimeoutS", 120)),
+            batch_size=int(getattr(self._app, "llmBatchSize", 25)),
+        )
 
     def _set_ai_state(self, busy: bool, stage_text: str = "", progress: float = 0.0) -> None:
         busy_changed = (busy != self._ai_busy) or (stage_text != self._ai_stage_text)
@@ -2908,8 +2965,10 @@ class SubtitleController(QObject):
         project = self._project
         if project is None:
             return
-        llm_cfg = self._llm_config()
+        llm_cfg = self._llm_config(task)
         cues_in = project.cues
+        glossary = project.llm_glossary
+        notes: list[str] = []
         raw_lang = (target_language or "").strip() or str(
             getattr(self._app, "synthesisLanguage", "") or "vi"
         )
@@ -2935,6 +2994,8 @@ class SubtitleController(QObject):
                 task=task,
                 target_language=lang,
                 rate_cap=rate_cap,
+                glossary=glossary,
+                notes=notes,
                 progress_cb=lambda p: self._set_ai_state(True, stage_text, 0.1 + 0.9 * p),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
@@ -2944,6 +3005,8 @@ class SubtitleController(QObject):
                 return
             self._set_ai_state(False, "", 1.0)
             self._update_project_cues(refined)
+            if notes:
+                self._set_hint(" ".join(notes))
 
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:

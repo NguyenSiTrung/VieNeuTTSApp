@@ -550,6 +550,11 @@ def speech_units(
     ``max_chars``. Subtitles routinely omit final periods, so the gap and
     length guards are what keep a punctuation-free file from collapsing into a
     single unit.
+
+    A non-speakable cue (sound cue, ♪, punctuation or emoji only — see
+    :attr:`Cue.speakable`) never merges, on either side: it is always its own
+    single-cue unit, so the caller can place it silent without disturbing the
+    split of a spoken unit around it.
     """
     if not merge:
         return [(i,) for i in range(len(cues))]
@@ -562,6 +567,7 @@ def speech_units(
             gap = cue.start_ms - previous.end_ms
             if (
                 cue.speaker != previous.speaker
+                or not (cue.speakable and previous.speakable)
                 or ends_sentence(previous.text)
                 or gap > gap_ms
                 or chars + len(cue.text) > max_chars

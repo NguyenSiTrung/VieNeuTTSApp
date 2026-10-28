@@ -6,6 +6,8 @@ Layout under the subtitles root (``<data_dir>/subtitles``)::
                                         final stats
     <project_id>/track.wav              rendered audio, streamed cue by cue
     <project_id>/track.timeline.json    measured cue↔time map (karaoke playback)
+    <project_id>/track.render.json      render_id of the live track.wav
+    <project_id>/units/<sha256>.wav     raw per-unit synthesis cache (LRU)
 
 A subtitle render is cue-by-cue synthesis placed on the SRT clock, so it is
 built exactly the way playback consumes it: the controller synthesizes one cue
@@ -26,6 +28,12 @@ invalidated rather than silently adopted (Phase 5 Task 5.3).
 Every read degrades instead of crashing (corrupt project → ``None``), and all
 writes are atomic (temp file + rename), mirroring the audiobook workspace. A
 half-written track is never promoted to ``track.wav``.
+
+A render commits in a crash-consistent order (FR-5.7): the timeline, then
+``project.json``, then ``track.wav``, all stamped with one fresh ``render_id``.
+A crash between any two steps leaves ids that disagree, and
+:meth:`SubtitleProjectStore.cached_render` refuses such a mix instead of
+pairing a new timeline with the previous audio.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -65,7 +74,9 @@ from vienetts_app.core.audio import (
     DEFAULT_SAMPLE_RATE,
     StreamingWavWriter,
     apply_micro_fade,
+    read_wav,
     trim_speech_edges,
+    write_wav_file,
 )
 from vienetts_app.core.subtitles import Cue, cues_text, format_srt
 from vienetts_app.core.synthesis_context import (
@@ -80,6 +91,10 @@ logger = logging.getLogger(__name__)
 PROJECT_FILENAME = "project.json"
 TRACK_FILENAME = "track.wav"
 TRACK_TIMELINE_FILENAME = "track.timeline.json"
+#: ``{"renderId": ...}`` of the live ``track.wav``, written right after the
+#: track is promoted (absent for a track committed before render ids existed).
+TRACK_RENDER_STAMP_FILENAME = "track.render.json"
+UNITS_DIRNAME = "units"
 # Bump when the project.json schema changes incompatibly (load() refuses
 # mismatched versions rather than guessing a migration).
 PROJECT_VERSION = 1
@@ -96,6 +111,17 @@ REPLACE_LOCK_DELAY_S = 0.25
 #: ``project_id_for`` output — a caller-supplied id that is anything else is
 #: refused before it can become a path segment (no ``..``, no separators).
 _PROJECT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+#: Bump when the cached unit clip format or the key recipe changes. The
+#: version is hashed into every key, so clips written under another version
+#: are never misread: they stop matching and age out through LRU eviction.
+UNIT_CACHE_VERSION = 1
+#: Default byte budget of one project's unit cache (FR-5.1).
+UNIT_CACHE_CAP_BYTES = 2 * 1024**3
+#: Minimum step between two LRU access stamps, so the order survives
+#: filesystems with coarse mtime resolution (NTFS keeps 100 ns).
+_UNIT_TICK_NS = 1_000_000
+_UNIT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SubtitleProjectError(RuntimeError):
@@ -233,7 +259,44 @@ def render_fingerprint(
     ``context`` is omitted from the payload when absent, so a caller without an
     identity seam (a bare fake app, smoke scenarios) and every project written
     before engine provenance existed keep the fingerprint they always had.
+
+    ``speaker_voices`` is normalized first (FR-5.7): names are stripped, and
+    speakers no cue uses are dropped, since neither changes the audio. A
+    normalized map hashes exactly as it always did.
     """
+    return _fingerprint_digest(
+        cues,
+        policy,
+        sample_rate,
+        voice_key,
+        context,
+        _active_speaker_voices(cues, speaker_voices),
+    )
+
+
+def _active_speaker_voices(
+    cues: Sequence[Cue], speaker_voices: dict[str, str] | None
+) -> dict[str, str]:
+    """``speaker_voices`` stripped and limited to speakers some cue uses."""
+    if not speaker_voices:
+        return {}
+    used = {cue.speaker.strip() for cue in cues if cue.speaker.strip()}
+    active: dict[str, str] = {}
+    for raw_key, raw_voice in speaker_voices.items():
+        key, voice = str(raw_key or "").strip(), str(raw_voice or "").strip()
+        if key in used and voice:
+            active[key] = voice
+    return active
+
+
+def _fingerprint_digest(
+    cues: Sequence[Cue],
+    policy: FitPolicy,
+    sample_rate: int,
+    voice_key: str,
+    context: SynthesisContext | None,
+    speaker_map: dict[str, str],
+) -> str:
     payload: dict[str, Any] = {
         "version": PROJECT_VERSION,
         "sampleRate": int(sample_rate),
@@ -243,14 +306,27 @@ def render_fingerprint(
     }
     if context is not None:
         payload["context"] = context.fingerprint_payload()
-    if speaker_voices:
-        active_map = {str(k): str(v) for k, v in sorted(speaker_voices.items()) if k and v}
-        if active_map:
-            payload["speakerVoices"] = active_map
+    if speaker_map:
+        payload["speakerVoices"] = speaker_map
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _pre_normalization_fingerprint(project: SubtitleProject) -> str:
+    """``project``'s digest as hashed before FR-5.7 (raw speaker map, unused
+    speakers included); only :meth:`SubtitleProjectStore.cached_render` uses
+    it, to keep reusing tracks rendered before the normalization."""
+    raw_map = {str(k): str(v) for k, v in project.speaker_voices.items() if k and v}
+    return _fingerprint_digest(
+        project.cues,
+        project.policy,
+        project.sample_rate,
+        project.voice_key,
+        project.context,
+        raw_map,
+    )
 
 
 def project_id_for(source_path: str | Path, cues: Sequence[Cue]) -> str:
@@ -300,6 +376,10 @@ class SubtitleProject:
     #: ``"burn"`` (drawn into the picture; the export re-encodes the video).
     subtitle_embed_mode: str = "soft"
     llm_glossary: str = ""
+    #: Id of the render this project.json was committed with (FR-5.7). The
+    #: timeline and ``track.wav`` carry the same id; ``""`` for a project
+    #: committed before render ids existed. Not part of the fingerprint.
+    render_id: str = ""
 
     @property
     def cue_count(self) -> int:
@@ -344,9 +424,11 @@ def build_project(
     if not cue_tuple:
         raise SubtitleProjectError("The subtitle file has no cues to read.")
     path = Path(source_path)
-    spk_map = (
-        {str(k): str(v) for k, v in speaker_voices.items() if k and v} if speaker_voices else {}
-    )
+    spk_map: dict[str, str] = {}
+    for raw_key, raw_voice in (speaker_voices or {}).items():
+        key, voice = str(raw_key or "").strip(), str(raw_voice or "").strip()
+        if key and voice:
+            spk_map[key] = voice
     mix_mode = "replace" if str(video_mix_mode) == "replace" else "duck"
     bg_gain = max(-36.0, min(0.0, float(video_bg_gain_db)))
     return SubtitleProject(
@@ -372,6 +454,174 @@ def build_project(
     )
 
 
+# ── per-unit clip cache (FR-5.1) ─────────────────────────────────────────────
+
+
+def voice_file_stamp(path: str | Path | None) -> str:
+    """``"<bytes>:<mtime_ns>"`` of a voice reference file; ``""`` when unreadable.
+
+    Part of a unit cache key: replacing a cloned voice's reference audio under
+    the same id invalidates the clips it produced.
+    """
+    if not path:
+        return ""
+    try:
+        stat = Path(path).stat()
+    except (OSError, ValueError):
+        return ""
+    return f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+class UnitClipCache:
+    """Raw synthesized speech-unit clips, one WAV per key, capped by LRU.
+
+    ``<project>/units/<key>.wav`` keeps the engine's output for one unit, before
+    any placement, as a float WAV (exact samples, no PCM rounding). A re-render
+    then synthesizes only the units whose key is missing and re-runs placement
+    for all of them. Recency is the file's mtime, bumped on every hit, so the
+    LRU order survives a restart. Each put evicts the least recently used
+    clips until the total fits ``cap_bytes``.
+    Reads fail soft (``None``), writes are atomic, and one instance is safe to
+    share between threads.
+    """
+
+    def __init__(self, directory: str | Path, *, cap_bytes: int = UNIT_CACHE_CAP_BYTES) -> None:
+        self.directory = Path(directory)
+        self.cap_bytes = max(0, int(cap_bytes))
+        self._lock = threading.Lock()
+        self._index: dict[str, tuple[int, int]] | None = None  # key → (bytes, access ns)
+        self._tick = 0
+
+    @staticmethod
+    def key(
+        text: str,
+        *,
+        voice_id: str,
+        voice_stamp: str = "",
+        profile: str = "",
+        model_revision: str = "",
+        speed: float | None = None,
+        context_fingerprint: str = "",
+    ) -> str:
+        """sha256 of everything that changes one unit's raw synthesis."""
+        payload = {
+            "version": UNIT_CACHE_VERSION,
+            "text": str(text),
+            "voiceId": str(voice_id),
+            "voiceStamp": str(voice_stamp),
+            "profile": str(profile),
+            "modelRevision": str(model_revision),
+            "speed": None if speed is None else round(float(speed), 4),
+            "context": str(context_fingerprint),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def path_for(self, key: str) -> Path | None:
+        """``<directory>/<key>.wav``; ``None`` for anything not shaped like a key."""
+        if not isinstance(key, str) or _UNIT_KEY_RE.match(key) is None:
+            return None
+        return self.directory / f"{key}.wav"
+
+    def get(self, key: str, sample_rate: int) -> np.ndarray | None:
+        """The cached clip, when present at ``sample_rate``; never raises."""
+        path = self.path_for(key)
+        if path is None:
+            return None
+        with self._lock:
+            index = self._load_index()
+            try:
+                audio, rate = read_wav(path)
+            except FileNotFoundError:
+                index.pop(key, None)
+                return None
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("dropping unreadable cached unit clip %s (%s)", path, exc)
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+                index.pop(key, None)
+                return None
+            if rate != int(sample_rate) or audio.ndim != 1 or audio.size == 0:
+                return None
+            self._touch(key, path)
+            return audio
+
+    def put(self, key: str, audio: np.ndarray, sample_rate: int) -> Path | None:
+        """Store one unit's raw clip atomically, then evict down to the cap.
+
+        Returns the clip's path, or ``None`` for an empty clip (a 0-sample unit
+        is placed silent and never cached).
+
+        Raises:
+            SubtitleProjectError: the key is malformed or the clip can't be written.
+        """
+        path = self.path_for(key)
+        if path is None:
+            raise SubtitleProjectError(f"Invalid unit cache key: {key!r}")
+        clip = np.asarray(audio, dtype=np.float32)
+        if clip.size == 0:
+            return None
+        temp = self.directory / f".{key}.{uuid.uuid4().hex}.tmp.wav"
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            write_wav_file(clip, temp, int(sample_rate))
+            _replace_retrying(temp, path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
+            raise SubtitleProjectError(f"Could not cache the synthesized clip: {exc}") from exc
+        with self._lock:
+            self._load_index()
+            self._touch(key, path)
+            self._evict(keep=key)
+        return path
+
+    def _load_index(self) -> dict[str, tuple[int, int]]:
+        """key → (bytes, last access ns), scanned from disk once per instance."""
+        if self._index is None:
+            index: dict[str, tuple[int, int]] = {}
+            with contextlib.suppress(OSError), os.scandir(self.directory) as entries:
+                for entry in entries:
+                    key = entry.name[:-4] if entry.name.endswith(".wav") else ""
+                    if _UNIT_KEY_RE.match(key) is None:
+                        continue
+                    with contextlib.suppress(OSError):
+                        stat = entry.stat()
+                        index[key] = (stat.st_size, stat.st_mtime_ns)
+            self._index = index
+            self._tick = max((tick for _, tick in index.values()), default=0)
+        return self._index
+
+    def _touch(self, key: str, path: Path) -> None:
+        """Mark ``key`` most recently used, in memory and on disk (mtime)."""
+        assert self._index is not None
+        tick = max(time.time_ns(), self._tick + _UNIT_TICK_NS)
+        self._tick = tick
+        try:
+            os.utime(path, ns=(tick, tick))
+            size = path.stat().st_size
+        except OSError:
+            self._index.pop(key, None)
+            return
+        self._index[key] = (size, tick)
+
+    def _evict(self, *, keep: str) -> None:
+        """Drop least recently used clips (never ``keep``) until under the cap."""
+        assert self._index is not None
+        total = sum(size for size, _ in self._index.values())
+        for key, (size, _) in sorted(self._index.items(), key=lambda item: item[1][1]):
+            if total <= self.cap_bytes:
+                break
+            if key == keep:
+                continue
+            try:
+                (self.directory / f"{key}.wav").unlink(missing_ok=True)
+            except OSError:
+                continue  # held open (Windows): the next put retries it
+            del self._index[key]
+            total -= size
+
+
 # ── store ────────────────────────────────────────────────────────────────────
 
 
@@ -386,18 +636,23 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _replace_retrying(source: Path, target: Path) -> None:
+    """``os.replace`` riding out the brief locks Windows keeps on a fresh file."""
+    for attempt in range(REPLACE_LOCK_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_LOCK_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_LOCK_DELAY_S)
+
+
 def _write_json_atomic(path: Path, payload: Any) -> None:
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        for attempt in range(REPLACE_LOCK_ATTEMPTS):
-            try:
-                os.replace(temp, path)
-                break
-            except PermissionError:
-                if attempt == REPLACE_LOCK_ATTEMPTS - 1:
-                    raise
-                time.sleep(REPLACE_LOCK_DELAY_S)
+        _replace_retrying(temp, path)
     except Exception:
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)
@@ -422,14 +677,7 @@ def export_srt_file(
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         temp.write_text(format_srt(cues, include_speakers=include_speakers), encoding="utf-8")
-        for attempt in range(REPLACE_LOCK_ATTEMPTS):
-            try:
-                os.replace(temp, target)
-                break
-            except PermissionError:
-                if attempt == REPLACE_LOCK_ATTEMPTS - 1:
-                    raise
-                time.sleep(REPLACE_LOCK_DELAY_S)
+        _replace_retrying(temp, target)
     except (OSError, TypeError, ValueError) as exc:
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)
@@ -456,6 +704,19 @@ class SubtitleProjectStore:
 
     def timeline_path(self, project_id: str) -> Path:
         return self.project_dir(project_id) / TRACK_TIMELINE_FILENAME
+
+    def render_stamp_path(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / TRACK_RENDER_STAMP_FILENAME
+
+    def unit_cache(
+        self, project_id: str, *, cap_bytes: int = UNIT_CACHE_CAP_BYTES
+    ) -> UnitClipCache:
+        """The raw per-unit clip cache of a workspace (``<project>/units/``).
+
+        It outlives every render and track release; only :meth:`remove`
+        deletes it, together with the workspace.
+        """
+        return UnitClipCache(self.project_dir(project_id) / UNITS_DIRNAME, cap_bytes=cap_bytes)
 
     def has_track(self, project_id: str) -> bool:
         try:
@@ -495,6 +756,8 @@ class SubtitleProjectStore:
         }
         if project.llm_glossary:
             payload["llmGlossary"] = project.llm_glossary[:4000]
+        if project.render_id:
+            payload["renderId"] = project.render_id
         try:
             self.project_dir(project.id).mkdir(parents=True, exist_ok=True)
             _write_json_atomic(target, payload)
@@ -575,6 +838,7 @@ class SubtitleProjectStore:
                 embed_subtitles=embed_subs,
                 subtitle_embed_mode=embed_mode,
                 llm_glossary=str(data.get("llmGlossary") or "")[:4000],
+                render_id=str(data.get("renderId") or ""),
             )
         except (TypeError, ValueError):
             return None
@@ -632,11 +896,18 @@ class SubtitleProjectStore:
         identity, so a track another profile/language/voice produced is
         invalidated instead of being adopted (Phase 5 Task 5.3).
 
-        One migration allowance: a project rendered before provenance existed
+        The timeline, ``project.json`` and ``track.wav`` must also carry the
+        same ``render_id`` (FR-5.7), so a crash between commit steps is never
+        half-adopted. A render committed before render ids existed carries
+        none anywhere; all three agree on ``""`` and it stays reusable.
+
+        Two migration allowances: a project rendered before provenance existed
         records no identity, and its inputs are compared with the pre-context
         fingerprint. Such a render stays reusable while VieNeu — the engine the
         pre-multi-engine app used — is asking for it, and never for another
-        profile (``synthesis_context.legacy_render_compatible``).
+        profile (``synthesis_context.legacy_render_compatible``). And a render
+        whose digest hashed a speaker map with unused or padded entries (before
+        FR-5.7 normalized it) is matched against that raw map.
         """
         if not self.has_track(project.id):
             return None
@@ -649,8 +920,14 @@ class SubtitleProjectStore:
             or len(timeline.segments) != len(stored.cues)
         ):
             return None
+        if stored.render_id != self.track_render_id(project.id):
+            # load_timeline already paired the timeline with the track; this
+            # pairs project.json too (a commit interrupted between its steps).
+            return None
         if stored.fingerprint == project.fingerprint:
             return stored
+        if project.speaker_voices and stored.fingerprint == _pre_normalization_fingerprint(project):
+            return stored  # rendered before speaker maps were normalized
         if stored.context is None and context_matches(None, project.context):
             legacy = render_fingerprint(
                 project.cues, project.policy, project.sample_rate, project.voice_key
@@ -674,39 +951,58 @@ class SubtitleProjectStore:
             raise SubtitleProjectError(f"Could not create the subtitle workspace: {exc}") from exc
         return directory / f"track.{uuid.uuid4().hex}.part.wav"
 
-    def promote_track(self, project_id: str, part: Path) -> Path:
-        """Atomically replace ``track.wav`` with a fully written part file."""
+    def promote_track(self, project_id: str, part: Path, *, render_id: str = "") -> Path:
+        """Atomically replace ``track.wav`` with a fully written part file.
+
+        The track's ``render_id`` stamp is written only after the replace, so a
+        crash in between leaves the previous stamp on the new audio — a
+        mismatch :meth:`cached_render` refuses. ``""`` clears the stamp.
+        """
         target = self.wav_path(project_id)
+        stamp = self.render_stamp_path(project_id)
         try:
-            for attempt in range(REPLACE_LOCK_ATTEMPTS):
-                try:
-                    os.replace(part, target)
-                    break
-                except PermissionError:
-                    if attempt == REPLACE_LOCK_ATTEMPTS - 1:
-                        raise
-                    time.sleep(REPLACE_LOCK_DELAY_S)
+            _replace_retrying(part, target)
         except OSError as exc:
             with contextlib.suppress(OSError):
                 part.unlink(missing_ok=True)
             raise SubtitleProjectError(f"Could not save the rendered track: {exc}") from exc
+        try:
+            if render_id:
+                _write_json_atomic(stamp, {"renderId": str(render_id)})
+            else:
+                stamp.unlink(missing_ok=True)
+        except OSError as exc:
+            raise SubtitleProjectError(f"Could not save the rendered track: {exc}") from exc
         return target
 
-    def save_timeline(self, project_id: str, timeline: Timeline) -> Path:
+    def track_render_id(self, project_id: str) -> str:
+        """``render_id`` stamped on the live ``track.wav`` (``""`` when legacy)."""
+        data = _read_json(self.render_stamp_path(project_id))
+        return str(data.get("renderId") or "") if isinstance(data, dict) else ""
+
+    def save_timeline(self, project_id: str, timeline: Timeline, *, render_id: str = "") -> Path:
         """Atomically persist the measured cue↔time map next to the track."""
         target = self.timeline_path(project_id)
+        payload = timeline_to_json(timeline)
+        if render_id:
+            payload["renderId"] = str(render_id)
         try:
             self.project_dir(project_id).mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(target, timeline_to_json(timeline))
+            _write_json_atomic(target, payload)
         except (OSError, TypeError, ValueError) as exc:
             raise SubtitleProjectError(f"Could not save the track timeline: {exc}") from exc
         return target
 
     def load_timeline(self, project_id: str) -> Timeline | None:
-        """Saved timeline; ``None`` when absent/corrupt or the track is gone."""
+        """Saved timeline; ``None`` when absent/corrupt, the track is gone, or
+        the timeline belongs to another render than ``track.wav`` (FR-5.7)."""
         if not self.has_track(project_id):
             return None
-        return timeline_from_json(_read_json(self.timeline_path(project_id)))
+        data = _read_json(self.timeline_path(project_id))
+        render_id = str(data.get("renderId") or "") if isinstance(data, dict) else ""
+        if render_id != self.track_render_id(project_id):
+            return None
+        return timeline_from_json(data)
 
 
 # ── streaming renderer ───────────────────────────────────────────────────────
@@ -724,6 +1020,13 @@ class SubtitleRenderResult:
     stats: AlignmentStats
     fits: tuple[CueFit, ...]
     timeline: Timeline
+    #: The id stamped on the committed timeline, project.json and track.wav.
+    render_id: str = ""
+
+
+def new_render_id() -> str:
+    """A fresh id for one render commit (FR-5.7)."""
+    return uuid.uuid4().hex
 
 
 class SubtitleTrackRenderer:
@@ -965,7 +1268,12 @@ class SubtitleTrackRenderer:
         return fit
 
     def finish(self) -> SubtitleRenderResult:
-        """Close, promote ``track.wav``, save the timeline and update the project."""
+        """Close and commit: the timeline, then the project, then ``track.wav``.
+
+        All three carry one fresh ``render_id`` (FR-5.7). A failure before the
+        promote deletes the part file and leaves ``track.wav`` untouched; the
+        ids it leaves behind disagree, so the half-commit is never adopted.
+        """
         if self._done:
             raise SubtitleProjectError("This render has already finished.")
         self.open()
@@ -978,20 +1286,27 @@ class SubtitleTrackRenderer:
             self._done = True
             raise SubtitleProjectError("The render produced no audio.")
         project = self._project
-        target = self._store.promote_track(project.id, writer.path)
+        render_id = new_render_id()
         total_ms = ms_for_frames(frames, project.sample_rate)
         stats = alignment_stats(self._fits)
         timeline = timeline_from_fits(project.cues, self._fits, project.sample_rate)
-        timeline_path = self._store.save_timeline(project.id, timeline)
-        self._store.save(
-            replace(
-                project,
-                total_ms=total_ms,
-                stats=stats,
-                adjusted=tuple(adjusted_cues(project.cues, self._fits)),
-                cue_rates=tuple(round(float(f.rate), 4) for f in self._fits),
+        try:
+            timeline_path = self._store.save_timeline(project.id, timeline, render_id=render_id)
+            self._store.save(
+                replace(
+                    project,
+                    total_ms=total_ms,
+                    stats=stats,
+                    adjusted=tuple(adjusted_cues(project.cues, self._fits)),
+                    cue_rates=tuple(round(float(f.rate), 4) for f in self._fits),
+                    render_id=render_id,
+                )
             )
-        )
+            target = self._store.promote_track(project.id, writer.path, render_id=render_id)
+        except BaseException:
+            writer.abort()  # drops the part; a no-op once promote moved it
+            self._done = True
+            raise
         self._done = True
         return SubtitleRenderResult(
             project_id=project.id,
@@ -1002,6 +1317,7 @@ class SubtitleTrackRenderer:
             stats=stats,
             fits=tuple(self._fits),
             timeline=timeline,
+            render_id=render_id,
         )
 
     def abort(self) -> None:
@@ -1035,13 +1351,13 @@ def splice_studio_window_into_subtitle(
     Streams the untouched prefix and suffix around ``[orig_window_start_frame,
     orig_window_end_frame)`` in bounded 64k-frame chunks, writes the rendered
     Studio window in between, shifts downstream timeline segments and
-    ``adjusted`` cues by ``delta_ms``, and atomically promotes the updated
-    ``track.wav``, ``track.timeline.json``, and ``project.json``.
+    ``adjusted`` cues by ``delta_ms``, then commits like a render (FR-5.7):
+    ``track.timeline.json``, ``project.json``, then ``track.wav``, all under a
+    fresh ``render_id``. A failure before the promote leaves ``track.wav``
+    untouched and deletes the part file.
     """
     from vienetts_app.core.audio import read_wav_range
     from vienetts_app.core.studio import render_project_for_subtitle_save
-    from vienetts_app.core.subtitles import cue_char_spans
-    from vienetts_app.core.timeline import SegmentSpan
 
     meta = getattr(studio_project, "subtitle_meta", None)
     if meta is None:
@@ -1087,7 +1403,37 @@ def splice_studio_window_into_subtitle(
             writer.abort()
         raise
 
-    store.promote_track(sub_proj.id, part)
+    render_id = new_render_id()
+    try:
+        new_timeline, updated_proj = _spliced_metadata(
+            sub_proj, timeline, studio_project, window_mix, orig_end, total_frames
+        )
+        updated_proj = replace(updated_proj, render_id=render_id)
+        # FR-5.7: the same crash-consistent order as a render's commit.
+        store.save_timeline(sub_proj.id, new_timeline, render_id=render_id)
+        store.save(updated_proj)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)
+        raise
+    store.promote_track(sub_proj.id, part, render_id=render_id)
+    return updated_proj
+
+
+def _spliced_metadata(
+    sub_proj: SubtitleProject,
+    timeline: Timeline,
+    studio_project: Any,
+    window_mix: np.ndarray,
+    orig_end: int,
+    total_frames: int,
+) -> tuple[Timeline, SubtitleProject]:
+    """The timeline and project after splicing ``window_mix`` into the track."""
+    from vienetts_app.core.studio import GapOp
+    from vienetts_app.core.subtitles import cue_char_spans
+    from vienetts_app.core.timeline import SegmentSpan
+
+    meta = studio_project.subtitle_meta
     total_ms = ms_for_frames(total_frames, sub_proj.sample_rate)
 
     cues = list(sub_proj.cues)
@@ -1104,8 +1450,6 @@ def splice_studio_window_into_subtitle(
     new_window_duration_ms = ms_for_frames(len(window_mix), sub_proj.sample_rate)
     new_window_end_ms = window_base_ms + new_window_duration_ms
     delta_ms = new_window_end_ms - old_window_end_ms
-
-    from vienetts_app.core.studio import GapOp
 
     gap_ops = [op for op in getattr(studio_project, "ops", ()) if isinstance(op, GapOp)]
     gap_override_ms = max(0, int(gap_ops[-1].ms)) if gap_ops else None
@@ -1164,7 +1508,6 @@ def splice_studio_window_into_subtitle(
         for (cs, ce), (s_ms, e_ms) in zip(char_spans, seg_bounds, strict=True)
     )
     new_timeline = Timeline(new_segments, approximate=False)
-    store.save_timeline(sub_proj.id, new_timeline)
 
     offset_ms = int(sub_proj.policy.offset_ms)
     fits_for_stats = [
@@ -1198,5 +1541,4 @@ def splice_studio_window_into_subtitle(
         adjusted=tuple(adjusted_list),
         cue_rates=tuple(rates_list),
     )
-    store.save(updated_proj)
-    return updated_proj
+    return new_timeline, updated_proj

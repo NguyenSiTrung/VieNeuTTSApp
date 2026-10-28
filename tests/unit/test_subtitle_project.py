@@ -23,10 +23,12 @@ from vienetts_app.core.subtitle_project import (
     SubtitleProjectError,
     SubtitleProjectStore,
     SubtitleTrackRenderer,
+    UnitClipCache,
     build_project,
     export_srt_file,
     project_id_for,
     render_fingerprint,
+    voice_file_stamp,
 )
 from vienetts_app.core.subtitles import parse_cues
 from vienetts_app.core.timeline import SegmentSpan, Timeline
@@ -81,6 +83,26 @@ def render_three(store: SubtitleProjectStore, project) -> object:
         renderer.add_clip(1, clip(2_000))  # 2000 ms into a 1500 ms window
         renderer.add_silent_cue(2)
         return renderer.finish()
+
+
+def spy_commit(store: SubtitleProjectStore, monkeypatch, *, fail: str = "") -> list[str]:
+    """Record the store's commit steps in call order; ``fail`` makes one crash."""
+    calls: list[str] = []
+
+    def spied(name: str) -> Any:
+        real = getattr(store, name)
+
+        def step(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            if name == fail:
+                raise SubtitleProjectError(f"simulated crash in {name}")
+            return real(*args, **kwargs)
+
+        return step
+
+    for name in ("save_timeline", "save", "promote_track"):
+        monkeypatch.setattr(store, name, spied(name))
+    return calls
 
 
 # ── StreamingWavWriter ───────────────────────────────────────────────────────
@@ -408,7 +430,7 @@ def test_store_security(tmp_path) -> None:
     assert (outside / "keep.txt").is_file()
 
 
-def test_cached_render_contract(tmp_path) -> None:
+def test_cached_render_contract(tmp_path, monkeypatch) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     assert store.cached_render(project) is None  # nothing stored
@@ -447,18 +469,71 @@ def test_cached_render_contract(tmp_path) -> None:
 
     store = make_store(tmp_path)
     project = make_project(tmp_path)
-    render_three(store, project)
+    render_id = render_three(store, project).render_id
 
-    store.save_timeline(project.id, Timeline(()))
+    store.save_timeline(project.id, Timeline(()), render_id=render_id)
     assert store.cached_render(project) is None
     assert store.needs_render(project) is True
 
     store.save_timeline(
         project.id,
         Timeline((SegmentSpan(0, 5, 0, 1_000),)),  # 1 span for 3 cues
+        render_id=render_id,
     )
     assert store.cached_render(project) is None
     assert store.needs_render(project) is True
+
+    # FR-5.7: finish commits timeline → project.json → track.wav, all three
+    # stamped with one render_id.
+    tmp_path = tmp_path / "case-c"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
+    store = make_store(tmp_path)
+    project = make_project(tmp_path)
+    calls = spy_commit(store, monkeypatch)
+    result = render_three(store, project)
+    assert calls == ["save_timeline", "save", "promote_track"]
+    fresh = make_store(tmp_path)
+    timeline_json = json.loads(fresh.timeline_path(project.id).read_text(encoding="utf-8"))
+    assert result.render_id
+    assert timeline_json["renderId"] == result.render_id
+    assert fresh.require(project.id).render_id == result.render_id
+    assert fresh.track_render_id(project.id) == result.render_id
+    assert fresh.cached_render(project) is not None
+    track = fresh.wav_path(project.id).read_bytes()
+
+    # A crash right after the timeline write (project.json and track.wav are
+    # still the previous render's), or after the project.json write, leaves a
+    # mixed state that is refused, never half-adopted. track.wav is untouched
+    # and no part file lingers.
+    for crash_in in ("save", "promote_track"):
+        crashing = make_store(tmp_path)
+        spy_commit(crashing, monkeypatch, fail=crash_in)
+        with pytest.raises(SubtitleProjectError, match=crash_in):
+            render_three(crashing, project)
+        fresh = make_store(tmp_path)
+        assert fresh.cached_render(project) is None
+        assert fresh.load_timeline(project.id) is None  # not this track's timeline
+        assert fresh.wav_path(project.id).read_bytes() == track
+        assert not list(fresh.project_dir(project.id).glob("*.part.wav"))
+
+    # Legacy: a render committed before render_id existed carries no id
+    # anywhere. All three agree (blank), so it stays reusable on its
+    # fingerprint alone (backward-compat NFR)...
+    store = make_store(tmp_path)
+    render_three(store, project)
+    for path in (store.project_path(project.id), store.timeline_path(project.id)):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("renderId")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    store.render_stamp_path(project.id).unlink()
+    legacy = store.cached_render(project)
+    assert legacy is not None and legacy.render_id == ""
+    # ...while a legacy track under a stamped timeline is a crash mid-commit.
+    legacy_timeline = store.load_timeline(project.id)
+    assert legacy_timeline is not None
+    store.save_timeline(project.id, legacy_timeline, render_id="f" * 32)
+    assert store.cached_render(project) is None
 
 
 def test_track_parts_and_timeline(tmp_path) -> None:
@@ -638,6 +713,85 @@ def cue_lengths(project) -> list[int]:
     return [max(1, len(cue.text) * 100) for cue in project.cues]
 
 
+# ── per-unit clip cache (FR-5.1) ─────────────────────────────────────────────
+
+
+def test_unit_clip_cache_key(tmp_path) -> None:
+    base: dict[str, Any] = {
+        "voice_id": "Binh",
+        "voice_stamp": "1024:1700000000000000000",
+        "profile": "vieneu",
+        "model_revision": "rev1",
+        "speed": 1.0,
+        "context_fingerprint": "ctx-a",
+    }
+    key = UnitClipCache.key("Xin chào.", **base)
+    # Pinned: the key must survive a restart (no per-process hash salt). A
+    # recipe change must bump UNIT_CACHE_VERSION, which moves this digest.
+    assert key == "e8accb60d4df5141823edb1bf2f2769e737d7f7e7bc131304769c08cbbccb4f0"
+    assert UnitClipCache.key("Xin chào.", **{**base, "speed": 1}) == key
+    variants = {
+        UnitClipCache.key("Xin chào!", **base),
+        UnitClipCache.key("Xin chào.", **{**base, "voice_id": "Ngoc"}),
+        UnitClipCache.key("Xin chào.", **{**base, "voice_stamp": "1024:1700000000000000001"}),
+        UnitClipCache.key("Xin chào.", **{**base, "profile": "qwen_custom_0_6b"}),
+        UnitClipCache.key("Xin chào.", **{**base, "model_revision": "rev2"}),
+        UnitClipCache.key("Xin chào.", **{**base, "speed": 1.1}),
+        UnitClipCache.key("Xin chào.", **{**base, "context_fingerprint": "ctx-b"}),
+    }
+    assert len(variants) == 7 and key not in variants
+
+    # The voice stamp moves when the reference file is replaced; a missing
+    # file stamps blank rather than raising.
+    voice = tmp_path / "binh.wav"
+    voice.write_bytes(b"a" * 10)
+    stamp = voice_file_stamp(voice)
+    assert stamp and voice_file_stamp(voice) == stamp
+    voice.write_bytes(b"b" * 12)
+    assert voice_file_stamp(voice) not in ("", stamp)
+    assert voice_file_stamp(tmp_path / "missing.wav") == ""
+
+
+def test_unit_clip_cache_storage_and_lru(tmp_path) -> None:
+    store = make_store(tmp_path)
+    project = make_project(tmp_path)
+    cache = store.unit_cache(project.id)
+    units = store.project_dir(project.id) / "units"
+    key = UnitClipCache.key("Hello world.", voice_id="voice-a")
+    audio = np.linspace(-0.5, 0.5, 700, dtype=np.float32)
+    assert cache.get(key, SR) is None  # miss
+    path = cache.put(key, audio, SR)
+    assert path == units / f"{key}.wav"
+    # A fresh instance (the next app run) reads the exact clip back.
+    np.testing.assert_array_equal(store.unit_cache(project.id).get(key, SR), audio)
+    assert cache.get(key, SR * 2) is None  # another output rate is a miss
+    assert cache.put(UnitClipCache.key("", voice_id="v"), np.zeros(0, np.float32), SR) is None
+    bad = UnitClipCache.key("corrupt", voice_id="v")
+    (units / f"{bad}.wav").write_bytes(b"not a wav")
+    assert cache.get(bad, SR) is None
+    assert not (units / f"{bad}.wav").exists()  # dropped, not re-read forever
+    assert cache.get("../project", SR) is None  # never a path outside units/
+
+    # LRU under the byte cap: the oldest ACCESS goes first, not the oldest put.
+    size = path.stat().st_size
+    lru_dir = tmp_path / "lru"
+    lru = UnitClipCache(lru_dir, cap_bytes=3 * size)
+    keys = [UnitClipCache.key(f"unit {i}", voice_id="v") for i in range(4)]
+    for k in keys[:3]:
+        lru.put(k, audio, SR)
+    assert lru.get(keys[0], SR) is not None  # keys[1] is now the oldest access
+    lru.put(keys[3], audio, SR)
+    assert {p.stem for p in lru_dir.glob("*.wav")} == {keys[0], keys[2], keys[3]}
+    assert sum(p.stat().st_size for p in lru_dir.glob("*.wav")) <= 3 * size
+    # A restart rebuilds the access order from disk: keys[2] goes next.
+    UnitClipCache(lru_dir, cap_bytes=3 * size).put(keys[1], audio, SR)
+    assert {p.stem for p in lru_dir.glob("*.wav")} == {keys[0], keys[3], keys[1]}
+
+    # The cache lives inside the workspace: removing the project drops it too.
+    store.remove(project.id)
+    assert not units.exists()
+
+
 # ── engine identity (Phase 5 Task 5.3) ───────────────────────────────────────
 
 
@@ -665,6 +819,32 @@ def test_fingerprint_provenance() -> None:
         cues, policy, SR, "voice-a", render_context("qwen_custom_0_6b", voice_id="Vivian")
     )
     assert qwen not in (plain, vieNeu)
+
+    # FR-5.7: a normalized project (identity + per-speaker voices) keeps the
+    # digest it always had, and speakers no cue uses or whitespace-padded
+    # names hash exactly like the normalized map.
+    from vienetts_app.core.subtitles import Cue
+    from vienetts_app.core.synthesis_context import SynthesisContext
+
+    spk_cues = (
+        Cue(1, 0, 2_000, "Xin chào.", speaker="SPEAKER_01"),
+        Cue(
+            2,
+            2_500,
+            4_000,
+            "Chào bạn.",
+            speaker="SPEAKER_02",
+            speech_start_ms=2_600,
+            speech_end_ms=3_900,
+        ),
+    )
+    spk_policy = FitPolicy.dub(rate_cap=1.4, offset_ms=-120, merge_sentences=True)
+    identity = SynthesisContext(profile="vieneu", model_revision="rev1", language="vi")
+    normalized = {"SPEAKER_01": "Binh", "SPEAKER_02": "Ngoc"}
+    messy = {" SPEAKER_01 ": " Binh", "SPEAKER_02": "Ngoc\t", "SPEAKER_09": "Mai", "x": " "}
+    digest = render_fingerprint(spk_cues, spk_policy, 48_000, "Binh", identity, normalized)
+    assert digest == "a3737dbe03d7af3771d2ad83d6618c15b06a887e19f0d2c176d9d81662df1101"
+    assert render_fingerprint(spk_cues, spk_policy, 48_000, "Binh", identity, messy) == digest
 
 
 def test_identity_storage(tmp_path) -> None:
@@ -796,7 +976,9 @@ def test_export_srt(tmp_path, monkeypatch) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(tmp_path) -> None:
+def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(
+    tmp_path, monkeypatch
+) -> None:
     from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, frames_for_ms
     from vienetts_app.core.audio import read_wav_range
     from vienetts_app.core.studio import (
@@ -856,7 +1038,14 @@ def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(
     )
     win0 = commit_ops(win0, (GainOp(db=6.0),))
 
+    # FR-5.7: the save-back commits in the same order as a render, under a
+    # fresh render_id shared by all three files.
+    calls = spy_commit(store, monkeypatch)
     updated = splice_studio_window_into_subtitle(store, win0)
+    assert calls == ["save_timeline", "save", "promote_track"]
+    assert updated.render_id and updated.render_id != orig_proj.render_id
+    assert store.track_render_id(project.id) == updated.render_id
+    assert store.cached_render(updated) is not None
     new_tl = store.load_timeline(project.id)
     assert new_tl is not None
     # Cue 49 grew from 400 ms (49100..49500) to 900 ms (49100..50000) -> +500 ms delta.
@@ -883,6 +1072,18 @@ def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(
     assert float(np.max(np.abs(cue0_audio))) == pytest.approx(
         0.2 * (10.0 ** (6.0 / 20.0)), abs=1e-2
     )
+
+    # A save-back that crashes right after its timeline write leaves the mixed
+    # state refused; track.wav is untouched and no part file lingers.
+    spliced_track = store.wav_path(project.id).read_bytes()
+    crashing = make_store(tmp_path)
+    spy_commit(crashing, monkeypatch, fail="save")
+    with pytest.raises(SubtitleProjectError, match="save"):
+        splice_studio_window_into_subtitle(crashing, win0)
+    fresh = make_store(tmp_path)
+    assert fresh.cached_render(updated) is None
+    assert fresh.wav_path(project.id).read_bytes() == spliced_track
+    assert not list(fresh.project_dir(project.id).glob("*.part.wav"))
 
 
 def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
@@ -949,6 +1150,45 @@ def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
     assert spliced.video_path == str(tmp_path / "movie.mp4")
     assert spliced.speaker_voices == {"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"}
     assert [c.speaker for c in spliced.adjusted] == ["SPEAKER_01", "SPEAKER_02"]
+
+    # FR-5.7: an unused speaker and padded names do not move the fingerprint,
+    # so save → reload → rebuild keeps the render reusable.
+    store = make_store(tmp_path / "case-b")
+    messy = {" SPEAKER_01 ": "Binh ", "SPEAKER_02": " Tuyen", "SPEAKER_09": "Mai"}
+    project = build_project(
+        tmp_path / "dub.srt", cues_with_spk, FitPolicy.dub(), voice_key="Binh", speaker_voices=messy
+    )
+    assert project.fingerprint == fp_spk
+    with SubtitleTrackRenderer(store, project) as renderer:
+        for i in range(2):
+            renderer.add_clip(i, np.full(int(0.5 * DEFAULT_SAMPLE_RATE), 0.1, dtype=np.float32))
+        renderer.finish()
+    reloaded = store.require(project.id)
+    rebuilt = build_project(
+        tmp_path / "dub.srt",
+        cues_with_spk,
+        FitPolicy.dub(),
+        voice_key="Binh",
+        speaker_voices=reloaded.speaker_voices,
+    )
+    assert rebuilt.fingerprint == reloaded.fingerprint == fp_spk
+    assert store.cached_render(rebuilt) is not None
+    # A track rendered before FR-5.7 hashed the raw map, unused speaker
+    # included; it stays reusable rather than forcing a full re-render...
+    path = store.project_path(project.id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["fingerprint"] = "07da9a0c84c2b1d4e2412575445c64d28fce219000bc282bb18b7f97fad34576"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert store.cached_render(rebuilt) is not None
+    # ...but a voice change for a speaker that does speak still re-renders.
+    revoiced = build_project(
+        tmp_path / "dub.srt",
+        cues_with_spk,
+        FitPolicy.dub(),
+        voice_key="Binh",
+        speaker_voices={**reloaded.speaker_voices, "SPEAKER_02": "Ngoc"},
+    )
+    assert store.cached_render(revoiced) is None
 
 
 def test_speech_bounds_sparse_json_and_fingerprint(tmp_path: Path) -> None:

@@ -309,7 +309,7 @@ Test seams and fakes:
     - Add the `split_unit_audio` snap (lowest-RMS 10 ms within ±150 ms).
     - Place contiguous pieces in `add_unit_clip`, with `apply_micro_fade` at every split.
 
-- [~] **Task 6.2: Per-unit clip cache, crash-consistent commit, fingerprint hygiene (FR-5.1 core, FR-5.7)**
+- [x] **Task 6.2: Per-unit clip cache, crash-consistent commit, fingerprint hygiene (FR-5.1 core, FR-5.7)**
   <!-- files: src/vienetts_app/core/subtitle_project.py, tests/unit/test_subtitle_project.py -->
   <!-- depends: task1 -->
   - Red tests:

@@ -479,6 +479,18 @@ def test_speech_units_contract() -> None:
     ]
     assert speech_units(multi_spk, merge=True) == [(0, 1), (2,)]
 
+    # A non-speakable cue (sound cue, ♪, punctuation, emoji) never joins a
+    # speaking unit, on either side: each one is its own single-cue unit.
+    sound = [
+        cue(1, 0, 1_000, "Xin chào"),
+        cue(2, 1_000, 2_000, "♪♪"),
+        cue(3, 2_000, 3_000, "[MUSIC PLAYING]"),
+        cue(4, 3_000, 4_000, "bạn khỏe"),
+        cue(5, 4_000, 5_000, "không"),
+        cue(6, 5_000, 6_000, "..."),
+    ]
+    assert speech_units(sound, merge=True) == [(0,), (1,), (2,), (3, 4), (5,)]
+
 
 # ── splitting a merged unit's audio ──────────────────────────────────────────
 

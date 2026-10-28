@@ -18,16 +18,24 @@ from __future__ import annotations
 
 import contextlib
 import os
-import queue
 import shutil
 import subprocess
-import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from vienetts_app.core.ai_models import cli_command
+from vienetts_app.core.processes import (
+    FFPROBE_TIMEOUT_S,
+    CliCancelled,
+    CliTimeout,
+    extraction_timeout_s,
+    find_executable,
+    run_cli,
+)
 
 VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
 _VIDEO_EXT_SET = frozenset(VIDEO_EXTENSIONS)
@@ -91,6 +99,10 @@ class VideoDubError(RuntimeError):
     """A video extraction or muxing operation failed; message is user-actionable."""
 
 
+class VideoDubCancelled(VideoDubError):
+    """``cancel_check`` stopped an extraction or mux; the partial file is gone."""
+
+
 @dataclass(frozen=True)
 class VideoInfo:
     """The parts of a video's video stream the muxer needs to stay faithful."""
@@ -111,25 +123,26 @@ def probe_video_info(video_path: str | Path, *, data_dir: Path | None = None) ->
     ffprobe = resolve_ffprobe(data_dir)
     if ffprobe is None or not vpath.is_file():
         return VideoInfo()
-    res = subprocess.run(
-        [
-            str(ffprobe),
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,pix_fmt",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=nw=1",
-            str(vpath),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        res = run_cli(
+            cli_command(
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,pix_fmt",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1",
+                str(vpath),
+            ),
+            timeout=FFPROBE_TIMEOUT_S,
+        )
+    except (OSError, CliTimeout):
+        return VideoInfo()
     if res.returncode != 0:
         return VideoInfo()
     fields: dict[str, str] = {}
@@ -354,28 +367,45 @@ def dub_overrun_ms(
     info = probe_video_info(video_path, data_dir=data_dir)
     if info.duration_ms <= 0:
         return 0
+    dub_ms = int(_probe_duration_s(dub_wav_path, data_dir=data_dir) * 1000)
+    return max(0, dub_ms - info.duration_ms)
+
+
+def _probe_duration_s(
+    media_path: str | Path,
+    *,
+    data_dir: Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> float:
+    """Container duration of ``media_path`` in seconds via ``ffprobe``; 0.0 when unknown.
+
+    Never raises: it only feeds warnings and timeout budgets.
+    """
     ffprobe = resolve_ffprobe(data_dir)
     if ffprobe is None:
-        return 0
-    res = subprocess.run(
-        [
-            str(ffprobe),
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=nw=1:nk=1",
-            str(dub_wav_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+        return 0.0
+    try:
+        res = run_cli(
+            cli_command(
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                str(media_path),
+            ),
+            timeout=FFPROBE_TIMEOUT_S,
+            cancel_check=cancel_check,
+        )
+    except (OSError, CliTimeout, CliCancelled):
+        return 0.0
+    if res.returncode != 0:
+        return 0.0
     with contextlib.suppress(ValueError):
-        dub_ms = int(float((res.stdout or "0").strip() or 0) * 1000)
-        return max(0, dub_ms - info.duration_ms)
-    return 0
+        return max(0.0, float((res.stdout or "").strip() or 0))
+    return 0.0
 
 
 def _read_srt_cues(srt_path: Path) -> list[tuple[int, int, str]]:
@@ -435,71 +465,34 @@ def _run_ffmpeg(
     """Run ffmpeg, optionally streaming ``-progress`` into ``progress``.
 
     Burn-in can run for minutes on a long clip, so the caller gets a real
-    fraction rather than a silent wait. Without a ``progress`` callback and
-    without ``cancel_check`` this is a plain capture run. With a
-    ``cancel_check`` the process is terminated when it returns True — a hung
-    ffmpeg must never permanently disable the caller.
+    fraction rather than a silent wait. With a ``cancel_check`` the process is
+    terminated when it returns True — a hung ffmpeg must never permanently
+    disable the caller — and the stopped run comes back as a non-zero
+    ``CompletedProcess`` for the caller to report.
     """
-    if progress is None and cancel_check is None:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd)
 
-    stderr_chunks: list[str] = []
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-    )
-    assert proc.stdout is not None  # noqa: S101 - guaranteed by PIPE
+    def on_progress_line(line: str) -> None:
+        if progress is None:
+            return
+        key, _, value = line.strip().partition("=")
+        if key == "out_time_ms":
+            with contextlib.suppress(ValueError):
+                done_ms = int(value)
+                if duration_ms > 0:
+                    progress(max(0.0, min(0.99, done_ms / duration_ms)))
+        elif key == "progress" and value == "end":
+            progress(1.0)
 
-    def drain_stderr() -> None:
-        # A separate reader keeps a chatty ffmpeg from filling the pipe and
-        # deadlocking the stdout loop below.
-        if proc.stderr is not None:
-            stderr_chunks.append(proc.stderr.read())
-
-    stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
-    stderr_reader.start()
-
-    lines: queue.Queue[str | None] = queue.Queue()
-
-    def read_stdout() -> None:
-        for line in proc.stdout:  # type: ignore[union-attr]
-            lines.put(line)
-        lines.put(None)
-
-    stdout_reader = threading.Thread(target=read_stdout, daemon=True)
-    stdout_reader.start()
-
-    while True:
-        if cancel_check is not None and cancel_check():
-            proc.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=5)
-            if proc.poll() is None:
-                proc.kill()
-            break
-        try:
-            line = lines.get(timeout=0.1)
-        except queue.Empty:
-            continue
-        if line is None:
-            break
-        if progress is not None:
-            key, _, value = line.strip().partition("=")
-            if key == "out_time_ms":
-                with contextlib.suppress(ValueError):
-                    done_ms = int(value)
-                    if duration_ms > 0:
-                        with contextlib.suppress(Exception):
-                            progress(max(0.0, min(0.99, done_ms / duration_ms)))
-            elif key == "progress" and value == "end":
-                with contextlib.suppress(Exception):
-                    progress(1.0)
-    proc.wait()
-    stderr_reader.join(timeout=5)
-    return subprocess.CompletedProcess(cmd, proc.returncode, "", "".join(stderr_chunks))
+    try:
+        return run_cli(
+            cli_command(Path(cmd[0]), *cmd[1:]),
+            cwd=cwd,
+            cancel_check=cancel_check,
+            on_stdout_line=on_progress_line,
+        )
+    except CliCancelled as exc:
+        returncode = exc.returncode if exc.returncode is not None else -1
+        return subprocess.CompletedProcess(exc.cmd, returncode, exc.stdout, exc.stderr)
 
 
 def is_video_path(path: str | Path) -> bool:
@@ -552,16 +545,15 @@ def find_companion_video(srt_path: str | Path) -> Path | None:
     return None
 
 
+def _ffmpeg_managed_dirs(data_dir: Path | None) -> list[Path]:
+    return [] if data_dir is None else [Path(data_dir) / "runtimes" / "ffmpeg" / "bin"]
+
+
 def resolve_ffmpeg(data_dir: Path | None = None) -> Path:
-    """Locate ``ffmpeg`` in the managed data dir or on ``PATH``."""
-    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    if data_dir is not None:
-        managed = Path(data_dir) / "runtimes" / "ffmpeg" / "bin" / exe
-        if managed.is_file():
-            return managed
-    found = shutil.which("ffmpeg")
-    if found:
-        return Path(found)
+    """Locate ``ffmpeg``: managed runtime, then ``PATH``, then well-known dirs."""
+    found = find_executable("ffmpeg", managed_dirs=_ffmpeg_managed_dirs(data_dir))
+    if found is not None:
+        return found
     raise VideoDubError(
         "Không tìm thấy công cụ ffmpeg trên hệ thống. "
         "Hãy cài đặt ffmpeg để trích xuất âm thanh và ghép video."
@@ -569,14 +561,8 @@ def resolve_ffmpeg(data_dir: Path | None = None) -> Path:
 
 
 def resolve_ffprobe(data_dir: Path | None = None) -> Path | None:
-    """Locate ``ffprobe`` if available."""
-    exe = "ffprobe.exe" if os.name == "nt" else "ffprobe"
-    if data_dir is not None:
-        managed = Path(data_dir) / "runtimes" / "ffmpeg" / "bin" / exe
-        if managed.is_file():
-            return managed
-    found = shutil.which("ffprobe")
-    return Path(found) if found else None
+    """Locate ``ffprobe`` if available (same lookup order as :func:`resolve_ffmpeg`)."""
+    return find_executable("ffprobe", managed_dirs=_ffmpeg_managed_dirs(data_dir))
 
 
 def probe_has_audio_stream(video_path: str | Path, *, data_dir: Path | None = None) -> bool:
@@ -586,31 +572,30 @@ def probe_has_audio_stream(video_path: str | Path, *, data_dir: Path | None = No
         return False
     ffprobe = resolve_ffprobe(data_dir)
     if ffprobe is not None:
-        res = subprocess.run(
-            [
-                str(ffprobe),
-                "-v",
-                "error",
-                "-select_streams",
-                "a",
-                "-show_entries",
-                "stream=index",
-                "-of",
-                "csv=p=0",
-                str(vpath),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            res = run_cli(
+                cli_command(
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a",
+                    "-show_entries",
+                    "stream=index",
+                    "-of",
+                    "csv=p=0",
+                    str(vpath),
+                ),
+                timeout=FFPROBE_TIMEOUT_S,
+            )
+        except (OSError, CliTimeout):
+            return False
         return res.returncode == 0 and bool(res.stdout.strip())
     ffmpeg = resolve_ffmpeg(data_dir)
-    res = subprocess.run(
-        [str(ffmpeg), "-nostdin", "-i", str(vpath)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        res = run_cli(cli_command(ffmpeg, "-nostdin", "-i", str(vpath)), timeout=FFPROBE_TIMEOUT_S)
+    except (OSError, CliTimeout):
+        return False
     return "Audio:" in (res.stderr or "")
 
 
@@ -635,22 +620,37 @@ def extract_video_audio(
     start_ms: int | None = None,
     end_ms: int | None = None,
     data_dir: Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
-    """Extract mono/stereo PCM WAV from ``video_path`` (optionally sliced)."""
+    """Extract mono/stereo PCM WAV from ``video_path`` (optionally sliced).
+
+    ffmpeg gets ``max(120 s, 2 × duration)``: the slice length when ``end_ms``
+    is given, else the container duration from ``ffprobe`` (the floor when it
+    is unknown). Past that it is killed and :class:`VideoDubError` raised.
+    ``cancel_check`` returning True stops it and raises
+    :class:`VideoDubCancelled`. Either way the partial WAV is discarded.
+    """
     vpath = Path(video_path)
     if not vpath.is_file():
         raise VideoDubError(f"Không tìm thấy tệp video: {vpath.name}")
+    if cancel_check is not None and cancel_check():
+        raise VideoDubCancelled("Đã hủy trích xuất âm thanh.")
     target = Path(output_wav)
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.part.wav")
     ffmpeg = resolve_ffmpeg(data_dir)
+    if end_ms is not None and end_ms > (start_ms or 0):
+        duration_s = (end_ms - max(0, start_ms or 0)) / 1000.0
+    else:
+        duration_s = _probe_duration_s(vpath, data_dir=data_dir, cancel_check=cancel_check)
+    timeout_s = extraction_timeout_s(duration_s)
 
-    cmd: list[str] = [str(ffmpeg), "-nostdin", "-y"]
+    args: list[str] = ["-nostdin", "-y"]
     if start_ms is not None and start_ms > 0:
-        cmd += ["-ss", f"{start_ms / 1000.0:.3f}"]
+        args += ["-ss", f"{start_ms / 1000.0:.3f}"]
     if end_ms is not None and (start_ms is None or end_ms > start_ms):
-        cmd += ["-to", f"{end_ms / 1000.0:.3f}"]
-    cmd += [
+        args += ["-to", f"{end_ms / 1000.0:.3f}"]
+    args += [
         "-i",
         str(vpath),
         "-vn",
@@ -665,7 +665,14 @@ def extract_video_audio(
         str(part),
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        try:
+            res = run_cli(cli_command(ffmpeg, *args), timeout=timeout_s, cancel_check=cancel_check)
+        except CliCancelled as exc:
+            raise VideoDubCancelled("Đã hủy trích xuất âm thanh.") from exc
+        except CliTimeout as exc:
+            raise VideoDubError(
+                f"Trích xuất âm thanh từ '{vpath.name}' quá thời gian chờ ({timeout_s:.0f}s)."
+            ) from exc
         if res.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
             detail = (res.stderr or "").strip().splitlines()[-1:] or ["ffmpeg failed"]
             raise VideoDubError(f"Không thể trích xuất âm thanh từ '{vpath.name}': {detail[0]}")
@@ -935,7 +942,7 @@ def mux_dubbed_video(
             cancel_check=cancel_check,
         )
         if cancel_check is not None and cancel_check():
-            raise VideoDubError("Đã hủy xuất video.")
+            raise VideoDubCancelled("Đã hủy xuất video.")
         if res.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
             stderr = res.stderr or ""
             if burn and "No such filter: 'ass'" in stderr:

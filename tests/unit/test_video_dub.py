@@ -5,10 +5,12 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 
+from vienetts_app.core import video_dub
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.video_dub import (
     VideoDubError,
@@ -25,7 +27,8 @@ from vienetts_app.core.video_dub import (
     supports_soft_subtitles,
 )
 
-pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
+#: Tests that build or inspect real media; the stub-driven ones run everywhere.
+requires_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
 
 
 # Source codecs each container accepts (WebM is VP8/VP9 + Opus/Vorbis only).
@@ -156,6 +159,7 @@ def test_companion_discovery_and_video_path_detection(tmp_path: Path) -> None:
     assert find_companion_video(lang_srt) == video
 
 
+@requires_ffmpeg
 def test_extract_video_audio_full_and_sliced(tmp_path: Path) -> None:
     video = _make_test_video(tmp_path / "source.mp4", duration_s=1.5, with_audio=True)
     assert probe_has_audio_stream(video) is True
@@ -178,6 +182,57 @@ def test_extract_video_audio_full_and_sliced(tmp_path: Path) -> None:
     assert 18_000 <= slice_samples.size <= 30_000
 
 
+def test_extract_video_audio_keeps_the_wav_when_ffmpeg_stderr_is_not_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review A: undecodable stderr must not discard a good extraction.
+
+    ffmpeg echoes the input name (UTF-8) and can emit raw bytes from container
+    metadata; strict decoding used to raise and the cleanup deleted the WAV.
+    """
+    data_dir = tmp_path / "data"
+    bin_dir = data_dir / "runtimes" / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True)
+    ffmpeg = bin_dir / "ffmpeg"
+    ffmpeg.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, wave\n"
+        "banner = \"Input #0, mov, from 'Phụ đề.mp4':\\n\".encode('utf-8')\n"
+        "sys.stderr.buffer.write(banner + b'  title: \\x81\\n')\n"
+        "sys.stderr.buffer.flush()\n"
+        "with wave.open(sys.argv[-1], 'wb') as out:\n"
+        "    out.setnchannels(1)\n"
+        "    out.setsampwidth(2)\n"
+        "    out.setframerate(16000)\n"
+        "    out.writeframes(b'\\x00\\x00' * 1600)\n",
+        encoding="utf-8",
+    )
+    ffmpeg.chmod(0o755)
+    # A 100 s source gets twice its duration instead of the 120 s floor.
+    ffprobe = bin_dir / "ffprobe"
+    ffprobe.write_text("#!/usr/bin/env python3\nprint('100.000000')\n", encoding="utf-8")
+    ffprobe.chmod(0o755)
+    video = tmp_path / "Phụ đề.mp4"
+    video.write_bytes(b"not decoded by the stub")
+
+    timeouts: list[float | None] = []
+    real_run_cli = video_dub.run_cli
+
+    def run_cli_spy(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        return real_run_cli(cmd, **kwargs)
+
+    monkeypatch.setattr(video_dub, "run_cli", run_cli_spy)
+    out = extract_video_audio(video, tmp_path / "Phụ đề.wav", data_dir=data_dir)
+
+    assert out == tmp_path / "Phụ đề.wav"
+    samples, sr = read_wav(out)
+    assert (sr, samples.size) == (16_000, 1_600)
+    assert not list(tmp_path.glob(".*.part.wav"))
+    assert timeouts[-1] == pytest.approx(200.0)
+
+
+@requires_ffmpeg
 def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
     video = _make_test_video(tmp_path / "movie.mp4", duration_s=1.2, with_audio=True)
     silent_video = _make_test_video(tmp_path / "silent.mp4", duration_s=1.2, with_audio=False)
@@ -263,6 +318,7 @@ def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
         extract_video_audio(tmp_path / "missing.mp4", tmp_path / "out.wav")
 
 
+@requires_ffmpeg
 def test_mux_subtitles_soft_track_per_container_and_burn_in(tmp_path: Path) -> None:
     sr = 48_000
     dub_wav = write_wav_file(
@@ -335,6 +391,7 @@ def test_mux_subtitles_soft_track_per_container_and_burn_in(tmp_path: Path) -> N
     assert _peak_luma(plain, 0.5) < 40
 
 
+@requires_ffmpeg
 def test_mux_burn_in_reports_missing_libass(tmp_path: Path, monkeypatch) -> None:
     video = _make_test_video(tmp_path / "movie.mp4")
     dub_wav = write_wav_file(
@@ -353,7 +410,7 @@ def test_mux_burn_in_reports_missing_libass(tmp_path: Path, monkeypatch) -> None
             "[AVFilterGraph @ 0x1] No such filter: 'ass'\nError initializing filters\n",
         )
 
-    monkeypatch.setattr("vienetts_app.core.video_dub.subprocess.run", fake_run)
+    monkeypatch.setattr("vienetts_app.core.video_dub.run_cli", fake_run)
     with pytest.raises(VideoDubError, match="libass"):
         mux_dubbed_video(
             video, dub_wav, tmp_path / "out.mp4", srt_path=srt_file, subtitle_mode="burn"
@@ -421,6 +478,7 @@ def test_burn_ass_escapes_text_libass_would_misread() -> None:
     assert "\\\\N" in body
 
 
+@requires_ffmpeg
 def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     """A dub longer than the picture keeps its words unless clamping is asked for."""
     src = _make_test_video(tmp_path / "short.mp4", duration_s=1.0)
@@ -497,6 +555,7 @@ def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
     assert elapsed < 10
 
 
+@requires_ffmpeg
 def test_mux_duck_spans_suppresses_trailing_source_speech_when_dub_is_shorter(
     tmp_path: Path,
 ) -> None:

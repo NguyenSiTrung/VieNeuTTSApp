@@ -20,10 +20,8 @@ import contextlib
 import json
 import logging
 import os
-import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -38,8 +36,9 @@ from vienetts_app.core.ai_models import (
     resolve_diarization_model_path,
 )
 from vienetts_app.core.audio import read_wav_range, write_wav_file
+from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import Cue
-from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
+from vienetts_app.core.video_dub import VideoDubCancelled, VideoDubError, extract_video_audio
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +753,8 @@ def _ensure_16k_wav(
     work_dir: Path | None,
     data_dir: Path | None,
     temp_dir: tempfile.TemporaryDirectory[str] | None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
     """Return a 16 kHz mono WAV for ``src``, converting and caching it if needed."""
     if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
@@ -796,8 +797,15 @@ def _ensure_16k_wav(
 
     try:
         extract_video_audio(
-            src, target, sample_rate=MODEL_SAMPLE_RATE, mono=True, data_dir=data_dir
+            src,
+            target,
+            sample_rate=MODEL_SAMPLE_RATE,
+            mono=True,
+            data_dir=data_dir,
+            cancel_check=cancel_check,
         )
+    except VideoDubCancelled as exc:
+        raise DiarizationCancelled("Đã hủy phân tách người nói.") from exc
     except VideoDubError as exc:
         raise DiarizationError(str(exc)) from exc
     if expected is not None:
@@ -880,37 +888,22 @@ def _run_nemotron_gguf_diarization(
         if float(config.timeout_s) > 0
         else max(180.0, duration_s * 6.0 + 60.0)
     )
-    started = time.monotonic()
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        while True:
-            if cancel_check is not None and cancel_check():
-                proc.kill()
-                with contextlib.suppress(Exception):
-                    proc.communicate(timeout=2.0)
-                raise DiarizationCancelled("Đã hủy phân tách người nói.")
-            if time.monotonic() - started > timeout_s:
-                proc.kill()
-                with contextlib.suppress(Exception):
-                    proc.communicate(timeout=2.0)
-                raise DiarizationError(
-                    f"Phân tách người nói quá thời gian chờ ({timeout_s:.0f}s) — "
-                    "hãy thử video ngắn hơn hoặc chọn runtime CPU."
-                )
-            try:
-                stdout, stderr = proc.communicate(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        if proc.returncode != 0:
-            detail = (stderr or stdout or "").strip().splitlines()[-1:] or ["audiocpp_cli failed"]
+        try:
+            res = run_cli(cmd, timeout=timeout_s, cancel_check=cancel_check)
+        except CliCancelled as exc:
+            raise DiarizationCancelled("Đã hủy phân tách người nói.") from exc
+        except CliTimeout as exc:
+            raise DiarizationError(
+                f"Phân tách người nói quá thời gian chờ ({timeout_s:.0f}s) — "
+                "hãy thử video ngắn hơn hoặc chọn runtime CPU."
+            ) from exc
+        except OSError as exc:
+            # A runtime that cannot start (wrong architecture, no exec bit) is
+            # a diarization failure the auto chain can fall back from.
+            raise DiarizationError(f"Không thể chạy audiocpp_cli: {exc}") from exc
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["audiocpp_cli failed"]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
         if not turns_out.is_file():
             # Verified upstream: an empty result writes no turns file at all.
@@ -1013,7 +1006,9 @@ def diarize_cues(
 
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
     try:
-        wav_path, temp_dir_obj = _ensure_16k_wav(src, work_dir, data_dir, None)
+        wav_path, temp_dir_obj = _ensure_16k_wav(
+            src, work_dir, data_dir, None, cancel_check=cancel_check
+        )
 
         if cancel_check is not None and cancel_check():
             raise DiarizationCancelled("Đã hủy phân tách người nói.")

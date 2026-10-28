@@ -40,7 +40,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: -->
 
-- [ ] **Task 1.1: `core/processes.py` lookup/spawn helpers + child registry; migrate every native spawn (FR-2.1)**
+- [x] **Task 1.1: `core/processes.py` lookup/spawn helpers + child registry; migrate every native spawn (FR-2.1)**
   <!-- files: src/vienetts_app/core/processes.py, src/vienetts_app/core/video_dub.py, src/vienetts_app/core/asr.py, src/vienetts_app/core/diarization.py, src/vienetts_app/core/ai_models.py, tests/unit/test_processes.py, tests/unit/test_video_dub.py -->
   - Red tests:
     - **`find_executable`:** the order is managed dir → PATH → well-known dirs. Inject `well_known_dirs` and `sys.platform`, and use temp stub executables. A darwin stub in a fake `/opt/homebrew/bin` is found with `PATH=""`.
@@ -87,7 +87,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase1 -->
 
-- [ ] **Task 2.1: One busy owner — gate render/play/export vs AI; render from a snapshot (FR-1.1, H1)**
+- [~] **Task 2.1: One busy owner — gate render/play/export vs AI; render from a snapshot (FR-1.1, H1)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleActionDock.qml, src/vienetts_app/ui/qml/SubtitlesTab.qml, tests/unit/test_subtitle_controller.py, tests/unit/test_subtitle_components.py -->
   - Red tests:
     - While an injected slow AI runner is in flight, `render()`/`play()` start nothing and set `disabledReason`. While rendering or exporting, `transcribeVideo`/`diarizeSpeakers`/`refineWithLlm` and cue-mutating slots refuse.
@@ -293,7 +293,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [ ] **Task 6.1: Alignment fixes + contiguous merged-unit placement with snapped, faded splits (FR-5.2, FR-5.3)**
+- [~] **Task 6.1: Alignment fixes + contiguous merged-unit placement with snapped, faded splits (FR-5.2, FR-5.3)**
   <!-- files: src/vienetts_app/core/align.py, src/vienetts_app/core/subtitle_project.py, tests/unit/test_align.py, tests/unit/test_subtitle_project.py -->
   - Red tests (the reviewer repros become regression tests):
     - **Drift:** 4 adjacent 2 s cues with natural `[3500, 2000, 2000, 2000]` and cap 1.5 end within 150 ms of the last anchor.
@@ -331,7 +331,7 @@ Test seams and fakes:
   - Green implementation: parse `out_time_us`; probe duration whenever there is a progress callback; build the envelope (`asendcmd` or a gain track); add the limiter, the ISO 639-2/B map and the finalize stage.
   - ffmpeg-dependent assertions skip when ffmpeg is absent (existing marker), with stub-level coverage kept.
 
-- [ ] **Task 6.4: Subtitle parsing edge cases (FR-6.4)**
+- [~] **Task 6.4: Subtitle parsing edge cases (FR-6.4)**
   <!-- files: src/vienetts_app/core/subtitles.py, tests/unit/test_subtitles.py -->
   - Red tests:
     - **Sound cues:** `[door slams] Get out!` → no speaker, text `Get out!`. `(laughs)` / `[MUSIC PLAYING]` alone → non-speech, kept in transcript output and non-speakable.

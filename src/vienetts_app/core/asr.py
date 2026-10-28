@@ -13,10 +13,7 @@ import contextlib
 import json
 import os
 import re
-import subprocess
 import tempfile
-import threading
-import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -35,8 +32,9 @@ from vienetts_app.core.ai_models import (
 from vienetts_app.core.audio import StreamingWavWriter, read_wav_range, write_wav_file
 from vienetts_app.core.diarization import refine_cues_speech_bounds
 from vienetts_app.core.llm_client import http_error_detail
+from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
-from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
+from vienetts_app.core.video_dub import VideoDubCancelled, VideoDubError, extract_video_audio
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
 _WHISPER_PP_RE = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
@@ -627,80 +625,37 @@ def _run_whisper_cpp(
         if float(config.timeout_s) > 0
         else max(180.0, duration_s * 6.0 + 60.0)
     )
-    started = time.monotonic()
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
 
-    def _read_pipe(stream: Any, sink: list[str], *, parse_progress: bool = False) -> None:
-        if stream is None:
+    def _on_stderr_line(line: str) -> None:
+        if progress_cb is None:
             return
-        try:
-            for line in stream:
-                sink.append(line)
-                if parse_progress and progress_cb is not None:
-                    m = _WHISPER_PP_RE.search(line)
-                    if m is not None:
-                        pct = min(100, max(0, int(m.group(1))))
-                        progress_cb(
-                            min(0.95, 0.2 + 0.75 * (pct / 100.0)),
-                            "Đang chạy whisper.cpp…",
-                        )
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            with contextlib.suppress(Exception):
-                stream.close()
+        m = _WHISPER_PP_RE.search(line)
+        if m is not None:
+            pct = min(100, max(0, int(m.group(1))))
+            progress_cb(min(0.95, 0.2 + 0.75 * (pct / 100.0)), "Đang chạy whisper.cpp…")
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(binary.parent),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_lines), daemon=True)
-        t_err = threading.Thread(
-            target=_read_pipe,
-            args=(proc.stderr, stderr_lines),
-            kwargs={"parse_progress": True},
-            daemon=True,
-        )
-        t_out.start()
-        t_err.start()
-        while True:
-            if cancel_check is not None and cancel_check():
-                proc.kill()
-                with contextlib.suppress(Exception):
-                    proc.wait(timeout=1.0)
-                t_out.join(timeout=0.5)
-                t_err.join(timeout=0.5)
-                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
-            if time.monotonic() - started > timeout_s:
-                proc.kill()
-                with contextlib.suppress(Exception):
-                    proc.wait(timeout=1.0)
-                t_out.join(timeout=0.5)
-                t_err.join(timeout=0.5)
-                raise AsrError(
-                    f"whisper.cpp quá thời gian chờ ({timeout_s:.1f}s) — "
-                    "hãy thử mô hình nhẹ hơn hoặc chọn thiết bị CPU."
-                )
-            try:
-                proc.wait(timeout=0.05)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        t_out.join(timeout=1.0)
-        t_err.join(timeout=1.0)
-        stderr_text = "".join(stderr_lines)
-        stdout_text = "".join(stdout_lines)
-        if proc.returncode != 0:
-            detail = (stderr_text or stdout_text).strip().splitlines()[-1:] or [
-                "whisper-cli failed"
-            ]
+        try:
+            res = run_cli(
+                cmd,
+                cwd=binary.parent,
+                timeout=timeout_s,
+                cancel_check=cancel_check,
+                on_stderr_line=_on_stderr_line,
+            )
+        except CliCancelled as exc:
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.") from exc
+        except CliTimeout as exc:
+            raise AsrError(
+                f"whisper.cpp quá thời gian chờ ({timeout_s:.1f}s) — "
+                "hãy thử mô hình nhẹ hơn hoặc chọn thiết bị CPU."
+            ) from exc
+        except OSError as exc:
+            # A binary that cannot start (wrong architecture, no exec bit) is
+            # an ASR failure the auto chain can fall back from, not a crash.
+            raise AsrError(f"Không thể chạy whisper-cli: {exc}") from exc
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["whisper-cli failed"]
             raise AsrError(f"whisper.cpp thất bại: {detail[0]}")
         if not srt_out.is_file() or srt_out.stat().st_size == 0:
             if progress_cb is not None:
@@ -1009,6 +964,7 @@ def _ensure_16k_wav(
     temp_dir: tempfile.TemporaryDirectory[str] | None,
     *,
     progress_cb: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
     """Return a 16 kHz mono WAV for ``src``, converting and caching it with a sidecar."""
     if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
@@ -1052,8 +1008,15 @@ def _ensure_16k_wav(
     if src.suffix.lower() != ".wav" or not _convert_wav_to_16k_mono(src, target):
         try:
             extract_video_audio(
-                src, target, sample_rate=MODEL_SAMPLE_RATE, mono=True, data_dir=data_dir
+                src,
+                target,
+                sample_rate=MODEL_SAMPLE_RATE,
+                mono=True,
+                data_dir=data_dir,
+                cancel_check=cancel_check,
             )
+        except VideoDubCancelled as exc:
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.") from exc
         except VideoDubError as exc:
             raise AsrError(str(exc)) from exc
     if expected is not None:
@@ -1171,7 +1134,7 @@ def transcribe_media_to_cues(
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
     try:
         wav_path, temp_dir_obj = _ensure_16k_wav(
-            src, work_dir, data_dir, None, progress_cb=progress_cb
+            src, work_dir, data_dir, None, progress_cb=progress_cb, cancel_check=cancel_check
         )
         if cancel_check is not None and cancel_check():
             raise AsrCancelled("Đã hủy nhận diện giọng nói.")

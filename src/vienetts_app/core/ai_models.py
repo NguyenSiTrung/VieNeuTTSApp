@@ -30,6 +30,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from vienetts_app.core.managed_install import free_space_bytes, safe_remove
+from vienetts_app.core.processes import PROBE_TIMEOUT_S, find_executable, run_cli
 
 CHUNK_BYTES = 256 * 1024
 REPLACE_LOCK_ATTEMPTS = 5
@@ -431,14 +432,14 @@ def audiocpp_runtime_dir(data_dir: Path) -> Path:
 
 
 def resolve_audiocpp_cli(data_dir: Path | None = None) -> Path | None:
+    """Managed runtime first, then ``PATH``, then the well-known POSIX dirs."""
     if data_dir is not None:
         rt_dir = audiocpp_runtime_dir(data_dir)
         if rt_dir.is_dir():
             found = _locate_cli(rt_dir)
             if found is not None:
                 return found
-    on_path = shutil.which("audiocpp_cli")
-    return Path(on_path) if on_path else None
+    return find_executable("audiocpp_cli")
 
 
 def is_audiocpp_installed(data_dir: Path | None = None) -> bool:
@@ -588,20 +589,14 @@ def _probe_runtime(cli: Path, runtime_label: str = "audio.cpp") -> None:
     discovery locate sibling shared libraries.
     """
     try:
-        proc = subprocess.run(
-            cli_command(cli, "--help"),
-            cwd=str(cli.parent),
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = run_cli(cli_command(cli, "--help"), cwd=cli.parent, timeout=PROBE_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError) as exc:
         raise AiModelInstallError(
             f"Runtime {runtime_label} không chạy được trên máy này ({exc}). "
             "Hãy thử bản CPU nếu đang dùng bản GPU."
         ) from exc
     if proc.returncode not in (0, 1):
-        detail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip()
+        detail = (proc.stderr or proc.stdout or "").strip()
         raise AiModelInstallError(
             f"Runtime {runtime_label} tải về nhưng không khởi động được"
             + (f": {detail[:300]}" if detail else ".")
@@ -702,6 +697,11 @@ def _locate_whisper_cli(root: Path) -> Path | None:
 
 
 def resolve_whisper_cpp_cli(data_dir: Path | None = None) -> Path | None:
+    """Managed runtime first, then ``PATH``, then the well-known POSIX dirs.
+
+    The well-known dirs are where Homebrew's ``whisper-cpp`` lands, which a
+    Finder-launched macOS app does not have on its ``PATH``.
+    """
     if data_dir is not None:
         rt_dir = whisper_runtime_dir(data_dir)
         if rt_dir.is_dir():
@@ -714,9 +714,9 @@ def resolve_whisper_cpp_cli(data_dir: Path | None = None) -> Path | None:
         else ("whisper-cli", "whisper-cpp")
     )
     for name in names:
-        on_path = shutil.which(name)
-        if on_path:
-            return Path(on_path)
+        found = find_executable(name)
+        if found is not None:
+            return found
     return None
 
 

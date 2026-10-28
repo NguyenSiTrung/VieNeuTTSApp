@@ -58,7 +58,7 @@ import contextlib
 import datetime as _dt
 import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
@@ -85,6 +85,7 @@ from vienetts_app.core.diarization import (
     extract_speaker_reference_wav,
     refine_cues_speech_bounds,
     remap_speakers_to_previous,
+    select_speaker_reference_clip,
 )
 from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
@@ -123,7 +124,12 @@ from vienetts_app.core.video_dub import (
     mux_dubbed_video,
     supports_soft_subtitles,
 )
-from vienetts_app.ui.bg_ops import OrderedExecutor, SyncOrderedExecutor, run_on_thread_pool
+from vienetts_app.ui.bg_ops import (
+    OrderedExecutor,
+    ProgressRelay,
+    SyncOrderedExecutor,
+    run_on_thread_pool,
+)
 from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.playback import PlaybackController
 
@@ -164,6 +170,28 @@ def _default_player_factory() -> PlaybackController:
 
 def _default_store_factory(data_dir: Path) -> SubtitleProjectStore:
     return SubtitleProjectStore(Path(data_dir) / "subtitles")
+
+
+def _speaker_ref_key_path(ref_wav: Path) -> Path:
+    """Sidecar of ``ref_<speaker>.wav``: the key it was extracted under."""
+    return ref_wav.with_suffix(".key")
+
+
+def _speaker_ref_is_current(ref_wav: Path, key: str) -> bool:
+    """True when the cached reference clip was extracted under ``key`` (FR-1.3).
+
+    A clip with no sidecar (an older release, or an interrupted extraction)
+    is stale and gets re-extracted once.
+    """
+    if not key:
+        return False
+    try:
+        return (
+            ref_wav.stat().st_size > 0
+            and _speaker_ref_key_path(ref_wav).read_text(encoding="utf-8") == key
+        )
+    except OSError:
+        return False
 
 
 # Keys of one `cues` row — the roles of `cueModel`.
@@ -320,6 +348,18 @@ class SubtitleController(QObject):
         self._ai_progress = 0.0
         self._ai_generation = 0
         self._ai_cancel_flag = False
+        # FR-1.2: AI workers report stage/batch progress through this relay,
+        # which paints it on the GUI thread; a report whose op was cancelled
+        # or has finished (generation moved on, or no AI op busy) is dropped.
+        self._ai_progress_relay = ProgressRelay(
+            lambda: self._ai_generation if self._ai_busy else -1,
+            self._on_ai_progress,
+            self,
+        )
+        # FR-1.3: speaker auditions run on their own generation, so playing a
+        # sample never drops an AI op's result (or the reverse). A newer
+        # playback request supersedes a pending audition.
+        self._sample_generation = 0
         # FR-1.1: the staged change (None when nothing awaits confirmation),
         # and a change confirmed mid-render that runs when the render ends.
         self._pending_invalidation: _PendingInvalidation | None = None
@@ -2239,12 +2279,22 @@ class SubtitleController(QObject):
         if not wav.is_file():
             self._set_error(self.tr("Chưa có tệp âm thanh để phát."))
             return
+        self._sample_generation += 1  # the dub supersedes a pending audition
+        self._play_file(wav)
+
+    def _play_file(self, path: Path) -> bool:
+        """The guarded playback path shared by the dub track and auditions (L6).
+
+        A player that raises (no audio device, a broken backend) sets the
+        error banner instead of escaping the QML slot.
+        """
         self._reset_active_span()
         try:
-            self._player.play(str(wav))
+            return self._player.play(str(path)) is not False
         except Exception:  # noqa: BLE001 - playback must never crash the UI
             logger.exception("subtitle playback failed")
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
 
     @Slot()
     def pause(self) -> None:
@@ -2258,6 +2308,7 @@ class SubtitleController(QObject):
 
     @Slot()
     def stopPlay(self) -> None:
+        self._sample_generation += 1  # a pending audition must not start after this
         self._stop_playback()
 
     def _stop_playback(self) -> None:
@@ -2268,6 +2319,7 @@ class SubtitleController(QObject):
     @Slot()
     def notifyVideoPreviewPlaying(self) -> None:
         """Stop active dub or speaker-sample playback when source video playback begins."""
+        self._sample_generation += 1  # ... and keep a pending audition from starting
         if (
             self._player_state != "stopped"
             or str(getattr(self._player, "state", "stopped") or "stopped") != "stopped"
@@ -2673,6 +2725,28 @@ class SubtitleController(QObject):
         if prog_changed:
             self.aiProgressChanged.emit()
 
+    def _on_ai_progress(self, progress: float, stage_text: str) -> None:
+        """GUI-side end of ``_ai_progress_relay`` (live generation only)."""
+        self._set_ai_state(True, stage_text or self._ai_stage_text, progress)
+
+    def _begin_ai_op(self, stage_text: str, progress: float) -> int:
+        """Start an AI op on the GUI thread and return its generation.
+
+        The worker reports progress only through
+        ``self._ai_progress_relay.report(gen, …)`` — never ``_set_ai_state``
+        (FR-1.2) — and every delivery compares ``gen`` with
+        ``self._ai_generation``.
+        """
+        self._ai_generation += 1
+        gen = self._ai_generation
+        self._ai_cancel_flag = False
+        self._set_error("")
+        self._set_ai_state(True, stage_text, progress)
+        # Seeds the relay's high-water mark: a worker's first, smaller report
+        # (e.g. ASR's own 0.05) never moves the bar back.
+        self._ai_progress_relay.report(gen, progress, stage_text)
+        return gen
+
     @Slot()
     def cancelAiTask(self) -> None:
         """Cancel an in-flight ASR, diarization, or LLM refinement task."""
@@ -2712,27 +2786,19 @@ class SubtitleController(QObject):
         vpath = Path(vpath_str)
         asr_cfg = self._asr_config()
         diar_cfg = self._diarization_config()
-        self._ai_generation += 1
-        gen = self._ai_generation
-        self._ai_cancel_flag = False
-        self._set_error("")
-        self._set_ai_state(True, self.tr("Đang nhận diện giọng nói (ASR)…"), 0.05)
+        asr_text = self.tr("Đang nhận diện giọng nói (ASR)…")
+        diar_text = self.tr("Đang phân tách người nói…")
+        gen = self._begin_ai_op(asr_text, 0.05)
+        relay = self._ai_progress_relay
+        asr_share = 0.7 if with_diarization else 1.0
 
+        # Worker thread: only hop through the relay (FR-1.2). A report that
+        # lands after cancelAiTask() or the op's end is dropped on delivery.
         def report_asr(progress: float, msg: str) -> None:
-            # A cancelled generation must not repaint the progress bar: the
-            # queued call can land after cancelAiTask() reset the UI.
-            if gen != self._ai_generation:
-                return
-            self._set_ai_state(
-                True,
-                msg or self.tr("Đang nhận diện giọng nói (ASR)…"),
-                progress * (0.7 if with_diarization else 1.0),
-            )
+            relay.report(gen, progress * asr_share, msg or asr_text)
 
         def report_diar(progress: float) -> None:
-            if gen != self._ai_generation:
-                return
-            self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.7 + 0.3 * progress)
+            relay.report(gen, 0.7 + 0.3 * progress, diar_text)
 
         def work() -> tuple[list[Cue], str]:
             work_dir = self._media_cache_dir(vpath)
@@ -2828,16 +2894,12 @@ class SubtitleController(QObject):
 
         diar_cfg = self._diarization_config()
         cues_in = project.cues
-        self._ai_generation += 1
-        gen = self._ai_generation
-        self._ai_cancel_flag = False
-        self._set_error("")
-        self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1)
+        diar_text = self.tr("Đang phân tách người nói…")
+        gen = self._begin_ai_op(diar_text, 0.1)
+        relay = self._ai_progress_relay
 
-        def report_diar(progress: float) -> None:
-            if gen != self._ai_generation:
-                return
-            self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1 + 0.9 * progress)
+        def report_diar(progress: float) -> None:  # worker thread (FR-1.2)
+            relay.report(gen, 0.1 + 0.9 * progress, diar_text)
 
         def work() -> tuple[list[Cue], str]:
             notes: list[str] = []
@@ -2925,41 +2987,82 @@ class SubtitleController(QObject):
         self._stage_invalidation("cue_edit", self.tr("Sửa phụ đề"), apply)
         return True
 
+    def _speaker_ref_path(self, project_id: str, speaker: str) -> Path:
+        return self._store.project_dir(project_id) / f"ref_{sanitize_filename(speaker)}.wav"
+
+    @staticmethod
+    def _speaker_ref_key(media: str, cues: Sequence[Cue], speaker: str) -> str:
+        """Cache key of ``speaker``'s reference clip (FR-1.3).
+
+        The bounds the extractor would choose now plus the source's stat: a
+        cue/speaker edit that moves the chosen clip, or a replaced video,
+        makes a cached ``ref_<speaker>.wav`` stale. ``""`` when no clip can be
+        chosen (the extraction then reports why).
+        """
+        chosen = select_speaker_reference_clip(cues, speaker)
+        if chosen is None:
+            return ""
+        try:
+            source = Path(media).resolve()
+            stat = source.stat()
+        except OSError:
+            return ""
+        return f"{chosen[0]}-{chosen[1]}|{source}|{stat.st_size}|{stat.st_mtime_ns}"
+
+    def _extract_speaker_ref(
+        self, media: str, cues: Sequence[Cue], speaker: str, ref_out: Path, key: str
+    ) -> tuple[Path, str]:
+        """Worker thread: (re-)extract the reference clip, then record its key."""
+        key_path = _speaker_ref_key_path(ref_out)
+        with contextlib.suppress(OSError):
+            key_path.unlink(missing_ok=True)  # a half-written clip is never reused
+        result = extract_speaker_reference_wav(
+            media, cues, speaker, ref_out, data_dir=self._data_dir
+        )
+        if key:
+            with contextlib.suppress(OSError):
+                key_path.write_text(key, encoding="utf-8")
+        return result
+
     @Slot(str, result=bool)
     def playSpeakerSample(self, speaker: str) -> bool:
-        """Extract (or reuse) a short reference clip for ``speaker`` and audition it."""
+        """Extract (or reuse) a short reference clip for ``speaker`` and audition it.
+
+        Returns False when nothing could be started (no source, or the player
+        refused the cached clip); otherwise the extraction runs off-thread.
+        """
         project = self._project
         spk = (speaker or "").strip()
         vpath = self.videoPath
         if project is None or not spk or not vpath or not Path(vpath).is_file():
             self._set_error(self.tr("Cần video nguồn để nghe mẫu giọng của người nói."))
             return False
-        ref_out = self._store.project_dir(project.id) / f"ref_{sanitize_filename(spk)}.wav"
+        ref_out = self._speaker_ref_path(project.id, spk)
+        key = self._speaker_ref_key(vpath, project.cues, spk)
         self._set_error("")
-        if ref_out.is_file() and ref_out.stat().st_size > 0:
-            self._stop_playback()
-            self._player.play(str(ref_out))
-            return True
+        # FR-1.3: the audition's own generation — it used to bump the shared
+        # _ai_generation and so dropped a running AI op's result (L6b).
+        self._sample_generation += 1
+        gen = self._sample_generation
+        if _speaker_ref_is_current(ref_out, key):
+            return self._play_file(ref_out)
         project_id = project.id
         cues = project.cues
-        self._ai_generation += 1
-        gen = self._ai_generation
 
         def work() -> Path:
             # ffmpeg extraction used to block the GUI thread on first audition.
-            extract_speaker_reference_wav(vpath, cues, spk, ref_out, data_dir=self._data_dir)
+            self._extract_speaker_ref(vpath, cues, spk, ref_out, key)
             return ref_out
 
         def done(path: Path) -> None:
-            if gen != self._ai_generation:
+            if gen != self._sample_generation:
                 return
             if self._project is None or self._project.id != project_id:
                 return
-            self._stop_playback()
-            self._player.play(str(path))
+            self._play_file(path)
 
         def failed(exc: BaseException) -> None:
-            if gen != self._ai_generation:
+            if gen != self._sample_generation:
                 return
             self._set_error(str(exc))
 
@@ -2997,17 +3100,15 @@ class SubtitleController(QObject):
             return False
 
         name = (clone_name or "").strip() or f"{project.title}_{spk}"
-        ref_out = self._store.project_dir(project.id) / f"ref_{sanitize_filename(spk)}.wav"
+        ref_out = self._speaker_ref_path(project.id, spk)
         cues_in = project.cues
-        self._ai_generation += 1
-        gen = self._ai_generation
-        self._set_error("")
-        self._set_ai_state(True, self.tr("Đang trích xuất mẫu giọng {spk}…").format(spk=spk), 0.2)
+        key = self._speaker_ref_key(vpath, cues_in, spk)
+        gen = self._begin_ai_op(self.tr("Đang trích xuất mẫu giọng {spk}…").format(spk=spk), 0.2)
 
         def work() -> tuple[Path, str]:
-            return extract_speaker_reference_wav(
-                vpath, cues_in, spk, ref_out, data_dir=self._data_dir
-            )
+            # Always re-extracted (the enrollment needs the transcript); the
+            # recorded key lets a later audition reuse this clip.
+            return self._extract_speaker_ref(vpath, cues_in, spk, ref_out, key)
 
         def done(res: tuple[Path, str]) -> None:
             if gen != self._ai_generation:
@@ -3082,17 +3183,14 @@ class SubtitleController(QObject):
         lang = "vi" if raw_lang.lower() == "auto" else raw_lang
         rate_cap = float(project.policy.rate_cap)
 
-        self._ai_generation += 1
-        gen = self._ai_generation
-        self._ai_cancel_flag = False
-        self._set_error("")
         stage_map = {
             "refine_asr": self.tr("Đang làm sạch phụ đề & người nói (LLM)…"),
             "fit_timing": self.tr("Đang rút gọn phụ đề khớp thời gian (LLM)…"),
             "translate_dub": self.tr("Đang dịch phụ đề khớp thời gian (LLM)…"),
         }
         stage_text = stage_map.get(task, stage_map["refine_asr"])
-        self._set_ai_state(True, stage_text, 0.1)
+        gen = self._begin_ai_op(stage_text, 0.1)
+        relay = self._ai_progress_relay
 
         def work() -> list[Cue]:
             return refine_cues_with_llm(
@@ -3103,7 +3201,9 @@ class SubtitleController(QObject):
                 rate_cap=rate_cap,
                 glossary=glossary,
                 notes=notes,
-                progress_cb=lambda p: self._set_ai_state(True, stage_text, 0.1 + 0.9 * p),
+                # H2: this ran _set_ai_state on the worker, unchecked — a
+                # batch finishing after cancelAiTask() re-latched aiBusy.
+                progress_cb=lambda p: relay.report(gen, 0.1 + 0.9 * p, stage_text),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
 

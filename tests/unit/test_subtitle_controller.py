@@ -9,6 +9,7 @@ all exercised without an engine or an audio device.
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Property, QObject, Signal
+from PySide6.QtCore import Property, QCoreApplication, QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, write_wav_file
@@ -140,14 +141,19 @@ class IdentifiedApp(FakeApp):
 
 
 def make_controller(
-    tmp_path: Path, fake: FakeApp, player: FakePlayer, *, unit_executor: Any = None
+    tmp_path: Path,
+    fake: FakeApp,
+    player: FakePlayer,
+    *,
+    unit_executor: Any = None,
+    bg_runner: Any = run_sync,
 ) -> SubtitleController:
     return SubtitleController(
         fake,
         data_dir=tmp_path,
         player_factory=lambda: player,
         store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
-        bg_runner=run_sync,
+        bg_runner=bg_runner,
         unit_executor=SyncOrderedExecutor() if unit_executor is None else unit_executor,
     )
 
@@ -2234,6 +2240,158 @@ def test_busy_owners_refuse_each_other_with_a_reason(tmp_path):
     assert controller.exporting is False
     refused(ai_reason)
     assert len({ai_reason, render_reason, export_reason}) == 3
+
+
+def test_ai_progress_reaches_the_gui_thread_only_for_the_live_op(qcoreapp, tmp_path, monkeypatch):
+    # FR-1.2 / H2: AI workers report through a generation-checked relay, so
+    # `_set_ai_state` only ever runs on the GUI thread and a report from a
+    # cancelled op never switches `aiBusy` back on.
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importVideo(str(video)) is True
+    calls: list[tuple[bool, bool, float]] = []
+    set_ai_state = controller._set_ai_state  # noqa: SLF001
+
+    def spy(busy: bool, stage_text: str = "", progress: float = 0.0) -> None:
+        on_gui = threading.current_thread() is threading.main_thread()
+        calls.append((on_gui, busy, round(progress, 3)))
+        set_ai_state(busy, stage_text, progress)
+
+    monkeypatch.setattr(controller, "_set_ai_state", spy)
+
+    def transcribe(path, cfg, *, progress_cb, **kw):
+        progress_cb(0.5, "Đang nhận diện…")
+        return [Cue(1, 0, 1500, "Xin chào")]
+
+    def diarize(path, cues, cfg=None, *, progress_cb, **kw):
+        progress_cb(0.5)
+        return [replace(cue, speaker="SPEAKER_01") for cue in cues]
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.transcribe_media_to_cues", transcribe)
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", diarize)
+
+    def start_worker(work: Any) -> tuple[threading.Thread, list[Any]]:
+        out: list[Any] = []
+        thread = threading.Thread(target=lambda: out.append(work()))
+        thread.start()
+        return thread, out
+
+    # ── ASR then diarization progress: queued off the worker, painted on the GUI ──
+    assert controller.transcribeVideo(True) is True
+    work, done, _ = runner.calls[-1]
+    thread, out = start_worker(work)
+    thread.join(10)
+    assert out and all(on_gui for on_gui, _, _ in calls)  # nothing ran on the worker
+    painted = len(calls)
+    QCoreApplication.sendPostedEvents()
+    assert calls[painted:] == [(True, True, 0.35), (True, True, 0.85)]
+    assert controller.aiProgress == pytest.approx(0.85)
+    done(out[0])
+    assert controller.aiBusy is False and controller.hasSpeakers is True
+
+    # ── LLM batches reported around cancelAiTask() are dropped ──
+    reported, resume = threading.Event(), threading.Event()
+
+    def refine(cues, cfg, *, progress_cb, **kw):
+        progress_cb(0.2)  # queued before the cancel, delivered after it
+        reported.set()
+        assert resume.wait(5)
+        progress_cb(0.9)  # reported after the cancel
+        return [replace(cue, text="Đã hủy") for cue in cues]
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.refine_cues_with_llm", refine)
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    work, done, _ = runner.calls[-1]
+    thread, out = start_worker(work)
+    assert reported.wait(5)
+    controller.cancelAiTask()
+    resume.set()
+    thread.join(10)
+    QCoreApplication.sendPostedEvents()
+    assert controller.aiBusy is False and controller.aiProgress == 0.0
+    assert all(on_gui for on_gui, _, _ in calls)
+    done(out[0])  # the cancelled op's result is dropped too
+    assert controller.aiBusy is False and controller.cues[0]["text"] == "Xin chào"
+
+
+def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_path, monkeypatch):
+    # FR-1.3 / L6: an audition never touches the AI generation, re-extracts its
+    # cached clip only when the chosen bounds or the video change, and plays
+    # through the same guard as the dub track.
+    runner = _DeferredRunner()
+    player = FakePlayer()
+    controller = make_controller(tmp_path, FakeApp(), player, bg_runner=runner)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.importVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+    assert controller.updateCue(1, "Tạm biệt", "SPEAKER_01") is True
+    extracted: list[tuple[int, int]] = []
+
+    def extract(vpath, cues, spk, out, **kw):
+        spoken = [cue for cue in cues if cue.speaker == spk]
+        extracted.append((spoken[0].start_ms, spoken[0].end_ms))
+        write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000)
+        return Path(out), spoken[0].text
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav", extract
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [replace(cue, text=cue.text + "!") for cue in cues],
+    )
+
+    def finish(call: tuple[Any, Any, Any]) -> None:
+        work, done, _ = call
+        done(work())
+
+    # An AI op started during the extraction completes normally, and the
+    # audition still plays: neither invalidates the other.
+    ai_generation = controller._ai_generation  # noqa: SLF001
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    assert controller._ai_generation == ai_generation  # noqa: SLF001
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    sample_op, ai_op = runner.calls[-2:]
+    finish(ai_op)
+    assert controller.aiBusy is False and controller.cues[0]["text"] == "Xin chào!"
+    finish(sample_op)
+    assert extracted == [(0, 2000)] and len(player.played) == 1
+    ref = player.played[0]
+
+    # Reused while the chosen bounds and the video stay put (a text-only edit
+    # keeps them) …
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    assert player.played == [ref, ref] and extracted == [(0, 2000)]
+    # … re-extracted once the chosen clip moves, or the video changes.
+    assert controller.updateCue(0, "Xin chào!", "") is True
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    finish(runner.calls[-1])
+    video.write_bytes(b"fake_mp4, re-encoded")
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    finish(runner.calls[-1])
+    assert extracted == [(0, 2000), (3000, 5000), (3000, 5000)]
+    assert player.played == [ref] * 4
+
+    # A newer playback request supersedes a pending audition …
+    video.write_bytes(b"fake_mp4, edited again")
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    controller.stopPlay()
+    finish(runner.calls[-1])
+    assert len(player.played) == 4
+    # … and a player that raises is contained by the guarded playback path.
+
+    def broken_play(path: Any, on_released: Any = None) -> bool:
+        raise RuntimeError("no audio device")
+
+    monkeypatch.setattr(player, "play", broken_play)
+    assert controller.playSpeakerSample("SPEAKER_01") is False  # the cached clip
+    assert controller.errorText == "Hệ thống này không phát được âm thanh."
 
 
 def test_notice_level_separates_errors_from_info(env, tmp_path):

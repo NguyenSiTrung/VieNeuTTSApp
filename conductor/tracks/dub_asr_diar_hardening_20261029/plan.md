@@ -100,7 +100,7 @@ Test seams and fakes:
     - Make `_can_apply_now()` render-aware.
     - Add the QML `enabled` bindings: Render, Play and Export at `SubtitleActionDock.qml:107`, `:146` and `:170`; the delete button at `SubtitlesTab.qml:266`.
 
-- [~] **Task 2.2: GUI-thread, generation-checked AI progress; per-op generations; guarded sample playback (FR-1.2, FR-1.3, H2, L6)**
+- [x] **Task 2.2: GUI-thread, generation-checked AI progress; per-op generations; guarded sample playback (FR-1.2, FR-1.3, H2, L6)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - An LLM `progress_cb` invoked from a worker thread after `cancelAiTask()` leaves `aiBusy` False.
@@ -112,7 +112,7 @@ Test seams and fakes:
     - Route every AI progress and result through `ProgressRelay`. This replaces the worker-thread `_set_ai_state` calls in `report_asr`/`report_diar` (`:2609-2623`) and in the LLM `progress_cb` lambda (`:2998`).
     - Add `_sample_generation` and a sidecar key for reference clips.
 
-- [ ] **Task 2.3: Project switch, removal, cancel & shutdown; `projectsChanged` (FR-1.4, FR-1.5, FR-1.9 part, M1, M2, M4, M7, L2)**
+- [~] **Task 2.3: Project switch, removal, cancel & shutdown; `projectsChanged` (FR-1.4, FR-1.5, FR-1.9 part, M1, M2, M4, M7, L2)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Import during ASR:** `importSrt` while a fake ASR runs cancels it; its `done` is dropped and the imported project stays.
@@ -161,7 +161,7 @@ Test seams and fakes:
     - Reuse the NVIDIA probe from `detect_hardware`.
     - Record the real sizes and SHA-256 values of the VAD and ONNX model files during this task.
 
-- [ ] **Task 3.2: Opt-in `media-runtime-build.yml` + lock/render scripts (FR-2.6)**
+- [~] **Task 3.2: Opt-in `media-runtime-build.yml` + lock/render scripts (FR-2.6)**
   <!-- files: .github/workflows/media-runtime-build.yml, packaging/media-runtime-requirements.json, scripts/lock_media_runtime.py, scripts/render_media_runtime_manifests.py, tests/unit/test_media_runtime_manifest.py -->
   <!-- depends: task1 -->
   - Red tests:
@@ -178,7 +178,7 @@ Test seams and fakes:
     - ffmpeg jobs fetch pinned upstream static builds, verify upstream checksums, add `LICENSE`/`SOURCE.txt`, and probe `-encoders`/`-filters`. Candidates are BtbN FFmpeg-Builds (GPL, win64/linux64/linuxarm64) and ffmpeg.martin-riedl.de (macOS); record the final picks in the requirements file.
     - Then lock → render → upload artifacts. With `publish=true`, push packs to gh-pages and commit the manifest to main, mirroring `qwen-gguf-runtime-build.yml`.
 
-- [ ] **Task 3.3: AppController runtime/model surface, `asr_cloud_fallback` setting, thread-safe download progress (FR-2.5, FR-3.4 setting, FR-1.2 downloads)**
+- [~] **Task 3.3: AppController runtime/model surface, `asr_cloud_fallback` setting, thread-safe download progress (FR-2.5, FR-3.4 setting, FR-1.2 downloads)**
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/core/models.py, src/vienetts_app/core/settings.py, tests/unit/test_controller.py, tests/unit/test_settings.py -->
   <!-- depends: task1 -->
   - Red tests:
@@ -196,7 +196,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase1, phase3 -->
 
-- [ ] **Task 4.1: whisper.cpp invocation — `-mc 0`, Silero `--vad`, JSON-full word timings, cache-dir outputs, `asr_version` (FR-3.1)**
+- [~] **Task 4.1: whisper.cpp invocation — `-mc 0`, Silero `--vad`, JSON-full word timings, cache-dir outputs, `asr_version` (FR-3.1)**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   - Red tests (the stub `whisper-cli` records argv and writes `<prefix>.json` in JSON-full shape):
     - argv has `-mc 0` and `-ojf`, plus `--vad -vm <path>` exactly when the VAD model file exists.

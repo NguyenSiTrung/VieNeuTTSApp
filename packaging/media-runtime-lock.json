@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "packs": {
+    "whisper_cpp/macos-arm64-metal": {
+      "runtime": "whisper_cpp",
+      "cell": "macos-arm64-metal",
+      "path": "media/whisper_cpp/macos-arm64-metal/whisper-cli-b5454-macos-arm64-metal-4ad11e85c242.tar.gz",
+      "archive": "tar.gz",
+      "version": "b5454",
+      "size": 2085387,
+      "sha256": "4ad11e85c2421a641e061d89ca9739c79add4cdebbcbcf7d674fe8532690e339",
+      "specDigest": "c06c1d9b394696b56b4ada41308ea950c5a04a08025c5711347ecf175524d84f",
+      "upstream": {
+        "repo": "ggml-org/whisper.cpp",
+        "tag": "b5454",
+        "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+        "licenseFile": "LICENSE"
+      }
+    },
+    "whisper_cpp/macos-x64-cpu": {
+      "runtime": "whisper_cpp",
+      "cell": "macos-x64-cpu",
+      "path": "media/whisper_cpp/macos-x64-cpu/whisper-cli-b5454-macos-x64-cpu-d2ef81e05fc0.tar.gz",
+      "archive": "tar.gz",
+      "version": "b5454",
+      "size": 1332805,
+      "sha256": "d2ef81e05fc0931c6179e4bd2659e619bf6d778d25d51f53f2aecdf971badb72",
+      "specDigest": "04a1948b673b0c624cbff10a06ec161c32d4eaa076bc3c0fae1e33c799f20438",
+      "upstream": {
+        "repo": "ggml-org/whisper.cpp",
+        "tag": "b5454",
+        "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+        "licenseFile": "LICENSE"
+      }
+    }
+  }
+}

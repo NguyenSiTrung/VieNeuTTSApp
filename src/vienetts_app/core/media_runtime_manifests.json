@@ -5,20 +5,20 @@
     "whisper_cpp": {
       "cells": {
         "macos-arm64-metal": {
-          "published": false,
-          "url": "",
-          "size": 0,
-          "sha256": "",
+          "published": true,
+          "url": "https://nguyensitrung.github.io/VieNeuTTSApp/packs/media/whisper_cpp/macos-arm64-metal/whisper-cli-b5454-macos-arm64-metal-4ad11e85c242.tar.gz",
+          "size": 2085387,
+          "sha256": "4ad11e85c2421a641e061d89ca9739c79add4cdebbcbcf7d674fe8532690e339",
           "archive": "tar.gz",
           "version": "b5454",
           "license": "MIT",
           "source": "https://github.com/ggml-org/whisper.cpp/tree/b5454"
         },
         "macos-x64-cpu": {
-          "published": false,
-          "url": "",
-          "size": 0,
-          "sha256": "",
+          "published": true,
+          "url": "https://nguyensitrung.github.io/VieNeuTTSApp/packs/media/whisper_cpp/macos-x64-cpu/whisper-cli-b5454-macos-x64-cpu-d2ef81e05fc0.tar.gz",
+          "size": 1332805,
+          "sha256": "d2ef81e05fc0931c6179e4bd2659e619bf6d778d25d51f53f2aecdf971badb72",
           "archive": "tar.gz",
           "version": "b5454",
           "license": "MIT",

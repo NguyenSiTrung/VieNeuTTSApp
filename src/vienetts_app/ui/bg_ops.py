@@ -3,13 +3,25 @@
 Document imports (.docx/.pdf lazy-import + parse) and file exports (WAV
 writes up to hundreds of MB) used to run inside QML slots — the window
 froze for the whole parse/write with no busy state and no way to interact.
-``submit_off_thread`` runs the callable on the global Qt thread pool and
+``run_on_thread_pool`` runs the callable on the global Qt thread pool and
 marshals the result back to the GUI thread through a queued signal, where
 controllers flip state/emit their own signals.
 
 The runner is injectable (``bg_runner`` on the controllers): production
 uses the thread pool; tests inject ``run_sync`` for deterministic,
 inline-completing calls.
+
+Each op gets a private ``_OneShotBridge``. Once it has delivered success or
+error it drops its ``work``/``on_done``/``on_error`` references (and so
+everything their closures capture) and ``deleteLater()``s itself — a long
+session must not keep one live bridge per finished op under its parent.
+
+``ProgressRelay`` is the matching hop for *progress*: workers call
+``report(generation, value, text)`` from any thread and the GUI-side
+``on_progress(value, text)`` callback runs on the GUI thread, only while
+``generation`` is still the op's current one, with values kept monotonic
+within a generation. AI stage/batch progress and model/runtime download
+progress route through it so no worker thread touches controller state.
 """
 
 from __future__ import annotations
@@ -50,16 +62,19 @@ class _OneShotBridge(QObject):
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         super().__init__(parent)
-        self._work = work
-        self._on_done = on_done
+        self._work: Callable[[], T] | None = work
+        self._on_done: Callable[[T], None] | None = on_done
         self._on_error = on_error
         self.completed.connect(self._deliver)  # queued from the pool thread
 
     def run_work(self) -> None:
+        # One-shot: the closure (and what it captures) is released as soon
+        # as it has run, not only after the GUI thread got the result.
+        work, self._work = self._work, None
         # A RuntimeError here means the bridge's parent was destroyed
         # mid-flight (app quitting) — the result is simply dropped.
         try:
-            result = self._work()
+            result = work()  # type: ignore[misc]
         except Exception as exc:  # noqa: BLE001 - marshal, never drop
             with contextlib.suppress(RuntimeError):
                 self.completed.emit((False, exc))
@@ -69,12 +84,35 @@ class _OneShotBridge(QObject):
 
     def _deliver(self, envelope: object) -> None:
         ok, payload = envelope  # type: ignore[misc]
-        if ok:
-            self._on_done(payload)  # type: ignore[arg-type]
-        elif self._on_error is not None:
-            self._on_error(payload)  # type: ignore[arg-type]
-        else:
-            logger.exception("background operation failed", exc_info=payload)
+        try:
+            if ok:
+                self._on_done(payload)  # type: ignore[misc, arg-type]
+            elif self._on_error is not None:
+                self._on_error(payload)  # type: ignore[arg-type]
+            else:
+                logger.exception("background operation failed", exc_info=payload)
+        finally:
+            # Also on a raising callback: drop every closure and free the
+            # QObject (FR-1.8) — see the module docstring.
+            self._work = self._on_done = self._on_error = None
+            self.deleteLater()
+
+
+class _BridgeJob(QRunnable):
+    """Pool job for one bridge; lets go of the bridge as soon as it starts.
+
+    Module-level on purpose: a per-call ``QRunnable`` subclass sits in a
+    reference cycle and would pin its bridge until the cyclic GC runs.
+    """
+
+    def __init__(self, bridge: _OneShotBridge) -> None:
+        super().__init__()
+        self._bridge: _OneShotBridge | None = bridge
+
+    def run(self) -> None:
+        bridge, self._bridge = self._bridge, None
+        if bridge is not None:
+            bridge.run_work()
 
 
 def run_on_thread_pool(
@@ -91,12 +129,7 @@ def run_on_thread_pool(
     without it the failure is logged and ``on_done`` is skipped.
     """
     bridge = _OneShotBridge(work, on_done, parent, on_error=on_error)
-
-    class _Job(QRunnable):
-        def run(self) -> None:
-            bridge.run_work()
-
-    QThreadPool.globalInstance().start(_Job())
+    QThreadPool.globalInstance().start(_BridgeJob(bridge))
 
 
 def run_sync(
@@ -106,9 +139,61 @@ def run_sync(
     *,
     on_error: Callable[[BaseException], None] | None = None,
 ) -> None:
-    """Test runner: work + delivery inline on the calling thread."""
-    bridge = _OneShotBridge(work, on_done, parent, on_error=on_error)
-    bridge.run_work()
+    """Test runner: work + delivery inline on the calling thread.
+
+    The bridge still ``deleteLater()``s itself, so it is freed the next time
+    the event loop (or ``sendPostedEvents(None, DeferredDelete)``) runs.
+    """
+    _OneShotBridge(work, on_done, parent, on_error=on_error).run_work()
+
+
+class ProgressRelay(QObject):
+    """Thread-safe, generation-checked progress hop onto the GUI thread.
+
+    Construct it on the GUI thread with the op's generation getter and the
+    GUI-side ``on_progress(value, text)`` callback; workers call
+    :meth:`report` from any thread. Reports from another thread are queued
+    to the relay's home thread; a report made on the home thread itself is
+    delivered inline, so ``run_sync``-driven tests stay synchronous and
+    ordered.
+
+    * **Generation check at delivery.** A report whose generation is not
+      ``current_generation()`` *when it is delivered* is dropped, so one
+      queued before a cancel/finish/project switch never repaints a reset
+      UI. Bump the op's generation on cancel and finish, or make the getter
+      return a value no op uses (e.g. ``-1``) while idle.
+    * **Monotonic within a generation.** A value lower than the last one
+      delivered for the same generation is clamped up to it (its text is
+      still shown, so a stage message is never lost and the bar never jumps
+      back). A new generation starts a fresh high-water mark.
+    """
+
+    _reported = Signal(int, float, str)
+
+    def __init__(
+        self,
+        current_generation: Callable[[], int],
+        on_progress: Callable[[float, str], None],
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._current_generation = current_generation
+        self._on_progress = on_progress
+        self._high_water: tuple[int, float] | None = None  # (generation, value)
+        self._reported.connect(self._deliver)  # queued when sent from a worker
+
+    def report(self, generation: int, value: float, text: str = "") -> None:
+        """Send one progress update for ``generation``; any thread."""
+        with contextlib.suppress(RuntimeError):  # relay destroyed (app quitting)
+            self._reported.emit(generation, value, text)
+
+    def _deliver(self, generation: int, value: float, text: str) -> None:
+        if generation != self._current_generation():
+            return
+        if self._high_water is not None and self._high_water[0] == generation:
+            value = max(value, self._high_water[1])
+        self._high_water = (generation, value)
+        self._on_progress(value, text)
 
 
 class OrderedExecutor(QObject):

@@ -129,3 +129,12 @@ Reviewer repros for the alignment and merged-unit fixes are written as the Task 
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## 2026-10-29 - Phase 1 Task 1.2: `_OneShotBridge` hygiene + `ProgressRelay`
+- **Implemented:** `_OneShotBridge` drops `work`/`on_done`/`on_error` in `finally` and `deleteLater()`s itself (1,000 ops → ≤ 1 live bridge, captured objects freed by refcount alone); module-level `_BridgeJob` replaces the per-call `QRunnable` closure class; new `ProgressRelay(current_generation, on_progress)` — `report()` from any thread, generation checked **at delivery**, values clamped monotonic per generation (text still shown).
+- **Files changed:** `ui/bg_ops.py`, `tests/unit/test_bg_ops.py`, `tests/smoke/test_ui_studio.py` (driver fix).
+- **Learnings:**
+  - Patterns: `ProgressRelay` uses AutoConnection — worker reports queue to the GUI thread, GUI-thread reports deliver inline, so `run_sync`-driven controller tests stay ordered. Callers make finished/cancelled ops stale by bumping the generation (or returning `-1` while idle); the relay does not track "finished".
+  - Gotchas: `processEvents()` outside `exec()` never runs `DeferredDelete` — tests call `QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)`. A per-call `class _Job(QRunnable)` closure is a reference cycle that pins captures until a GC pass. A stored exception's traceback pins `work`'s frames — leak tests must not keep it.
+  - Gotchas: the studio smoke driver's `items()` sorts by scene position; on offscreen, polish runs off a timer-driven `UpdateRequest`, so fresh Repeater delegates could still sit at (0, 0) after 4 `processEvents()` rounds (`chip_checked` flaked 1/3 at HEAD and failed 3/3 once bridges posted `DeferredDelete`s). Call `item.ensurePolished()` on the walked tree before sorting by position.
+  - Context: repo `addopts` has `-n auto`, so `-p no:xdist` errors — use `-n 0` for a serial run.

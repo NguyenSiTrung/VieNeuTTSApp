@@ -200,7 +200,12 @@ DRIVER = textwrap.dedent(
 
 
     def items(name):
-        found = [i for i in walk(studio_tab) if i.objectName() == name]
+        tree = walk(studio_tab)
+        # Sorting reads positions: run pending polishes (Flow/Row layout) first,
+        # or fresh Repeater delegates can still share (0, 0) on offscreen.
+        for it in tree:
+            it.ensurePolished()
+        found = [i for i in tree if i.objectName() == name]
         found.sort(key=lambda i: (float(i.mapToScene(QPointF(0, 0)).y()),
                                   float(i.mapToScene(QPointF(0, 0)).x())))
         return found

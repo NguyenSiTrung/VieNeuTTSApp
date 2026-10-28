@@ -59,7 +59,7 @@ Test seams and fakes:
     - `resolve_ffmpeg`/`resolve_ffprobe`/`resolve_whisper_cpp_cli`/the audiocpp lookup call `find_executable`.
     - Keep `cli_command()`'s shebang dispatch.
 
-- [ ] **Task 1.2: `_OneShotBridge` hygiene + GUI-thread `ProgressRelay` (FR-1.2 infrastructure, FR-1.8)**
+- [x] **Task 1.2: `_OneShotBridge` hygiene + GUI-thread `ProgressRelay` (FR-1.2 infrastructure, FR-1.8)**
   <!-- files: src/vienetts_app/ui/bg_ops.py, tests/unit/test_bg_ops.py -->
   - Red tests (`qcoreapp` fixture, pump `processEvents`):
     - After 1,000 `run_on_thread_pool` ops (success and error mixed), the parent has ≤ 1 `_OneShotBridge` child, and a `weakref` to an object captured by `work` dies after delivery.

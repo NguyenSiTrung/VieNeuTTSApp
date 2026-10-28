@@ -135,10 +135,11 @@ logger = logging.getLogger(__name__)
 # ``test_every_property_is_consumed_or_api_only`` asserts this list stays exact.
 #  - state: the canonical derived state machine (QML gates on the mutually
 #    exclusive primitives that derive it; busyOwner is read by the dock).
-#  - title / sourcePath / videoPath / cueCount / cues / policySummary: project
+#  - title / sourcePath / cueCount / cues / policySummary: project
 #    metadata for hosts (Studio opens a project by id, not by parsing QML).
-#  - durationMs / positionMs / activeCharStart / activeCharEnd: transport
-#    position API used by Python consumers; the card shows activeCue instead.
+#  - activeCharStart / activeCharEnd: word-level transport position API used by
+#    Python consumers; the card and video preview read activeCue, positionMs,
+#    and durationMs.
 #  - invalidationReason / exportBlockedReason: machine-readable companions to
 #    the human-readable invalidationMessage and export gating.
 API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
@@ -147,16 +148,12 @@ API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
         "activeCharStart",
         "cueCount",
         "cues",
-        "durationMs",
         "exportBlockedReason",
         "invalidationReason",
         "policySummary",
-        "positionMs",
         "sourcePath",
         "state",
         "title",
-        "videoPath",
-        "videoUrl",
     }
 )
 
@@ -170,8 +167,11 @@ def _default_store_factory(data_dir: Path) -> SubtitleProjectStore:
 
 
 # Keys of one `cues` row — the roles of `cueModel`.
+# Note: `"index"` is intentionally omitted from roleNames() because QtQuick
+# ListView reserves `index` for the 0-based delegate row index; `DictListModel`
+# still keys diffs on `row["index"]` and `modelData.index` carries the 1-based
+# SRT sequence number.
 CUE_ROLES = (
-    "index",
     "startMs",
     "endMs",
     "startLabel",

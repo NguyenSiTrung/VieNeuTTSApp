@@ -22,7 +22,7 @@ AppCard {
     elevation: 0
     cardColor: Theme.surfaceAlt
     cardBorderColor: Theme.borderSubtle
-    cardPadding: Theme.spacingSm
+    cardPadding: 6
 
     property bool shown: true
     property bool available: typeof subtitleController !== "undefined"
@@ -37,16 +37,12 @@ AppCard {
     property string busyReason: ""
     property string stageName: "source"
     property bool compact: false
-    property string videoName: root.ctrl ? String(subtitleController.videoName || "") : ""
-    property string videoPath: root.ctrl && root.ctrl.videoPath !== undefined
-        ? String(root.ctrl.videoPath || "") : ""
-    property string videoUrl: root.ctrl && root.ctrl.videoUrl !== undefined
-        ? String(root.ctrl.videoUrl || "") : ""
-    property int dubPositionMs: root.ctrl && root.ctrl.positionMs !== undefined
-        ? Number(root.ctrl.positionMs || 0) : 0
-    property int dubDurationMs: root.ctrl && root.ctrl.durationMs !== undefined
-        ? Number(root.ctrl.durationMs || 0) : 0
-    readonly property string dubPlayerState: root.ctrl
+    property string videoName: root.available ? String(subtitleController.videoName || "") : ""
+    property string videoPath: root.available ? String(subtitleController.videoPath || "") : ""
+    property string videoUrl: root.available ? String(subtitleController.videoUrl || "") : ""
+    property int dubPositionMs: root.available ? Number(subtitleController.positionMs || 0) : 0
+    property int dubDurationMs: root.available ? Number(subtitleController.durationMs || 0) : 0
+    readonly property string dubPlayerState: root.available
         ? String(subtitleController.playerState || "stopped") : "stopped"
 
     property string preferredAudioMode: "source"
@@ -64,6 +60,7 @@ AppCard {
     property int _lastRequestedPositionMs: 0
     property int _cueRevision: 0
     property bool _released: false
+    property bool _audioOutputRequested: false
 
     readonly property string mediaSourceString: mediaPlayer.source.toString()
     readonly property bool isPlaying: root.audioMode === "dub"
@@ -220,15 +217,30 @@ AppCard {
             mediaPlayer.source = root.videoUrl;
     }
 
+    Loader {
+        id: audioOutputLoader
+
+        active: root._audioOutputRequested && !root.audioMuted
+        sourceComponent: AudioOutput {
+            muted: root.audioMuted
+        }
+    }
+
     MediaPlayer {
         id: mediaPlayer
 
-        audioOutput: AudioOutput {
-            id: audioOutput
-
-            muted: root.audioMuted
-        }
+        audioOutput: audioOutputLoader.item
         videoOutput: videoOutput
+
+        onMediaStatusChanged: {
+            if (mediaPlayer.mediaStatus === MediaPlayer.LoadedMedia
+                    || mediaPlayer.mediaStatus === MediaPlayer.BufferedMedia) {
+                if (root._lastRequestedPositionMs > 0
+                        && Math.abs(mediaPlayer.position - root._lastRequestedPositionMs) > 50) {
+                    mediaPlayer.position = root._lastRequestedPositionMs;
+                }
+            }
+        }
 
         onPositionChanged: {
             if (root.audioMode === "source"
@@ -244,7 +256,7 @@ AppCard {
 
     ColumnLayout {
         Layout.fillWidth: true
-        spacing: Theme.spacingXs
+        spacing: 4
 
         // ── Header row: title, audio mode switch, caption toggle, collapse ──
         RowLayout {
@@ -254,6 +266,7 @@ AppCard {
             SectionLabel {
                 objectName: "subtitleVideoSectionLabel"
                 Layout.fillWidth: true
+                elide: Text.ElideRight
                 text: root.videoName !== ""
                     ? qsTr("XEM TRƯỚC VIDEO · %1").arg(root.videoName)
                     : qsTr("XEM TRƯỚC VIDEO")
@@ -325,9 +338,7 @@ AppCard {
 
             objectName: "subtitleVideoViewport"
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(
-                Math.min(220, Math.max(135, (viewport.width > 0 ? viewport.width : 360) * 9 / 16))
-            )
+            Layout.preferredHeight: root.stageName === "source" ? 128 : 76
             visible: !root.collapsed
             radius: Theme.radiusMd
             color: "#0B0F17"
@@ -448,6 +459,7 @@ AppCard {
                         if (typeof subtitleController.notifyVideoPreviewPlaying === "function")
                             subtitleController.notifyVideoPreviewPlaying();
                         root.preferredAudioMode = "source";
+                        root._audioOutputRequested = true;
                         if (mediaPlayer.source.toString() === "" && root.videoUrl !== "")
                             root.syncSourceFromUrl();
                         mediaPlayer.play();
@@ -498,13 +510,11 @@ AppCard {
         ignoreUnknownSignals: true
 
         function onVideoChanged() {
-            if (root.ctrl) {
+            if (root.available) {
                 root.hasVideo = Boolean(subtitleController.hasVideo);
                 root.videoName = String(subtitleController.videoName || "");
-                if (root.ctrl.videoPath !== undefined)
-                    root.videoPath = String(root.ctrl.videoPath || "");
-                if (root.ctrl.videoUrl !== undefined)
-                    root.videoUrl = String(root.ctrl.videoUrl || "");
+                root.videoPath = String(subtitleController.videoPath || "");
+                root.videoUrl = String(subtitleController.videoUrl || "");
             }
             root.syncSourceFromUrl();
         }
@@ -519,13 +529,13 @@ AppCard {
         }
 
         function onPositionMsChanged() {
-            if (root.ctrl && root.ctrl.positionMs !== undefined)
-                root.dubPositionMs = Number(root.ctrl.positionMs || 0);
+            if (root.available)
+                root.dubPositionMs = Number(subtitleController.positionMs || 0);
         }
 
         function onDurationChanged() {
-            if (root.ctrl && root.ctrl.durationMs !== undefined)
-                root.dubDurationMs = Number(root.ctrl.durationMs || 0);
+            if (root.available)
+                root.dubDurationMs = Number(subtitleController.durationMs || 0);
         }
 
         function onPlayerStateChanged() {

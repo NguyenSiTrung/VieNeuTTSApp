@@ -41,6 +41,8 @@ AppCard {
     // compact and full forms at 800 px. Track the window instead.
     readonly property bool wideLayout: (root.Window.window
         && root.Window.window.width >= 900) || root.width >= 900
+    readonly property bool twoColWorkspace: root.wideLayout && root.loaded
+        && (root.stage === "produce" || (root.stage === "prepare" && root.hasVideo))
     // FR-2.3: Source → Prepare → Produce. The card splits its body into these
     // mutually exclusive stages so a tall column never buries the next step.
     property string stage: "source"
@@ -333,23 +335,58 @@ AppCard {
             Layout.fillWidth: true
         }
 
-        // ── Main Workspace: 2 columns on wide windows (Cue list | Timing & Voice) ──
+        // ── Main Workspace: 2 columns on wide windows (Cue list | Video + Timing & Voice) ──
         GridLayout {
+            id: workspaceGrid
+
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: root.loaded && root.stage !== "source"
-            columns: (root.wideLayout && root.stage === "produce") ? 2 : 1
+            Layout.fillHeight: root.loaded && root.stage !== "source"
+            visible: (root.loaded && root.stage !== "source")
+                || (root.hasVideo && root.stage === "source")
+            columns: root.twoColWorkspace ? 2 : 1
             columnSpacing: Theme.spacingMd
             rowSpacing: Theme.spacingSm
 
+            // ── Video preview: below Source panel in Source stage; top of right
+            //    column on wide Prepare/Produce; top of stack on narrow layouts ──
+            SubtitleVideoPreview {
+                id: videoPreview
+
+                shown: root.hasVideo
+                available: root.available
+                hasVideo: root.hasVideo
+                hasTrack: root.hasTrack
+                loaded: root.loaded
+                busy: root.busy
+                aiBusy: root.aiBusy
+                exporting: root.exporting
+                busyReason: root.busyReason()
+                stageName: root.stage
+                compact: Boolean(root.Window.window && root.Window.window.height < 560)
+                videoName: root.available ? subtitleController.videoName : ""
+                videoPath: root.available ? subtitleController.videoPath : ""
+                videoUrl: root.available ? subtitleController.videoUrl : ""
+                dubPositionMs: root.available ? subtitleController.positionMs : 0
+                dubDurationMs: root.available ? subtitleController.durationMs : 0
+                Layout.row: 0
+                Layout.column: root.twoColWorkspace ? 1 : 0
+                Layout.fillWidth: !root.twoColWorkspace
+                Layout.preferredWidth: root.twoColWorkspace ? 404 : -1
+                Layout.maximumWidth: root.twoColWorkspace ? 424 : -1
+                Layout.alignment: Qt.AlignTop
+            }
+
             // ── Left column: Cue list ──────────────────────────────────────
             SubtitleCueEditor {
-                shown: root.loaded
+                shown: root.loaded && root.stage !== "source"
                 available: root.available
                 busy: root.busy
                 aiBusy: root.aiBusy
                 exporting: root.exporting
                 disabledReason: root.busyReason()
+                Layout.row: root.twoColWorkspace ? 0 : 1
+                Layout.column: 0
+                Layout.rowSpan: root.twoColWorkspace ? (root.stage === "produce" ? 3 : 1) : 1
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.minimumHeight: 180
@@ -358,11 +395,13 @@ AppCard {
             // ── Right column: Fit policy & Voice ───────────────────────────
             AppCard {
                 objectName: "subtitleTimingPanel"
-                Layout.fillWidth: !root.wideLayout
-                Layout.preferredWidth: root.wideLayout ? 404 : -1
-                Layout.maximumWidth: root.wideLayout ? 424 : -1
+                Layout.row: root.twoColWorkspace ? (root.hasVideo ? 1 : 0) : 2
+                Layout.column: root.twoColWorkspace ? 1 : 0
+                Layout.fillWidth: !root.twoColWorkspace
+                Layout.preferredWidth: root.twoColWorkspace ? 404 : -1
+                Layout.maximumWidth: root.twoColWorkspace ? 424 : -1
                 Layout.alignment: Qt.AlignTop
-                visible: root.stage === "produce"
+                visible: root.loaded && root.stage === "produce"
                 elevation: 0
                 cardColor: Theme.surfaceAlt
                 cardBorderColor: Theme.borderSubtle
@@ -597,6 +636,13 @@ AppCard {
                         subtitleController.voice = voicePicker.effectiveVoice;
                 }
                 }
+            }
+
+            Item {
+                visible: root.twoColWorkspace && root.stage === "produce"
+                Layout.row: 2
+                Layout.column: 1
+                Layout.fillHeight: true
             }
         }
 

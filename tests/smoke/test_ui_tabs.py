@@ -2068,6 +2068,10 @@ DRIVER = textwrap.dedent(
                 voiceChanged = Signal()
                 exportFinished = Signal(str, str)
                 videoChanged = Signal()
+                videoSeekRequested = Signal(int)
+                videoReleaseRequested = Signal()
+                positionMsChanged = Signal()
+                durationChanged = Signal()
                 speakersChanged = Signal()
                 aiBusyChanged = Signal()
                 aiProgressChanged = Signal()
@@ -2092,6 +2096,8 @@ DRIVER = textwrap.dedent(
                     self._has_video = True
                     self._video_path = "/tmp/demo_video.mp4"
                     self._video_name = "demo_video.mp4"
+                    self._position_ms = 0
+                    self._duration_ms = 100000
                     self._video_mix_mode = "replace"
                     self._video_bg_gain_db = -16.0
                     self._embed_subtitles = True
@@ -2319,11 +2325,27 @@ DRIVER = textwrap.dedent(
 
                 @Slot(int)
                 def seekToCue(self, index):
-                    self.seek_calls.append(int(index))
+                    idx = int(index)
+                    self.seek_calls.append(idx)
+                    if 0 <= idx < len(self._cues) and self._has_video:
+                        target_ms = int(self._cues[idx]["startMs"])
+                        self._position_ms = target_ms
+                        self.positionMsChanged.emit()
+                        self.videoSeekRequested.emit(target_ms)
 
                 @Slot(int)
                 def seek(self, ms):
-                    pass
+                    self._position_ms = int(ms)
+                    self.positionMsChanged.emit()
+
+                @Slot()
+                def notifyVideoPreviewPlaying(self):
+                    self._record("notifyVideoPreviewPlaying")
+
+                @Slot(int)
+                def syncActiveCueFromVideo(self, ms):
+                    self._position_ms = int(ms)
+                    self.positionMsChanged.emit()
 
                 @Slot(str, result=str)
                 def exportTrack(self, dest_dir):
@@ -2346,7 +2368,23 @@ DRIVER = textwrap.dedent(
 
                 @Property(str, notify=videoChanged)
                 def videoPath(self):
-                    return self._video_path
+                    return self._video_path if self._has_video else ""
+
+                @Property(str, notify=videoChanged)
+                def videoUrl(self):
+                    return (
+                        QUrl.fromLocalFile(self._video_path).toString()
+                        if (self._has_video and self._video_path)
+                        else ""
+                    )
+
+                @Property(int, notify=positionMsChanged)
+                def positionMs(self):
+                    return self._position_ms
+
+                @Property(int, notify=durationChanged)
+                def durationMs(self):
+                    return self._duration_ms
 
                 @Property(str, notify=videoChanged)
                 def videoName(self):
@@ -4239,6 +4277,7 @@ DRIVER = textwrap.dedent(
                 name: str(sfind(name).metaObject().className())
                 for name in (
                     "subtitleVideoBar",
+                    "subtitleVideoPreview",
                     "subtitleTimingPanel",
                     "subtitleSpeakerBar",
                 )
@@ -4569,6 +4608,56 @@ DRIVER = textwrap.dedent(
             window.setWidth(old_size[0])
             window.setHeight(old_size[1])
             pump(0.1)
+
+            # FR-3.1/2.4/1.2 (video_preview_panel_20261028): video preview is
+            # visible across all 3 stages when hasVideo is True, sits in the
+            # right-hand column in Prepare & Produce at wide widths, auto-
+            # collapses at 640×420 outside Source, hides when video is cleared,
+            # and seeks on unrendered cue clicks.
+            video_preview = sfind("subtitleVideoPreview")
+            vis_by_stage = []
+            for stg in ("source", "prepare", "produce"):
+                QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, stg))
+                app.processEvents()
+                vis_by_stage.append(bool(video_preview.property("visible")))
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "prepare"))
+            pump(0.05)
+            two_col_prepare = bool(video_preview.x() > sfind("subtitleCueList").x())
+            window.setWidth(640)
+            window.setHeight(420)
+            pump(0.05)
+            collapsed_at_640 = bool(video_preview.property("collapsed"))
+            window.setWidth(old_size[0])
+            window.setHeight(old_size[1])
+            pump(0.05)
+            QMetaObject.invokeMethod(stage_switch, "activated", Q_ARG(str, "produce"))
+            pump(0.05)
+            two_col_produce = bool(video_preview.x() > sfind("subtitleCueList").x())
+            timing_below_video = bool(
+                sfind("subtitleTimingPanel").y() > video_preview.y()
+            )
+            fake_subtitle._rendered = False
+            fake_subtitle.renderedChanged.emit()
+            app.processEvents()
+            fake_subtitle.seekToCue(3)
+            app.processEvents()
+            unrendered_seek_ms = int(video_preview.property("displayPositionMs"))
+            fake_subtitle._has_video = False
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            hidden_no_video = not bool(video_preview.property("visible"))
+            fake_subtitle._has_video = True
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            out["video_preview"] = {
+                "visible_by_stage": vis_by_stage,
+                "two_col_prepare": two_col_prepare,
+                "two_col_produce": two_col_produce,
+                "timing_below_video": timing_below_video,
+                "collapsed_at_640": collapsed_at_640,
+                "unrendered_seek_ms": unrendered_seek_ms,
+                "hidden_no_video": hidden_no_video,
+            }
 
             # ── Task 5.2: click EVERY action once and observe the controller
             # call. FakeSubtitle records action_calls; the click() signal
@@ -8716,6 +8805,16 @@ class TestTextParagraphTabSmoke:
             "subtitleEmbedModeCombo",
             "subtitleEmbedHint",
             "subtitleOverrunHint",
+            "subtitleVideoPreview",
+            "subtitleVideoViewport",
+            "subtitleVideoCaptionOverlay",
+            "subtitleVideoCaptionToggle",
+            "subtitleVideoPlayButton",
+            "subtitleVideoScrubSlider",
+            "subtitleVideoTimecodeLabel",
+            "subtitleVideoAudioModeSwitch",
+            "subtitleVideoCollapseButton",
+            "subtitleVideoFallbackLabel",
             "subtitleAiBar",
             "subtitleAiGroupLabel",
             "subtitleCancelAiButton",
@@ -8814,6 +8913,15 @@ class TestTextParagraphTabSmoke:
             "removeProject": 1,
         }
         assert result["cue_height_tall_window"] > result["cue_height_short_window"]
+        assert result["video_preview"] == {
+            "visible_by_stage": [True, True, True],
+            "two_col_prepare": True,
+            "two_col_produce": True,
+            "timing_below_video": True,
+            "collapsed_at_640": True,
+            "unrendered_seek_ms": 6000,
+            "hidden_no_video": True,
+        }
         # FR-3.1–3.4: ordered, labelled AI actions; explicit translate target;
         # one diarization control per stage; catalog-backed speaker casting.
         assert result["ai_group_label"]
@@ -8837,7 +8945,7 @@ class TestTextParagraphTabSmoke:
         assert result["speaker_calls"][0][0] in ("SPEAKER_01", "SPEAKER_02")
         assert result["speaker_no_raw_field"] is True
         assert all(
-            cls.startswith(("AppCard", "SubtitleCastPanel"))
+            cls.startswith(("AppCard", "SubtitleCastPanel", "SubtitleVideoPreview"))
             for cls in result["panel_classes"].values()
         ), result["panel_classes"]
         assert all(result["progress_labels"].values()), result["progress_labels"]

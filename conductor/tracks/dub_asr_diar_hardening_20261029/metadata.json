@@ -1,12 +1,12 @@
 {
   "track_id": "dub_asr_diar_hardening_20261029",
   "type": "feature",
-  "status": "in_progress",
+  "status": "completed",
   "priority": "high",
   "depends_on": [],
   "estimated_hours": null,
   "created_at": "2026-10-28T17:32:34Z",
-  "updated_at": "2026-10-28T17:46:10Z",
+  "updated_at": "2026-10-28T20:14:53Z",
   "description": "Dubbing & Subtitles hardening from the 2026-10-29 audit: shared core/processes.py spawn helpers (CREATE_NO_WINDOW, UTF-8 decoding, timeouts, cancellable child registry), GUI-thread ProgressRelay and _OneShotBridge hygiene; one busy owner, per-op generations, project switch/remove/cancel/shutdown ordering, load-modify-save persistence and export correctness in SubtitleController; managed macOS whisper-cli and GPL ffmpeg/ffprobe packs via an opt-in media-runtime-build.yml (publishing user-gated), audio.cpp CUDA/arm64 variants and faster-whisper availability gating; whisper.cpp -mc 0 + Silero VAD + JSON-full word timings, cross-backend hallucination filter, large-v3-turbo-q5_0 default with installed-model fallback, opt-in cloud ASR fallback, cancellable requests and one streaming soxr 16 kHz prep; speaker-turn splitting, bench-gated concurrent ASR + Nemotron, Lance-Williams clustering, reference-clip scoring and optional ONNX Silero VAD / speaker embeddings; per-unit clip cache, contiguous merged-unit placement, alignment drift/borrow fixes, ducking envelope at scale, limiter, ISO 639-2 tags, microsecond ffmpeg progress and crash-consistent render commits; off-thread GUI work, bisect cue lookup, media-cache eviction, subtitle parsing edge cases; Settings runtime rows, hints, i18n and README.",
   "execution_mode": "parallel",
   "manual_phase_verification": false,
@@ -48,5 +48,9 @@
     "phase8_task1": "VieNeuTTSApp-9hzp.8.1",
     "phase8_task2": "VieNeuTTSApp-9hzp.8.2",
     "phase8_task3": "VieNeuTTSApp-9hzp.8.3"
+  },
+  "completed_at": "2026-10-28T20:14:53Z",
+  "deferred_tasks": {
+    "phase8_task3": "USER-GATED media runtime pack publishing; bead VieNeuTTSApp-9hzp.8.3 stays open, blocked by VieNeuTTSApp-0j8g"
   }
 }

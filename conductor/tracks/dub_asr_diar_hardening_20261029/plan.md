@@ -407,7 +407,7 @@ Test seams and fakes:
     - the cloud-fallback opt-in;
     - the media-cache cap.
 
-- [ ] **Task 8.3: USER-GATED — publish the media runtime packs (FR-2.6 follow-through)**
+- [!] **Task 8.3: USER-GATED — publish the media runtime packs (FR-2.6 follow-through)** [blocked: needs an explicit user request (git push + workflow dispatch) and the GPL corresponding-source decision, bead VieNeuTTSApp-0j8g]
   <!-- files: src/vienetts_app/core/media_runtime_manifests.json -->
   <!-- depends: task1, task2 -->
   - Needs an explicit user request, because it requires `git push` and a workflow dispatch, which the git policy forbids without approval. Never run it automatically. Steps once requested:

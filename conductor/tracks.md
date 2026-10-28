@@ -47,5 +47,5 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: Dubbing & Subtitles Hardening — Local ASR/Diarization Runtimes, Render Safety, Quality & Performance
+## [x] Track: Dubbing & Subtitles Hardening — Local ASR/Diarization Runtimes, Render Safety, Quality & Performance (`VieNeuTTSApp-9hzp`; Task 8.3 user-gated publish deferred)
 *Link: [./conductor/tracks/dub_asr_diar_hardening_20261029/](./conductor/tracks/dub_asr_diar_hardening_20261029/)*

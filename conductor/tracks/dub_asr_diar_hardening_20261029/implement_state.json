@@ -1,7 +1,7 @@
 {
-  "current_phase": "Phase 4: ASR quality & throughput",
-  "current_phase_index": 3,
-  "current_task_index": 2,
+  "current_phase": "Phase 5: Diarization quality & throughput",
+  "current_phase_index": 4,
+  "current_task_index": 3,
   "completed_phases": [
     "Phase 1: Foundations \u2014 process helpers, background-op hygiene, shared 16 kHz prep",
     "Phase 6: Render, alignment & mux core"
@@ -10,8 +10,8 @@
     "phase2_task4",
     "phase3_task2",
     "phase4_task3",
-    "phase5_task3"
+    "phase5_task4"
   ],
-  "last_updated": "2026-10-28T18:45:27Z",
+  "last_updated": "2026-10-28T18:49:22Z",
   "status": "in_progress"
 }

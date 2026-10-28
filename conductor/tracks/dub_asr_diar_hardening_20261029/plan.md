@@ -266,14 +266,14 @@ Test seams and fakes:
     - A single-open, two-pointer sweep.
     - Stdout progress parsing with the estimate fallback.
 
-- [~] **Task 5.3: Reference-clip scoring (FR-4.4)**
+- [x] **Task 5.3: Reference-clip scoring (FR-4.4)**
   <!-- files: src/vienetts_app/core/diarization.py, tests/unit/test_diarization_hardening.py -->
   - Red tests:
     - From four candidates — a 2 s clean clip, an 8 s clean clip, a 10 s clip with 5 % clipped samples, and a 9 s clip overlapping another speaker's turn — the 8 s clean clip wins.
     - Duration breaks ties.
   - Green implementation: add the scoring function, using the energy VAD (Silero when installed after Task 5.4).
 
-- [ ] **Task 5.4: Optional ONNX Silero VAD + speaker embeddings, DER-chosen model (FR-4.5)**
+- [~] **Task 5.4: Optional ONNX Silero VAD + speaker embeddings, DER-chosen model (FR-4.5)**
   <!-- files: src/vienetts_app/core/onnx_audio.py, src/vienetts_app/core/diarization.py, src/vienetts_app/core/ai_models.py, tests/unit/test_onnx_audio.py, tests/unit/test_diarization.py, tests/unit/test_ai_models.py, scripts/benchmarks/diarization_der.py, pyproject.toml, uv.lock -->
   - Red tests (fake `session_factory`):
     - **Silero VAD:** 512-sample framing at 16 kHz carries the state tensor across frames, and the hysteresis thresholds produce the expected speech spans from scripted probabilities.

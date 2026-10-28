@@ -16,6 +16,7 @@ in ``notes`` so the UI never presents heuristic labels as model output.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import json
 import logging
@@ -26,7 +27,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -231,25 +232,30 @@ def _open_wav_for_vad(wav_path: str | Path | None) -> Any | None:
     return None
 
 
-def _cue_vad_bounds(wav_file: Any, cue: Cue, abs_thresh: float, pad: int) -> tuple[int, int] | None:
-    """Energy-VAD speech span of ``cue`` (padded, clamped to the cue), or ``None``."""
+def _read_mono_ms(wav_file: Any, start_ms: int, end_ms: int) -> np.ndarray | None:
+    """``[start_ms, end_ms)`` of an open ``SoundFile`` as float32 mono, or ``None``.
+
+    ``None`` when the span is empty after clamping to the file or unreadable.
+    """
     sr = int(wav_file.samplerate)
     total_frames = int(wav_file.frames)
-    win_frames = max(1, int(round(sr * 0.010)))
-    start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
-    stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
+    start_f = max(0, min(total_frames, int(round(start_ms * sr / 1000.0))))
+    stop_f = max(start_f, min(total_frames, int(round(end_ms * sr / 1000.0))))
     if stop_f <= start_f:
         return None
     try:
         wav_file.seek(start_f)
         block = wav_file.read(stop_f - start_f, dtype="float32", always_2d=True)
-    except Exception:  # noqa: BLE001 - a bad slice only disables this cue's VAD
+    except Exception:  # noqa: BLE001 - a bad slice only disables scoring of this span
         return None
     # Downmix: the shared 16 kHz input is mono, but a caller's stereo WAV used
     # to be flattened frame-interleaved, doubling every offset.
     mono = np.ascontiguousarray(block[:, 0] if block.shape[1] == 1 else block.mean(axis=1))
-    if mono.size == 0:
-        return None
+    return mono if mono.size > 0 else None
+
+
+def _window_rms(mono: np.ndarray, win_frames: int) -> np.ndarray:
+    """RMS of each ``win_frames`` window of ``mono``, a short tail window included."""
     n_wins = mono.size // win_frames
     if n_wins > 0:
         framed = mono[: n_wins * win_frames].reshape(n_wins, win_frames)
@@ -258,14 +264,31 @@ def _cue_vad_bounds(wav_file: Any, cue: Cue, abs_thresh: float, pad: int) -> tup
         if rem.size > 0:
             rem_rms = np.sqrt(np.mean(rem * rem, dtype=np.float64))
             rms = np.append(rms, rem_rms)
-    else:
-        rms = np.array([float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))], dtype=np.float64)
+        return rms
+    return np.array([float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))], dtype=np.float64)
+
+
+def _energy_vad(rms: np.ndarray, abs_thresh: float) -> np.ndarray | None:
+    """Indices of the speech windows in ``rms``; ``None`` when the span is silent.
+
+    A window is speech when it reaches both ``abs_thresh`` and 10 % of the
+    loudest window, so a quiet room tone under loud speech is not speech.
+    """
     peak_rms = float(np.max(rms)) if rms.size > 0 else 0.0
     if peak_rms <= abs_thresh:
         return None
-    gate = max(abs_thresh, peak_rms * 0.10)
-    active = np.flatnonzero(rms >= gate)
-    if active.size == 0:
+    return np.flatnonzero(rms >= max(abs_thresh, peak_rms * 0.10))
+
+
+def _cue_vad_bounds(wav_file: Any, cue: Cue, abs_thresh: float, pad: int) -> tuple[int, int] | None:
+    """Energy-VAD speech span of ``cue`` (padded, clamped to the cue), or ``None``."""
+    mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
+    if mono is None:
+        return None
+    sr = int(wav_file.samplerate)
+    win_frames = max(1, int(round(sr * 0.010)))
+    active = _energy_vad(_window_rms(mono, win_frames), abs_thresh)
+    if active is None or active.size == 0:
         return None
     onset_samples = int(active[0]) * win_frames
     offset_samples = min(mono.size, (int(active[-1]) + 1) * win_frames)
@@ -1429,22 +1452,68 @@ def diarize_cues(
                 temp_dir_obj.cleanup()
 
 
+#: Reference clips (FR-4.4): runs of a speaker's cues may bridge gaps up to
+#: this long, and a clip inside [_REF_MIN_MS, _REF_MAX_MS] needs no trimming.
+_REF_RUN_GAP_MS = 400
+_REF_MIN_MS = 3_000
+_REF_MAX_MS = 12_000
+#: Only this many candidates (best on duration and overlap) are read and
+#: scored on audio, so a speaker with hundreds of cues stays cheap.
+_REF_AUDIO_SHORTLIST = 24
+#: A sample at or past this magnitude is clipped.
+_REF_CLIP_LEVEL = 0.99
+#: RMS level band (dBFS) a clean, usable recording sits in.
+_REF_LEVEL_BAND_DB = (-35.0, -6.0)
+_REF_VAD_THRESHOLD_DB = -42.0
+
+
 def select_speaker_reference_clip(
     cues: Sequence[Cue],
     speaker: str,
+    *,
+    wav_path: str | Path | None = None,
+    turns: Sequence[RttmTurn] | None = None,
 ) -> tuple[int, int, str] | None:
-    """Find the best `(start_ms, end_ms, transcript)` window (ideal 3.5–8.0 s) for ``speaker``."""
+    """Best ``(start_ms, end_ms, transcript)`` voice-cloning window for ``speaker``.
+
+    Candidates are single cues and runs of the speaker's consecutive cues.
+
+    Without ``wav_path`` the choice reads cues only (ideal 3.5–7.5 s, few
+    gaps): no I/O, cheap enough for the GUI thread to key its clip cache on.
+
+    With ``wav_path`` (the source WAV, any rate) each candidate is scored on
+    its audio (FR-4.4): duration within [3, 12] s, the energy-VAD speech
+    ratio, the RMS level, the clipped-sample ratio and how much of it overlaps
+    another speaker's turns; duration breaks ties. ``turns`` default to the
+    other speakers' cues. An unreadable WAV falls back to the cue-only choice.
+    """
     target = (speaker or "").strip()
     spk_cues = [c for c in cues if (c.speaker or "").strip() == target]
     if not spk_cues:
         return None
+    wav_file = _open_wav_for_vad(wav_path)
+    if wav_file is None:
+        return _reference_clip_from_cues(spk_cues)
+    try:
+        if turns is None:
+            others = [(c.start_ms, c.end_ms) for c in cues if (c.speaker or "").strip() != target]
+        else:
+            others = [(t.start_ms, t.end_ms) for t in turns if t.speaker.strip() != target]
+        return _reference_clip_from_audio(wav_file, spk_cues, others)
+    finally:
+        with contextlib.suppress(Exception):
+            wav_file.close()
 
-    best_window: tuple[int, int, str] | None = None
-    best_score = -1e9
 
-    # Consider single cues and consecutive same-speaker cue runs with small gaps (<= 400 ms)
+def _reference_windows(
+    spk_cues: Sequence[Cue], max_span_ms: int
+) -> Iterator[tuple[int, int, str, int]]:
+    """``(start_ms, end_ms, transcript, total_gap_ms)`` of every cue and cue run.
+
+    A run grows while the next cue starts at most ``_REF_RUN_GAP_MS`` after
+    the previous one ends and the run stays within ``max_span_ms``.
+    """
     for i, first in enumerate(spk_cues):
-        start_ms = first.start_ms
         end_ms = first.end_ms
         texts = [first.text]
         total_gap_ms = 0
@@ -1452,30 +1521,117 @@ def select_speaker_reference_clip(
             if j > i:
                 curr = spk_cues[j]
                 gap = curr.start_ms - end_ms
-                if gap < 0 or gap > 400 or (curr.end_ms - start_ms) > 8500:
+                if gap < 0 or gap > _REF_RUN_GAP_MS or (curr.end_ms - first.start_ms) > max_span_ms:
                     break
                 total_gap_ms += gap
                 end_ms = curr.end_ms
                 texts.append(curr.text)
-            dur_ms = max(1, end_ms - start_ms)
-            joined = " ".join(texts).strip()
-            # Ideal voice-cloning reference is 3500..7500 ms with minimal internal silence
-            if 3500 <= dur_ms <= 7500:
-                score = (
-                    100.0
-                    - abs(dur_ms - 5000) / 100.0
-                    - total_gap_ms / 50.0
-                    + min(len(joined), 120) * 0.1
-                )
-            elif dur_ms < 3500:
-                score = (dur_ms / 3500.0) * 60.0 - total_gap_ms / 50.0
-            else:
-                score = max(10.0, 80.0 - (dur_ms - 7500) / 100.0 - total_gap_ms / 50.0)
-            if score > best_score:
-                best_score = score
-                best_window = (start_ms, end_ms, joined)
+            yield first.start_ms, end_ms, " ".join(texts).strip(), total_gap_ms
 
+
+def _reference_clip_from_cues(spk_cues: Sequence[Cue]) -> tuple[int, int, str] | None:
+    """Cue-only choice: ideal 3.5–7.5 s with minimal internal silence."""
+    best_window: tuple[int, int, str] | None = None
+    best_score = -1e9
+    for start_ms, end_ms, joined, total_gap_ms in _reference_windows(spk_cues, 8500):
+        dur_ms = max(1, end_ms - start_ms)
+        if 3500 <= dur_ms <= 7500:
+            score = (
+                100.0
+                - abs(dur_ms - 5000) / 100.0
+                - total_gap_ms / 50.0
+                + min(len(joined), 120) * 0.1
+            )
+        elif dur_ms < 3500:
+            score = (dur_ms / 3500.0) * 60.0 - total_gap_ms / 50.0
+        else:
+            score = max(10.0, 80.0 - (dur_ms - 7500) / 100.0 - total_gap_ms / 50.0)
+        if score > best_score:
+            best_score = score
+            best_window = (start_ms, end_ms, joined)
     return best_window
+
+
+def _reference_clip_from_audio(
+    wav_file: Any, spk_cues: Sequence[Cue], others: Sequence[tuple[int, int]]
+) -> tuple[int, int, str] | None:
+    """Audio-scored choice (FR-4.4); see :func:`select_speaker_reference_clip`.
+
+    Every score is a sum of penalty points, where 10 points is roughly a 2 s
+    clip, 5 % clipped samples, a clip that is all silence, or half the clip
+    under another speaker. Scores are compared at 0.01-point resolution, so
+    near-equal clips go to the longer one.
+    """
+    covered = _merge_spans(others)
+    covered_ends = [end for _, end in covered]
+    windows = list(_reference_windows(spk_cues, _REF_MAX_MS))
+    cue_penalties = []
+    for start_ms, end_ms, _text, _gap in windows:
+        dur_ms = max(1, end_ms - start_ms)
+        overlap = _covered_ms(covered, covered_ends, start_ms, end_ms) / dur_ms
+        too_short_or_long = max(0, _REF_MIN_MS - dur_ms, dur_ms - _REF_MAX_MS) / 1000.0
+        cue_penalties.append(10.0 * too_short_or_long + 20.0 * overlap)
+    shortlist = sorted(
+        range(len(windows)),
+        key=lambda k: (cue_penalties[k], windows[k][0] - windows[k][1], k),
+    )[:_REF_AUDIO_SHORTLIST]
+
+    sr = int(wav_file.samplerate)
+    best: tuple[int, int, str] | None = None
+    best_key: tuple[float, int] | None = None
+    for k in sorted(shortlist):  # source order, so a full tie keeps the earliest
+        start_ms, end_ms, text, _gap = windows[k]
+        mono = _read_mono_ms(wav_file, start_ms, end_ms)
+        score = -(cue_penalties[k] + _reference_audio_penalty(mono, sr))
+        key = (round(score, 2), end_ms - start_ms)
+        if best_key is None or key > best_key:
+            best_key = key
+            best = (start_ms, end_ms, text)
+    return best
+
+
+def _reference_audio_penalty(mono: np.ndarray | None, sr: int) -> float:
+    """Penalty points for a clip's audio: silence, level outside the band, clipping."""
+    if mono is None:
+        return 30.0  # past the end of the audio: never preferred over real audio
+    win_frames = max(1, int(round(sr * 0.010)))
+    rms = _window_rms(mono, win_frames)
+    # Energy VAD for now; Task 5.4 swaps in Silero when it is installed.
+    active = _energy_vad(rms, float(10.0 ** (_REF_VAD_THRESHOLD_DB / 20.0)))
+    speech_ratio = 0.0 if active is None else active.size / rms.size
+    level_db = 20.0 * np.log10(max(1e-5, float(np.sqrt(np.mean(mono * mono, dtype=np.float64)))))
+    low, high = _REF_LEVEL_BAND_DB
+    clipped_ratio = float(np.mean(np.abs(mono) >= _REF_CLIP_LEVEL))
+    return (
+        10.0 * (1.0 - speech_ratio)
+        + 0.2 * max(0.0, low - level_db, level_db - high)
+        + 200.0 * clipped_ratio
+    )
+
+
+def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sorted, disjoint union of ``spans``; empty spans are dropped."""
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def _covered_ms(
+    merged: Sequence[tuple[int, int]], ends: Sequence[int], start_ms: int, end_ms: int
+) -> int:
+    """Milliseconds of ``[start_ms, end_ms)`` covered by the disjoint ``merged`` spans."""
+    total = 0
+    i = bisect.bisect_right(ends, start_ms)
+    while i < len(merged) and merged[i][0] < end_ms:
+        total += min(end_ms, merged[i][1]) - max(start_ms, merged[i][0])
+        i += 1
+    return total
 
 
 def extract_speaker_reference_wav(
@@ -1485,13 +1641,35 @@ def extract_speaker_reference_wav(
     output_wav: str | Path,
     *,
     data_dir: Path | None = None,
+    work_dir: Path | None = None,
+    turns: Sequence[RttmTurn] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, str]:
-    """Extract the cleanest 48 kHz mono WAV reference clip for ``speaker`` + its transcript."""
-    sel = select_speaker_reference_clip(cues, speaker)
+    """Extract the cleanest 48 kHz mono WAV reference clip for ``speaker`` + its transcript.
+
+    Worker thread only: candidates are scored on audio (FR-4.4) — the source
+    itself when it is a WAV, else the shared ``source_16k.wav`` in
+    ``work_dir`` (the media cache ASR fills; converted here if missing). A
+    video without ``work_dir`` gets the cue-only choice.
+    """
+    src = Path(media_path)
+    scoring_wav: Path | None = None
+    if src.is_file():
+        if src.suffix.lower() == ".wav":
+            scoring_wav = src
+        elif work_dir is not None:
+            try:
+                scoring_wav, _ = _ensure_16k_wav(
+                    src, work_dir, data_dir, None, cancel_check=cancel_check
+                )
+            except DiarizationCancelled:
+                raise
+            except DiarizationError as exc:
+                logger.warning("Reference clip scored on cues only: %s", exc)
+    sel = select_speaker_reference_clip(cues, speaker, wav_path=scoring_wav, turns=turns)
     if sel is None:
         raise DiarizationError(f"Không tìm thấy đoạn thoại nào của người nói '{speaker}'.")
     start_ms, end_ms, transcript = sel
-    src = Path(media_path)
     if not src.is_file():
         raise DiarizationError(f"Không tìm thấy tệp nguồn: {src.name}")
 

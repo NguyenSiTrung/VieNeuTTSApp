@@ -15,15 +15,18 @@ import numpy as np
 import pytest
 
 from vienetts_app.core.ai_models import DIARIZATION_GGUF_MODELS
-from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.diarization import (
     DiarizationCancelled,
     DiarizationConfig,
     DiarizationError,
+    RttmTurn,
     _CliProgress,
     apply_speaker_ceiling,
     diarize_cues,
+    extract_speaker_reference_wav,
     remap_speakers_to_previous,
+    select_speaker_reference_clip,
 )
 from vienetts_app.core.subtitles import Cue
 
@@ -282,6 +285,52 @@ def test_turns_are_cached_across_runs(tmp_path: Path) -> None:
     assert [c.speaker for c in first] == ["SPEAKER_01", "SPEAKER_02"]
     assert [c.speaker for c in second] == ["SPEAKER_01", "SPEAKER_02"]
     assert counter.read_text().count("x") == 1
+
+
+def test_reference_clip_scoring_prefers_a_clean_in_range_clip(tmp_path: Path) -> None:
+    sr = 16_000
+    rng = np.random.default_rng(3)
+
+    def speech(seconds: float) -> np.ndarray:
+        return (0.1 * rng.standard_normal(int(sr * seconds))).astype(np.float32)
+
+    def clipped(seconds: float) -> np.ndarray:
+        clip = speech(seconds)
+        hits = rng.choice(clip.size, clip.size // 20, replace=False)  # 5 %
+        clip[hits] = np.where(clip[hits] >= 0, 1.0, -1.0)
+        return clip
+
+    def mix(ten_s: np.ndarray, name: str) -> Path:
+        # 1 s gaps keep each clip its own candidate (runs only bridge <= 400 ms).
+        gap = np.zeros(sr, dtype=np.float32)
+        parts = [gap, speech(2.0), gap, speech(8.0), gap, ten_s, gap, speech(9.0), gap]
+        return write_wav_file(np.concatenate(parts), tmp_path / name, sample_rate=sr)
+
+    cues = [
+        Cue(1, 1000, 3000, "Hai giây.", speaker="SPEAKER_01"),
+        Cue(2, 4000, 12000, "Tám giây sạch.", speaker="SPEAKER_01"),
+        Cue(3, 13000, 23000, "Mười giây bị méo.", speaker="SPEAKER_01"),
+        Cue(4, 24000, 33000, "Chín giây có người chen.", speaker="SPEAKER_01"),
+        Cue(5, 27000, 30000, "Người khác chen vào.", speaker="SPEAKER_02"),
+    ]
+    wav = mix(clipped(10.0), "clipped.wav")
+    eight_s = (4000, 12000, "Tám giây sạch.")
+    assert select_speaker_reference_clip(cues, "SPEAKER_01", wav_path=wav) == eight_s
+    # Explicit model turns stand in for the other speaker's cue.
+    turns = [RttmTurn(27000, 30000, "SPEAKER_02"), RttmTurn(4000, 12000, "SPEAKER_01")]
+    assert select_speaker_reference_clip(cues[:4], "SPEAKER_01", wav_path=wav, turns=turns) == (
+        eight_s
+    )
+    out, text = extract_speaker_reference_wav(wav, cues, "SPEAKER_01", tmp_path / "ref.wav")
+    assert text == eight_s[2]
+    assert read_wav(out)[0].size == 8 * sr
+
+    # Duration breaks ties: a clean 10 s clip scores like the 8 s one, and wins.
+    clean = mix(speech(10.0), "clean.wav")
+    chosen = select_speaker_reference_clip(cues, "SPEAKER_01", wav_path=clean)
+    assert chosen is not None and chosen[:2] == (13000, 23000)
+    # Without audio (the GUI thread's cache key) the cue-only choice is unchanged.
+    assert select_speaker_reference_clip(cues, "SPEAKER_01") == eight_s
 
 
 def test_speaker_ceiling_merges_surplus_speakers() -> None:

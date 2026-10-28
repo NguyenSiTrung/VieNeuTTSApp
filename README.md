@@ -382,14 +382,164 @@ guidance — no terminal or repository required.
   (~455 MB extra) or `--backbone owner/repo` only for explicit custom-repo
   development; custom bundles record `"format": "custom"`.
 
+## Dubbing runtimes
+
+Video dubbing in the subtitle studio runs on-device. whisper.cpp (or
+faster-whisper) transcribes the speech. audio.cpp's Nemotron-3 GGUF model, or
+the built-in acoustic clustering, separates the speakers. FFmpeg extracts the
+audio from a video and muxes the dubbed result. None of these native tools is
+bundled with the app. Install them from *Cài đặt → Mô hình* → **AI Phụ đề &
+Lồng tiếng Video**, or with your package manager. The models are separate
+downloads from the same card. See [Models](#models) for the speech-synthesis
+model and [AI dubbing providers](#ai-dubbing-providers-llm--whisper-api) for
+the optional cloud services.
+
+The app looks for `ffmpeg`, `ffprobe` and `whisper-cli` in this order:
+
+1. its own managed install;
+2. `PATH`;
+3. on macOS and Linux, `/opt/homebrew/bin`, `/usr/local/bin`,
+   `/opt/local/bin` and `/usr/bin`.
+
+So it finds a Homebrew install even when the app is started from Finder.
+
+### FFmpeg
+
+FFmpeg (`ffmpeg` + `ffprobe`) is needed to import a video, export the dubbed
+video and burn in subtitles. WAV, FLAC, AIFF and CAF audio is converted
+without it.
+
+- **Managed install:** the **FFmpeg** row of the AI dubbing card manages an
+  app-owned copy in the app's data folder. It can install, repair (reinstall)
+  and remove that copy, shows its version and links to its licence and
+  source. Each pack is pinned by size and SHA-256 and probed before it
+  replaces the current copy. It must offer `libx264`, `libvpx-vp9`, `aac` and
+  the libass `subtitles` filter. If it doesn't, the pack is rejected and the
+  previous FFmpeg stays.
+- **Availability today:** no pack is published yet. Every cell in
+  [`media_runtime_manifests.json`](src/vienetts_app/core/media_runtime_manifests.json)
+  (Windows x64, Linux x64/arm64, macOS arm64/x64) is `published: false`
+  until a maintainer runs the opt-in publishing workflow. The installer
+  offers a pack only once one is published for your platform. Until then, the
+  row tells you to install FFmpeg with your package manager:
+
+  ```bash
+  brew install ffmpeg whisper-cpp   # macOS: also provides whisper-cli
+  sudo apt install ffmpeg           # Debian / Ubuntu
+  winget install Gyan.FFmpeg        # Windows, then restart the app
+  ```
+
+- **Why a separate GPL download:** burn-in and H.264/VP9 export need
+  `libx264`, `libvpx-vp9` and `libass`, which makes these FFmpeg builds
+  GPL-3.0-or-later. To keep the Apache-2.0 app free of GPL code, FFmpeg is
+  never linked into or bundled with it. FFmpeg runs only as a separate
+  process, and each pack ships its own `LICENSE` and `SOURCE.txt`. The packs
+  mirror pinned upstream builds:
+  [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) for Windows and
+  Linux, and [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) for
+  macOS. Each is recorded with its size and SHA-256 in
+  [`packaging/media-runtime-requirements.json`](packaging/media-runtime-requirements.json).
+
+### whisper.cpp (speech recognition)
+
+The **whisper.cpp** runtime row installs `whisper-cli` built from whisper.cpp
+`b5454`:
+
+| OS | In-app runtime |
+| --- | --- |
+| Windows | Upstream release build: CPU, or NVIDIA CUDA |
+| Linux | Upstream release build: CPU |
+| macOS arm64 | Project pack: static build with Metal (not published yet) |
+| macOS x64 | Project pack: static CPU build (not published yet) |
+
+On Apple Silicon the Metal build is the default (`auto` / `metal`). The same
+binary also serves `cpu`, with the GPU turned off. Until the macOS packs are
+published, run `brew install whisper-cpp`, or the combined command above. The
+app picks up Homebrew's `whisper-cli` on its own.
+
+The Whisper models download from the same card. **Whisper Large-v3-Turbo
+Q5_0** (547 MB) is the recommended default (`asr_model` = `large-v3-turbo`).
+If the configured model isn't installed, the largest installed Whisper model
+is used and the transcript notes the substitution. With none installed,
+transcription stops with a hint that points to *Cài đặt → Mô hình*.
+faster-whisper is listed as a backend only when the `faster_whisper` Python
+package is installed.
+
+### Optional audio models
+
+Three small, optional models sharpen the dubbing pipeline. Each is downloaded
+from the AI dubbing card and checked against a pinned SHA-256. Each can be
+removed again, and without them the built-in heuristics run unchanged.
+
+| Model | Size | Licence | What it improves |
+| --- | --- | --- | --- |
+| **Silero VAD v6.2.0 for whisper.cpp** | 0.8 MB | MIT | whisper.cpp skips silence and music instead of transcribing them, so fewer hallucinated lines appear in silent stretches. |
+| **Silero VAD v6.2 ONNX** | 2.2 MB | MIT | Tighter speech start and end inside each cue, so the dub lands on the voice. It also picks cleaner voice-cloning reference clips and trims silence before speakers are compared. |
+| **3D-Speaker CAM++ speaker embedding** | 28 MB | Apache-2.0 | Better speaker separation when the acoustic diarization runs (no Nemotron model, or as its fallback). |
+
+The two ONNX models run on the CPU through onnxruntime, which the TTS engine
+already uses. CAM++ was measured with `scripts/benchmarks/diarization_der.py`
+on a synthetic multi-voice fixture built from the app's own voices. There it
+cut speaker confusion from 14–26 % with the built-in features to 0. It matched
+WeSpeaker ResNet34-LM, and unlike WeSpeaker (CC-BY-4.0) it is Apache-2.0.
+
+### GPU notes
+
+- **whisper.cpp:** NVIDIA CUDA on Windows, and Metal on Apple Silicon. Linux
+  and Intel Macs transcribe on the CPU.
+- **audio.cpp (Nemotron diarization):**
+  - Windows offers CPU and Vulkan builds. When an NVIDIA driver is detected it
+    also offers `cuda12.4` (driver CUDA 12.0+, about 1.1 GB) and `cuda13.3`
+    (driver R580+, about 850 MB).
+  - macOS uses Metal.
+  - Linux x64 offers CPU and Vulkan builds.
+  - Linux arm64 has no upstream build, so use the acoustic diarization there.
+- **Diarization device** (`diarization_device`):
+  - `cuda` installs the newest CUDA build your driver supports and runs
+    audio.cpp with `--backend cuda`.
+  - `auto` also uses CUDA when a CUDA build is installed.
+  - `cuda` without a CUDA build lets audio.cpp choose its best compiled
+    backend.
+- These builds are separate from the [Managed CUDA
+  runtime](#managed-cuda-runtime), which serves the TTS engine. The optional
+  ONNX models always run on the CPU.
+
+### Cloud fallback (opt-in)
+
+With the ASR backend on `auto`, transcription stays on this machine.
+whisper.cpp runs first when its runtime and a model are installed; otherwise
+faster-whisper does. The Whisper API is used only when all three of these
+hold:
+
+- no local backend is available;
+- **Cho phép dự phòng đám mây** (Allow cloud fallback; `asr_cloud_fallback`, off by default) is on;
+- **Máy chủ Whisper API (URL)** is configured.
+
+If a local backend fails with an error, the app reports it and does not retry
+in the cloud. Every transcription that used the cloud carries the note "Đã
+dùng Whisper API (đám mây)". Choosing `openai_api` as the backend uploads
+because you asked it to. Endpoint setup is under [Cloud Whisper
+API](#cloud-whisper-api-v1audiotranscriptions).
+
+### Media cache
+
+For each video, the app keeps the audio extracted for transcription
+(`source_16k.wav`) and the transcription and diarization caches in
+`subtitles/_media_cache` in its data folder. The cache is capped at 5 GiB.
+Entries unused for 30 days are removed first; if the cache is still over the
+cap, the least recently used entries go next. The entry for the current video
+is never removed. Eviction runs in the background at startup and after each
+transcription. If an entry was evicted, the next transcription of that video
+extracts and transcribes it again.
+
 ## AI dubbing providers (LLM & Whisper API)
 
 Subtitle dubbing's optional AI tools (**AI Làm sạch phụ đề**, **AI Dịch lồng tiếng**,
 **AI Rút gọn khớp thời gian**) and remote speech-to-text talk to any
 OpenAI-compatible `/v1/chat/completions` and `/v1/audio/transcriptions`
 endpoint configured in *Cài đặt → Mô hình*. All network calls are opt-in and
-triggered only when you run an AI subtitle action or select a remote Whisper
-API backend.
+triggered only when you run an AI subtitle action, select a remote Whisper
+API backend or turn on the [cloud fallback](#cloud-fallback-opt-in).
 
 ### OpenAI-compatible LLM endpoints
 
@@ -440,8 +590,8 @@ API backend.
   sent to a different Whisper API host — it is reused only when the Whisper API
   URL is left blank and the ASR backend is explicitly set to `openai_api`
   (sharing the LLM server). When the ASR backend is `auto`, `/audio/transcriptions`
-  is only attempted as a fallback if **Máy chủ Whisper API (URL)** is
-  explicitly configured.
+  is attempted only as an opt-in fallback — see [Cloud fallback
+  (opt-in)](#cloud-fallback-opt-in).
 - **Silence-aware 10-minute chunking:** audio longer than 10 minutes (or any
   float32 WAV exceeding 24 MiB) is split at the quietest 200 ms RMS window near
   each 10-minute boundary, converted to temporary 16 kHz mono PCM16 WAV chunks

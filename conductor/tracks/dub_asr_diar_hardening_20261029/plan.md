@@ -397,7 +397,7 @@ Test seams and fakes:
     - Add the QML with `AppTextField`/`AppSwitch`/existing row components, using `Accessible.name` and the 44 px targets.
     - Run `scripts/update_i18n.sh`, translate, and run it again until 0 entries are unfinished.
 
-- [~] **Task 8.2: README "Dubbing runtimes" section (FR-7.4)**
+- [x] **Task 8.2: README "Dubbing runtimes" section (FR-7.4)**
   <!-- files: README.md -->
   <!-- depends: task1 -->
   - Docs only; still run the full gate before committing. The section covers:

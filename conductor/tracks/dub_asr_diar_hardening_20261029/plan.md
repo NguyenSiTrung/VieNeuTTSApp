@@ -125,7 +125,7 @@ Test seams and fakes:
     - Capture `project_id` in every async closure.
     - Reorder `removeProject`; make `cancelRender` call `_fail_render("")`; extend `shutdown()`; add the emissions.
 
-- [~] **Task 2.4: Persistence & export correctness; always-fresh cue rows (FR-1.6, FR-1.7, FR-1.9 part, L1, L4, M3, M5)**
+- [x] **Task 2.4: Persistence & export correctness; always-fresh cue rows (FR-1.6, FR-1.7, FR-1.9 part, L1, L4, M3, M5)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Setters keep the render:** on a rendered project, each of `videoMixMode`, `videoBgGainDb`, embed mode, subtitle language and `setLlmGlossary` keeps `stats`, `adjusted` and the fingerprint in `project.json`. Moving a policy knob away and back re-adopts the render with 0 synthesis. Re-importing the same file keeps the render.
@@ -347,7 +347,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase2, phase4, phase5, phase6 -->
 
-- [ ] **Task 7.1: `core/transcribe_pipeline.py` — concurrent ASR + Nemotron, speaker-turn splitting, combined progress; controller wiring (FR-4.1 wiring, FR-4.2, FR-3.4 wiring)**
+- [~] **Task 7.1: `core/transcribe_pipeline.py` — concurrent ASR + Nemotron, speaker-turn splitting, combined progress; controller wiring (FR-4.1 wiring, FR-4.2, FR-3.4 wiring)**
   <!-- files: src/vienetts_app/core/transcribe_pipeline.py, src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_transcribe_pipeline.py, tests/unit/test_subtitle_controller.py, scripts/benchmarks/transcribe_parallel.py -->
   - Red tests (event-driven stub runners):
     - **Concurrency:** the Nemotron stub starts before the ASR stub finishes, and thread budgets are split (`threads // 2`, minimum 1).
@@ -359,7 +359,7 @@ Test seams and fakes:
     - Bench gate: run `scripts/benchmarks/transcribe_parallel.py` with real runtimes. Enable `parallel` by default only if it wins ≥ 15 % wall time.
     - If no real runtime exists on the host, ship `parallel=False`, record "unmeasured" in learnings, and file a follow-up bead.
 
-- [ ] **Task 7.2: Render path — unit-cache wiring, placement-only re-render, zero-sample units (FR-5.1 wiring)**
+- [~] **Task 7.2: Render path — unit-cache wiring, placement-only re-render, zero-sample units (FR-5.1 wiring)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Single-unit edit:** editing 1 of 30 cues in a rendered project re-synthesizes exactly 1 unit (spy on `submit_stream_for_listener`).

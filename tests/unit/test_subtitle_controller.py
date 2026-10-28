@@ -326,19 +326,30 @@ def test_render_and_reimport_reuse_a_cached_track(env, tmp_path):
     assert parse_cues(Path(target).read_text(encoding="utf-8")) == list(adjusted)
 
 
-def test_policy_rebuild_keeps_the_cue_list_when_cues_are_unchanged(env, tmp_path):
-    """Policy knobs re-plan timing, not the source cue list: no cuesChanged."""
-    controller, _, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    cues_before = controller.cues
-    emitted: list[bool] = []
-    controller.cuesChanged.connect(lambda: emitted.append(True))
+def test_policy_rebuild_refreshes_the_cue_rows_in_place(env, tmp_path):
+    """M5 / FR-1.9: a knob re-plans timing, so each row's badges follow the new
+    plan. The rows are diffed in place — never removed or re-inserted."""
+    controller, fake, _ = env
+    long_text = "Một câu thoại khá dài cần nén mạnh hơn mới vừa khung"  # 52 chars
+    controller.importSrt(load_srt(tmp_path, SRT.replace("Xin chào", long_text)))
+    render_all(controller, fake, tmp_path)
+    model = controller.cueModel
+    row_churn: list[Any] = []
+    for signal in (model.modelReset, model.rowsRemoved, model.rowsInserted):
+        signal.connect(lambda *args: row_churn.append(args))
+    row = controller.cues[0]
+    assert row["fitRate"] > 1.0 and row["overflowMs"] > 0
+    assert row["overBudget"] is False  # 52 chars fit the default 1.5× budget
+
     controller.rateCap = 1.2
-    controller.rateCap = 1.35
-    controller.offsetMs = 500
-    assert controller.rendered is False  # the plan was rebuilt...
-    assert emitted == []  # ...but the cue list QML renders did not change
-    assert controller.cues == cues_before
+    controller.confirmRenderInvalidation()
+    row = controller.cues[0]
+    assert (row["fitRate"], row["overflowMs"], row["overBudget"]) == (1.0, 0, True)
+    assert model.get(0)["overBudget"] is True
+    controller.mode = "transcript"  # no live render left: applies at once
+    assert controller.cues[0]["overBudget"] is False  # transcript mode has no budget
+    assert model.get(0)["overBudget"] is False
+    assert row_churn == []
 
 
 def test_policy_round_trip_restores_the_cached_render(env, tmp_path):
@@ -862,6 +873,13 @@ def test_export_track_emits_finished(env, tmp_path):
     assert exported == list(project.adjusted)
     assert exported[1].start_ms == 3_000
 
+    # L4: a render saved before adjusted cues existed exports its cues — the
+    # source canExportSrt and exportVideo use — never an empty file.
+    legacy = replace(controller._project, adjusted=())  # noqa: SLF001
+    controller._project = legacy  # noqa: SLF001
+    target = controller.exportSrt(str(tmp_path / "out"))
+    assert parse_cues(Path(target).read_text(encoding="utf-8")) == list(legacy.cues)
+
 
 def test_export_srt_failure_reports_and_resets(env, tmp_path, monkeypatch):
     controller, fake, _ = env
@@ -988,7 +1006,9 @@ def test_clear_discards_an_in_flight_export_result(tmp_path):
     done(work())  # the old export completes after the clear — discarded
     assert controller.exporting is False
     assert results == []
-    assert Path(target).is_file()  # the file itself still landed
+    # FR-1.7: the export generation moved on, which cancels the export — so
+    # its file does not land either.
+    assert not Path(target).exists()
 
     # A fresh import reuses the on-disk render; a new export runs cleanly.
     controller.importSrt(load_srt(tmp_path))
@@ -1126,6 +1146,36 @@ class TestOrderedUnitWorker:
         assert placed == list(range(len(controller._project.cues)))
         assert controller.rendered is True
         assert controller.rendering is False
+
+        # A unit with nothing to speak (a ♪ cue is always its own unit) is
+        # placed as silence, in order on the same worker, and never submitted:
+        # synthesized alone, its empty clip failed the whole render.
+        silent: list[int] = []
+        real_silent = SubtitleTrackRenderer.add_silent_cue
+
+        def spy_silent(self, cue_index):
+            silent.append(cue_index)
+            return real_silent(self, cue_index)
+
+        monkeypatch.setattr(SubtitleTrackRenderer, "add_silent_cue", spy_silent)
+        music = (
+            "1\n00:00:00,000 --> 00:00:02,000\nXin chào\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n♪\n\n"
+            "3\n00:00:03,000 --> 00:00:05,000\nTạm biệt\n"
+        )
+        assert controller.importSrt(load_srt(tmp_path, music)) is True
+        progress: list[float] = []
+        controller.renderProgressChanged.connect(lambda: progress.append(controller.renderProgress))
+        fake.pending.clear()
+        controller.render()
+        complete_next_unit(fake, tmp_path)
+        assert [text for _id, text, _l in fake.pending] == ["Tạm biệt"]
+        complete_next_unit(fake, tmp_path)
+        assert silent == []  # queued behind the first unit's placement
+        executor.drain()
+        assert silent == [1]
+        assert controller.rendered is True
+        assert progress == sorted(progress) and progress[-1] == 1.0
 
     def test_finish_writes_the_track_off_thread(self, tmp_path: Path) -> None:
         controller, fake, executor = deferred_env(tmp_path)
@@ -1858,6 +1908,41 @@ def test_cue_edit_requires_confirmation_only_while_rendered(tmp_path):
     assert controller.cues[0]["text"] == "Sửa lần nữa"
 
 
+def test_a_speaker_voice_change_on_a_live_render_is_staged(env, tmp_path):
+    # FR-1.6 / L1: setSpeakerVoice used to drop a live render with no prompt
+    # and no stale reason; it now goes through the same staged confirmation.
+    controller, fake, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True  # unrendered: at once
+    # Unrendered, a voice applies at once too. (Mapped before the render: a
+    # context-less render with no speaker map matches the legacy pre-context
+    # fingerprint, which ignores speaker voices — see cached_render.)
+    assert controller.setSpeakerVoice("SPEAKER_01", "voice-a") is True
+    assert controller.invalidationPending is False
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True
+    reasons: list[str] = []
+    controller.renderInvalidationRequested.connect(lambda reason, _m: reasons.append(reason))
+
+    # No cue speaks as SPEAKER_09: the render does not depend on its voice.
+    assert controller.setSpeakerVoice("SPEAKER_09", "voice-c") is True
+    assert controller.invalidationPending is False and controller.rendered is True
+
+    assert controller.setSpeakerVoice("SPEAKER_01", "voice-b") is True
+    assert controller.invalidationReason == "speaker_voice" and reasons == ["speaker_voice"]
+    assert "lồng tiếng" in controller.invalidationMessage
+    assert controller.rendered is True and controller.speakers[0]["voice"] == "voice-a"
+    controller.rejectRenderInvalidation()
+    assert controller.rendered is True and controller.speakers[0]["voice"] == "voice-a"
+
+    assert controller.setSpeakerVoice("SPEAKER_01", "voice-b") is True
+    controller.confirmRenderInvalidation()
+    assert controller.speakers[0]["voice"] == "voice-b"
+    assert controller.rendered is False and controller.renderStale is True
+    assert controller._stale_reason == "speaker_voice"  # noqa: SLF001
+    assert "giọng người nói" in controller.renderStaleReason
+
+
 def test_diarization_and_llm_refinement_are_gated(tmp_path, monkeypatch):
     from vienetts_app.core.subtitles import Cue
 
@@ -1892,21 +1977,111 @@ def test_diarization_and_llm_refinement_are_gated(tmp_path, monkeypatch):
     assert controller.cues[0]["text"] == "Đã làm sạch"
 
 
-def test_glossary_survives_reimport_and_edits_during_render(env, tmp_path):
+def test_a_render_commit_keeps_what_changed_meanwhile(env, tmp_path, monkeypatch):
+    # FR-1.6: renderer.finish() commits the render's start snapshot. It now
+    # lands merged onto the latest stored project, so nothing saved during
+    # the render is overwritten.
     controller, fake, _ = env
+    store = controller._store  # noqa: SLF001
     path = load_srt(tmp_path)
     assert controller.importSrt(path)
     controller.setLlmGlossary("saved")
     assert controller.importSrt(path)
     assert controller.llmGlossary == "saved"
+    pid = controller.projectId
+
+    # Settings changed mid-render land, and the render stays live.
     controller.render()
     assert controller.rendering
     controller.setLlmGlossary("edited while rendering")
+    controller.videoMixMode = "replace"
+    controller.embedSubtitles = False
     while fake.pending:
         complete_next_unit(fake, tmp_path)
     assert controller.rendered
-    assert controller.llmGlossary == "edited while rendering"
-    assert controller._store.require(controller.projectId).llm_glossary == controller.llmGlossary  # noqa: SLF001
+    stored = store.require(pid)
+    assert stored.rendered
+    assert controller.llmGlossary == stored.llm_glossary == "edited while rendering"
+    assert controller.videoMixMode == stored.video_mix_mode == "replace"
+    assert controller.embedSubtitles is stored.embed_subtitles is False
+
+    # A cue edit saved while finish() commits survives it, and outdates the
+    # track that commit promotes.
+    real_finish = SubtitleTrackRenderer.finish
+
+    def finish_after_an_edit(renderer: SubtitleTrackRenderer) -> Any:
+        latest = store.require(pid)
+        edited = (replace(latest.cues[0], text="Sửa trong lúc ghi"), *latest.cues[1:])
+        store.save(replace(latest, cues=edited))
+        return real_finish(renderer)
+
+    monkeypatch.setattr(SubtitleTrackRenderer, "finish", finish_after_an_edit)
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    render_all(controller, fake, tmp_path)
+    assert controller.rendering is False
+    stored = store.require(pid)
+    assert stored.cues[0].text == controller.cues[0]["text"] == "Sửa trong lúc ghi"
+    assert stored.rendered is False and stored.video_mix_mode == "replace"
+    assert controller.rendered is False and controller.renderStale is True
+    assert controller._stale_reason == "cue_edit"  # noqa: SLF001
+    assert controller.statsSummary != ""  # the outdated render's stats stay visible
+
+
+def test_field_setters_and_reimport_keep_the_stored_render(tmp_path):
+    # FR-1.6 / L1: field setters (and a re-import) used to save the in-memory
+    # project over project.json. With a knob moved away that project is
+    # unrendered, so the render was lost and moving the knob back
+    # re-synthesized everything. They now change only their field on disk.
+    controller, fake, _ = _rendered_controller(tmp_path)
+    store = controller._store  # noqa: SLF001
+    pid = controller.projectId
+    rendered = store.require(pid)
+
+    def assert_render_kept() -> None:
+        stored = store.require(pid)
+        assert stored.rendered
+        assert (stored.stats, stored.adjusted, stored.fingerprint, stored.render_id) == (
+            rendered.stats,
+            rendered.adjusted,
+            rendered.fingerprint,
+            rendered.render_id,
+        )
+
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    assert controller.rendered is False
+    controller.videoMixMode = "replace"
+    controller.videoBgGainDb = -10.0
+    controller.embedSubtitles = False
+    controller.subtitleEmbedMode = "burn"
+    controller.setLlmGlossary("Thuật ngữ")
+    assert_render_kept()
+    stored = store.require(pid)
+    assert (
+        stored.video_mix_mode,
+        stored.video_bg_gain_db,
+        stored.embed_subtitles,
+        stored.subtitle_embed_mode,
+        stored.llm_glossary,
+    ) == ("replace", -10.0, False, "burn", "Thuật ngữ")
+
+    controller.rateCap = 1.5  # back: the render is adopted, nothing synthesized
+    assert controller.rendered is True
+    controller.render()
+    assert fake.pending == [] and controller.rendering is False
+    assert controller.videoMixMode == "replace" and controller.llmGlossary == "Thuật ngữ"
+
+    # Re-importing the same file under other knobs keeps it as well.
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.rendered is False
+    assert_render_kept()
+    controller.rateCap = 1.5
+    assert controller.rendered is True
+    controller.render()
+    assert fake.pending == []
 
 
 def test_llm_refinement_on_a_live_render_is_gated(tmp_path, monkeypatch):
@@ -2149,6 +2324,22 @@ def test_an_enrollment_lands_in_the_project_that_started_it(tmp_path, monkeypatc
     on_enrolled("clone-2")
     assert controller.speakers[0]["voice"] == "clone-2"
     assert controller._store.require(movie_id).speaker_voices == {"SPEAKER_01": "clone-2"}  # noqa: SLF001
+    controller.cancelAiTask()
+
+    # Enrolled mid-render (FR-1.6): the render's commit used to overwrite it.
+    # It survives, and the track that lands — made with clone-2 — is stale.
+    on_enrolled = clone()
+    controller.render()
+    assert controller.rendering is True
+    on_enrolled("clone-3")
+    assert controller.speakers[0]["voice"] == "clone-3"
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendering is False
+    assert controller.speakers[0]["voice"] == "clone-3"
+    assert controller._store.require(movie_id).speaker_voices == {"SPEAKER_01": "clone-3"}  # noqa: SLF001
+    assert controller.rendered is False and controller.renderStale is True
+    assert controller._stale_reason == "speaker_voice"  # noqa: SLF001
 
 
 def test_remove_project_stops_owners_first_and_prunes_unreferenced_media(tmp_path, monkeypatch):
@@ -2305,7 +2496,9 @@ class _DeferredRunner:
         self.calls.append((work, done, on_error))
 
 
-def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path):
+def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path, monkeypatch):
+    from vienetts_app.core.video_dub import VideoDubCancelled
+
     fake = FakeApp()
     player = FakePlayer()
     runner = _DeferredRunner()
@@ -2317,29 +2510,88 @@ def test_cancel_export_unlatches_and_ignores_the_stale_completion(tmp_path):
         bg_runner=runner,
         unit_executor=SyncOrderedExecutor(),
     )
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
     controller.importSrt(load_srt(tmp_path))
+    assert controller.attachVideo(str(video)) is True
     render_all(controller, fake, tmp_path)
     events: list[tuple[str, str]] = []
     controller.exportFinished.connect(lambda path, error: events.append((path, error)))
+    out = str(tmp_path / "out")
+    cancelled = ("", "Đã hủy xuất.")
 
-    target = controller.exportTrack(str(tmp_path / "out"))
+    target = controller.exportTrack(out)
     assert target != ""
     assert controller.exporting is True
     assert len(runner.calls) == 1
 
     controller.cancelExport()
     assert controller.exporting is False
-    assert events == [("", "Đã hủy xuất.")]
+    assert events == [cancelled]
 
-    # The worker finishing later must not emit a second result or re-latch.
+    # The worker finishing later must not emit a second result or re-latch,
+    # and the cancelled export leaves no file (M3) — nor does an SRT export.
     work, done, _on_error = runner.calls[0]
     done(work())
-    assert events == [("", "Đã hủy xuất.")]
+    assert events == [cancelled]
     assert controller.exporting is False
+    assert not Path(target).exists()
+    target = controller.exportSrt(out)
+    controller.cancelExport()
+    work, done, _on_error = runner.calls[-1]
+    done(work())
+    assert not Path(target).exists()
+    assert events == [cancelled, cancelled]
 
     # Cancelling while idle is a no-op.
     controller.cancelExport()
-    assert events == [("", "Đã hủy xuất.")]
+    assert events == [cancelled, cancelled]
+
+    # M3: video export 1 is cancelled while its ffmpeg runs and export 2
+    # starts. Export 1 still stops (the cancel check is per generation, not a
+    # shared flag export 2 resets), and the two never share a temp SRT or an
+    # output name.
+    started, release = threading.Event(), threading.Event()
+    muxes: list[dict[str, Any]] = []
+
+    def fake_mux(vpath, apath, outpath, *, srt_path=None, cancel_check=None, **kw):
+        if not muxes:
+            started.set()
+            release.wait(5)
+        muxes.append({"srt": Path(srt_path), "srt_alive": Path(srt_path).is_file()})
+        muxes[-1]["cancelled"] = cancel_check()
+        if muxes[-1]["cancelled"]:
+            raise VideoDubCancelled("Đã hủy xuất video.")
+        Path(outpath).write_bytes(b"muxed")
+        return Path(outpath)
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.mux_dubbed_video", fake_mux)
+    first = controller.exportVideo(out)
+    work1, _done1, failed1 = runner.calls[-1]
+    outcome: list[BaseException] = []
+
+    def run_first() -> None:
+        try:
+            work1()
+        except BaseException as exc:  # noqa: BLE001 - handed to the controller below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run_first)
+    worker.start()
+    assert started.wait(5)
+    controller.cancelExport()
+    second = controller.exportVideo(out)
+    release.set()
+    worker.join(5)
+    work2, done2, _failed2 = runner.calls[-1]
+    done2(work2())
+    failed1(outcome[0])
+    assert [m["cancelled"] for m in muxes] == [True, False]
+    assert muxes[0]["srt"] != muxes[1]["srt"]
+    assert all(m["srt_alive"] for m in muxes) and not any(m["srt"].exists() for m in muxes)
+    assert first != second
+    assert not Path(first).exists() and Path(second).read_bytes() == b"muxed"
+    assert events[-2:] == [cancelled, (second, "")]
 
 
 # ── derived state model (FR-2.2) ────────────────────────────────────────────

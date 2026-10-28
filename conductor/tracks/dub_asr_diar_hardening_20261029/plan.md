@@ -161,7 +161,7 @@ Test seams and fakes:
     - Reuse the NVIDIA probe from `detect_hardware`.
     - Record the real sizes and SHA-256 values of the VAD and ONNX model files during this task.
 
-- [~] **Task 3.2: Opt-in `media-runtime-build.yml` + lock/render scripts (FR-2.6)**
+- [x] **Task 3.2: Opt-in `media-runtime-build.yml` + lock/render scripts (FR-2.6)**
   <!-- files: .github/workflows/media-runtime-build.yml, packaging/media-runtime-requirements.json, scripts/lock_media_runtime.py, scripts/render_media_runtime_manifests.py, tests/unit/test_media_runtime_manifest.py -->
   <!-- depends: task1 -->
   - Red tests:

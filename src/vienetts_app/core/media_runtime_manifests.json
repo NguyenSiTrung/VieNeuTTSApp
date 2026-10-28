@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedFrom": "Placeholder until scripts/render_media_runtime_manifests.py renders locked packs (packaging/media-runtime-requirements.json + the pack lock). Only cells that were built, probed, locked and published carry published=true with url/size/sha256; every other cell is a truthful 'not available yet'.",
+  "generatedFrom": "packaging/media-runtime-lock.json (locked packs) + packaging/media-runtime-requirements.json (cell contract), rendered by scripts/render_media_runtime_manifests.py — only cells that were built, probed, locked and published carry published=true with url/size/sha256; every other cell is a truthful 'not available yet'.",
   "runtimes": {
     "whisper_cpp": {
       "cells": {
@@ -34,7 +34,7 @@
           "size": 0,
           "sha256": "",
           "archive": "zip",
-          "version": "",
+          "version": "n9.0.2-17-g2a571b6068",
           "license": "GPL-3.0-or-later",
           "source": "https://github.com/BtbN/FFmpeg-Builds"
         },
@@ -43,8 +43,8 @@
           "url": "",
           "size": 0,
           "sha256": "",
-          "archive": "tar.gz",
-          "version": "",
+          "archive": "tar.xz",
+          "version": "n9.0.2-17-g2a571b6068",
           "license": "GPL-3.0-or-later",
           "source": "https://github.com/BtbN/FFmpeg-Builds"
         },
@@ -53,8 +53,8 @@
           "url": "",
           "size": 0,
           "sha256": "",
-          "archive": "tar.gz",
-          "version": "",
+          "archive": "tar.xz",
+          "version": "n9.0.2-17-g2a571b6068",
           "license": "GPL-3.0-or-later",
           "source": "https://github.com/BtbN/FFmpeg-Builds"
         },
@@ -64,7 +64,7 @@
           "size": 0,
           "sha256": "",
           "archive": "tar.gz",
-          "version": "",
+          "version": "n9.0.2",
           "license": "GPL-3.0-or-later",
           "source": "https://ffmpeg.martin-riedl.de"
         },
@@ -74,7 +74,7 @@
           "size": 0,
           "sha256": "",
           "archive": "tar.gz",
-          "version": "",
+          "version": "n9.0.2",
           "license": "GPL-3.0-or-later",
           "source": "https://ffmpeg.martin-riedl.de"
         }

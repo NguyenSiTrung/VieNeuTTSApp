@@ -1,0 +1,304 @@
+{
+ "schemaVersion": 1,
+ "description": "Pinned inputs for the project-published media runtime packs (track dub_asr_diar_hardening_20261029, FR-2.6): a static macOS whisper-cli built from source, and mirrored upstream ffmpeg builds. Consumed by scripts/lock_media_runtime.py (plan/fetch/stage/smoke/pack/lock) and scripts/render_media_runtime_manifests.py, driven by .github/workflows/media-runtime-build.yml. Nothing here enters pyproject.toml or the frozen bundle; only the rendered src/vienetts_app/core/media_runtime_manifests.json ships.",
+ "downloadsBase": "https://nguyensitrung.github.io/VieNeuTTSApp/packs",
+ "packDir": "media",
+ "maxPackBytes": 100000000,
+ "notes": [
+  "Packs are published on gh-pages, a git branch: GitHub rejects any pushed file over 100 MiB, so the lock refuses a pack over 100 MB (decimal).",
+  "Published pack names carry the first 12 hex digits of their SHA-256, so a rebuild never replaces bytes an already-shipped manifest pins.",
+  "Pack layout (core/ai_models.py installers): bin/<executables> at the archive root, plus LICENSE and SOURCE.txt; Linux ffmpeg packs add lib/ (RUNPATH $ORIGIN/../lib).",
+  "ffmpeg picks: BtbN FFmpeg-Builds gpl-shared for Windows/Linux (the gpl static archives are 120-185 MiB, over the gh-pages limit; shared libs are the libav* family only, every other dependency is static) and ffmpeg.martin-riedl.de release builds for macOS. martin-riedl.de Linux builds are configured with --enable-nonfree and are NOT redistributable, so they are not used.",
+  "Upstream pins were read on 2026-10-29 from the published checksum files as data (BtbN checksums.sha256, martin-riedl.de per-file .sha256), with sizes from the GitHub release API and HTTP Content-Length. The BtbN month-end build is kept for two years (BtbN README); the daily builds are pruned after 14 days.",
+  "An unfilled pin (size <= 0, or a sha256 / commit that is not hex) is a placeholder: plan, fetch, lock and render all refuse that cell until it is filled from the upstream checksum file."
+ ],
+ "runtimes": {
+  "whisper_cpp": {
+   "packPrefix": "whisper-cli",
+   "version": "b5454",
+   "license": "MIT",
+   "source": "https://github.com/ggml-org/whisper.cpp/tree/b5454",
+   "upstream": {
+    "repo": "ggml-org/whisper.cpp",
+    "tag": "b5454",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "licenseFile": "LICENSE"
+   },
+   "binaries": ["bin/whisper-cli"],
+   "probes": [
+    {
+     "name": "help",
+     "argv": ["bin/whisper-cli", "--help"],
+     "contains": ["--vad", "--vad-model", "--output-json-full", "--max-context", "--no-gpu"]
+    }
+   ],
+   "cells": {
+    "macos-arm64-metal": {
+     "runner": "macos-15",
+     "os": "macos",
+     "archive": "tar.gz",
+     "deploymentFloor": "macOS 14 arm64 (the app's LSMinimumSystemVersion); system frameworks only, ad-hoc signed",
+     "cmakeFlags": [
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DGGML_METAL=ON",
+      "-DGGML_METAL_EMBED_LIBRARY=ON",
+      "-DGGML_NATIVE=OFF",
+      "-DGGML_OPENMP=OFF",
+      "-DWHISPER_BUILD_TESTS=OFF",
+      "-DWHISPER_BUILD_SERVER=OFF",
+      "-DCMAKE_OSX_ARCHITECTURES=arm64",
+      "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+     ]
+    },
+    "macos-x64-cpu": {
+     "runner": "macos-15-intel",
+     "os": "macos",
+     "archive": "tar.gz",
+     "deploymentFloor": "macOS 14 x86_64: every Intel Mac it supports has AVX2/FMA/F16C; system frameworks only, ad-hoc signed",
+     "cmakeFlags": [
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DGGML_METAL=OFF",
+      "-DGGML_NATIVE=OFF",
+      "-DGGML_AVX=ON",
+      "-DGGML_AVX2=ON",
+      "-DGGML_FMA=ON",
+      "-DGGML_F16C=ON",
+      "-DGGML_OPENMP=OFF",
+      "-DWHISPER_BUILD_TESTS=OFF",
+      "-DWHISPER_BUILD_SERVER=OFF",
+      "-DCMAKE_OSX_ARCHITECTURES=x86_64",
+      "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+     ]
+    }
+   }
+  },
+  "ffmpeg": {
+   "packPrefix": "ffmpeg",
+   "license": "GPL-3.0-or-later",
+   "binaries": ["bin/ffmpeg", "bin/ffprobe"],
+   "probes": [
+    {
+     "name": "ffmpeg-version",
+     "argv": ["bin/ffmpeg", "-version"],
+     "contains": ["ffmpeg version", "--enable-gpl", "--enable-version3"],
+     "absent": ["--enable-nonfree"]
+    },
+    {
+     "name": "ffprobe-version",
+     "argv": ["bin/ffprobe", "-version"],
+     "contains": ["ffprobe version"]
+    },
+    {
+     "name": "encoders",
+     "argv": ["bin/ffmpeg", "-hide_banner", "-encoders"],
+     "listed": ["libx264", "libvpx-vp9", "aac", "mpeg4", "mov_text", "srt", "webvtt"]
+    },
+    {
+     "name": "filters",
+     "argv": ["bin/ffmpeg", "-hide_banner", "-filters"],
+     "listed": ["subtitles", "ass", "amix", "asendcmd", "alimiter", "sidechaincompress", "volume"]
+    }
+   ],
+   "cells": {
+    "windows-x64": {
+     "runner": "windows-latest",
+     "os": "windows",
+     "archive": "zip",
+     "version": "n9.0.2-17-g2a571b6068",
+     "source": "https://github.com/BtbN/FFmpeg-Builds",
+     "binaries": ["bin/ffmpeg.exe", "bin/ffprobe.exe"],
+     "deploymentFloor": "Windows 10 x64 (BtbN win64)",
+     "upstream": {
+      "provider": "BtbN/FFmpeg-Builds",
+      "release": "autobuild-2026-09-30-13-08",
+      "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/2a571b606854520cf89804d8030c8b328e621689",
+      "buildScripts": "https://github.com/BtbN/FFmpeg-Builds",
+      "assets": [
+       {
+        "name": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-shared-9.0.zip",
+        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-shared-9.0.zip",
+        "size": 86321582,
+        "sha256": "3da6c7b60bb9ccd73ec5b5e815ba804a0879eb362ba0e3beebce50174c022696",
+        "checksumUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/checksums.sha256"
+       }
+      ]
+     },
+     "stage": [
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-shared-9.0.zip",
+       "members": ["*/bin/ffmpeg.exe", "*/bin/ffprobe.exe", "*/bin/*.dll"],
+       "dest": "bin/"
+      },
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-shared-9.0.zip",
+       "members": ["*/LICENSE.txt"],
+       "dest": "LICENSE"
+      }
+     ]
+    },
+    "linux-x64": {
+     "runner": "ubuntu-24.04",
+     "os": "linux",
+     "archive": "tar.xz",
+     "version": "n9.0.2-17-g2a571b6068",
+     "source": "https://github.com/BtbN/FFmpeg-Builds",
+     "deploymentFloor": "glibc >= 2.28, Linux >= 4.18 (BtbN linux64)",
+     "upstream": {
+      "provider": "BtbN/FFmpeg-Builds",
+      "release": "autobuild-2026-09-30-13-08",
+      "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/2a571b606854520cf89804d8030c8b328e621689",
+      "buildScripts": "https://github.com/BtbN/FFmpeg-Builds",
+      "assets": [
+       {
+        "name": "ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-shared-9.0.tar.xz",
+        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-shared-9.0.tar.xz",
+        "size": 68653636,
+        "sha256": "01a9764d0b5364b66cfeb4617557c64321b0e232e172ec73f0a701c5f7694326",
+        "checksumUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/checksums.sha256"
+       }
+      ]
+     },
+     "stage": [
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-shared-9.0.tar.xz",
+       "members": ["*/bin/ffmpeg", "*/bin/ffprobe"],
+       "dest": "bin/"
+      },
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-shared-9.0.tar.xz",
+       "members": ["*/lib/*.so.*"],
+       "dest": "lib/"
+      },
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-shared-9.0.tar.xz",
+       "members": ["*/LICENSE.txt"],
+       "dest": "LICENSE"
+      }
+     ]
+    },
+    "linux-arm64": {
+     "runner": "ubuntu-24.04-arm",
+     "os": "linux",
+     "archive": "tar.xz",
+     "version": "n9.0.2-17-g2a571b6068",
+     "source": "https://github.com/BtbN/FFmpeg-Builds",
+     "deploymentFloor": "glibc >= 2.28, Linux >= 4.18 (BtbN linuxarm64)",
+     "upstream": {
+      "provider": "BtbN/FFmpeg-Builds",
+      "release": "autobuild-2026-09-30-13-08",
+      "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/2a571b606854520cf89804d8030c8b328e621689",
+      "buildScripts": "https://github.com/BtbN/FFmpeg-Builds",
+      "assets": [
+       {
+        "name": "ffmpeg-n9.0.2-17-g2a571b6068-linuxarm64-gpl-shared-9.0.tar.xz",
+        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-linuxarm64-gpl-shared-9.0.tar.xz",
+        "size": 57679524,
+        "sha256": "706ccdbc8b0537646345532713a9b6750c0a6258cc001ec1c0379754f0ae730a",
+        "checksumUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/checksums.sha256"
+       }
+      ]
+     },
+     "stage": [
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linuxarm64-gpl-shared-9.0.tar.xz",
+       "members": ["*/bin/ffmpeg", "*/bin/ffprobe"],
+       "dest": "bin/"
+      },
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linuxarm64-gpl-shared-9.0.tar.xz",
+       "members": ["*/lib/*.so.*"],
+       "dest": "lib/"
+      },
+      {
+       "asset": "ffmpeg-n9.0.2-17-g2a571b6068-linuxarm64-gpl-shared-9.0.tar.xz",
+       "members": ["*/LICENSE.txt"],
+       "dest": "LICENSE"
+      }
+     ]
+    },
+    "macos-arm64": {
+     "runner": "macos-15",
+     "os": "macos",
+     "archive": "tar.gz",
+     "version": "n9.0.2",
+     "source": "https://ffmpeg.martin-riedl.de",
+     "deploymentFloor": "macOS 14 arm64 (app floor); static, Developer ID signed upstream",
+     "upstream": {
+      "provider": "ffmpeg.martin-riedl.de",
+      "release": "9.0.2 release build 1789931890 (macos/arm64)",
+      "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/n9.0.2",
+      "buildScripts": "https://git.martin-riedl.de/ffmpeg/build-script",
+      "assets": [
+       {
+        "name": "ffmpeg.zip",
+        "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",
+        "size": 28395699,
+        "sha256": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
+        "checksumUrl": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip.sha256"
+       },
+       {
+        "name": "ffprobe.zip",
+        "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip",
+        "size": 28317701,
+        "sha256": "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
+        "checksumUrl": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip.sha256"
+       },
+       {
+        "name": "COPYING.GPLv3",
+        "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n9.0.2/COPYING.GPLv3",
+        "size": 35147,
+        "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+       }
+      ]
+     },
+     "stage": [
+      {"asset": "ffmpeg.zip", "members": ["ffmpeg", "*/ffmpeg"], "dest": "bin/"},
+      {"asset": "ffprobe.zip", "members": ["ffprobe", "*/ffprobe"], "dest": "bin/"},
+      {"asset": "COPYING.GPLv3", "dest": "LICENSE"}
+     ]
+    },
+    "macos-x64": {
+     "runner": "macos-15-intel",
+     "os": "macos",
+     "archive": "tar.gz",
+     "version": "n9.0.2",
+     "source": "https://ffmpeg.martin-riedl.de",
+     "deploymentFloor": "macOS 14 x86_64 (app floor); static, Developer ID signed upstream",
+     "upstream": {
+      "provider": "ffmpeg.martin-riedl.de",
+      "release": "9.0.2 release build 1789931006 (macos/amd64)",
+      "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/n9.0.2",
+      "buildScripts": "https://git.martin-riedl.de/ffmpeg/build-script",
+      "assets": [
+       {
+        "name": "ffmpeg.zip",
+        "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2/ffmpeg.zip",
+        "size": 33816391,
+        "sha256": "7c6b4125b191cbf773832dc51f424cf2b6bb7da43007d1e066f95909e47cacd4",
+        "checksumUrl": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2/ffmpeg.zip.sha256"
+       },
+       {
+        "name": "ffprobe.zip",
+        "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2/ffprobe.zip",
+        "size": 33719233,
+        "sha256": "2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd",
+        "checksumUrl": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2/ffprobe.zip.sha256"
+       },
+       {
+        "name": "COPYING.GPLv3",
+        "url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n9.0.2/COPYING.GPLv3",
+        "size": 35147,
+        "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+       }
+      ]
+     },
+     "stage": [
+      {"asset": "ffmpeg.zip", "members": ["ffmpeg", "*/ffmpeg"], "dest": "bin/"},
+      {"asset": "ffprobe.zip", "members": ["ffprobe", "*/ffprobe"], "dest": "bin/"},
+      {"asset": "COPYING.GPLv3", "dest": "LICENSE"}
+     ]
+    }
+   }
+  }
+ }
+}

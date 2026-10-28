@@ -1,0 +1,295 @@
+# Media runtime pack build — OPT-IN (FR-2.6, Task 3.2).
+#
+# Builds/mirrors the managed media runtime packs pinned in
+# packaging/media-runtime-requirements.json:
+# - whisper_cpp: a static macOS `whisper-cli` built from whisper.cpp at the
+#   pinned commit (arm64 Metal with the embedded shader library; x64 CPU-only),
+#   ad-hoc signed, linked against system libraries only.
+# - ffmpeg: pinned upstream builds (BtbN gpl-shared on Windows/Linux,
+#   martin-riedl.de on macOS) verified against the pinned size + SHA-256 AND
+#   the upstream checksum file, restaged as bin/ffmpeg + bin/ffprobe (+ their
+#   shared libs) + LICENSE.
+# Every pack carries LICENSE and SOURCE.txt at the archive root (no top-level
+# directory). The smoke runs each binary from a foreign cwd — whisper-cli
+# `--help` must list `--vad`; ffmpeg `-version` must report --enable-gpl and
+# must NOT report --enable-nonfree; `-encoders`/`-filters` must list what the
+# dubbing pipeline uses. scripts/lock_media_runtime.py then locks the archive
+# by size + SHA-256 under a content-addressed name.
+#
+# Publication is gated behind the explicit `publish` dispatch input and only
+# runs when every selected cell succeeded: the publish job re-locks each pack
+# into packaging/media-runtime-lock.json while copying it into the gh-pages
+# packs/ tree (never replacing published bytes), renders the shipped
+# src/vienetts_app/core/media_runtime_manifests.json with
+# scripts/render_media_runtime_manifests.py, pushes the packs to gh-pages and
+# then commits the lock + manifest to main. Until then the shipped manifest
+# publishes nothing and the app keeps using the system tools.
+#
+# Notes:
+# - A job-level `if:` may not read `matrix` (GitHub rejects the whole file):
+#   the plan job emits `<runtime>_any` next to each shrunk matrix.
+# - gh-pages is a git branch: GitHub refuses files over 100 MiB, which is why
+#   the requirements pin shared ffmpeg builds and cap packs at maxPackBytes.
+
+name: Media runtime build (opt-in)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: "Comma-separated: all, a runtime (whisper_cpp, ffmpeg) or <runtime>/<cell>"
+        default: "all"
+        type: string
+      publish:
+        description: "After building: re-lock packs, render the shipped manifest, push packs to gh-pages and the lock + manifest to main"
+        default: false
+        type: boolean
+      downloads_base:
+        description: "Published packs base URL (gh-pages packs/) written into each published cell's url"
+        default: "https://nguyensitrung.github.io/VieNeuTTSApp/packs"
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      whisper_cpp_cells: ${{ steps.plan.outputs.whisper_cpp_cells }}
+      whisper_cpp_any: ${{ steps.plan.outputs.whisper_cpp_any }}
+      ffmpeg_cells: ${{ steps.plan.outputs.ffmpeg_cells }}
+      ffmpeg_any: ${{ steps.plan.outputs.ffmpeg_any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - id: plan
+        env:
+          CELLS: ${{ inputs.cells }}
+        run: |
+          set -euo pipefail
+          python scripts/lock_media_runtime.py plan --cells "$CELLS" | tee -a "$GITHUB_OUTPUT"
+
+  whisper:
+    needs: plan
+    if: needs.plan.outputs.whisper_cpp_any == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.whisper_cpp_cells) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+      CELL: ${{ matrix.cell }}
+      CMAKE_FLAGS: ${{ matrix.cmake_flags }}
+      WHISPER_COMMIT: ${{ matrix.commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check out whisper.cpp at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.commit }}
+          path: whisper-src
+          persist-credentials: false
+
+      - name: Build a static whisper-cli
+        run: |
+          set -euo pipefail
+          test "$(git -C whisper-src rev-parse HEAD)" = "$WHISPER_COMMIT"
+          read -ra flags <<< "$CMAKE_FLAGS"
+          cmake -S whisper-src -B whisper-src/build -DCMAKE_BUILD_TYPE=Release "${flags[@]}"
+          cmake --build whisper-src/build --config Release --target whisper-cli --parallel
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$stage/bin"
+          cp whisper-src/build/bin/whisper-cli "$stage/bin/whisper-cli"
+          cp whisper-src/LICENSE "$stage/LICENSE"
+
+      - name: Ad-hoc sign; verify arch, deployment floor and system-only linkage
+        run: |
+          set -euo pipefail
+          cli="$RUNNER_TEMP/stage/bin/whisper-cli"
+          codesign --force --sign - "$cli"
+          codesign --verify --strict --verbose=2 "$cli"
+          case "$CELL" in *arm64*) want=arm64 ;; *) want=x86_64 ;; esac
+          test "$(lipo -archs "$cli")" = "$want"
+          minos="$(otool -l "$cli" | awk '/LC_BUILD_VERSION/ {seen=1} seen && $1 == "minos" {print $2; exit}')"
+          echo "minos=$minos"
+          test "$minos" = "14.0"
+          otool -L "$cli"
+          if otool -L "$cli" | tail -n +2 | awk '{print $1}' \
+              | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+            echo "::error::whisper-cli links a non-system library (Homebrew/libomp?)"
+            exit 1
+          fi
+
+      - name: Smoke, pack and lock
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/media-out"
+          python scripts/lock_media_runtime.py smoke --runtime "$RUNTIME" --cell "$CELL" \
+            --stage "$RUNNER_TEMP/stage" --out "$out/probes"
+          pack="$(python scripts/lock_media_runtime.py pack --runtime "$RUNTIME" --cell "$CELL" \
+            --stage "$RUNNER_TEMP/stage" --out "$out")"
+          python scripts/lock_media_runtime.py lock --runtime "$RUNTIME" --cell "$CELL" \
+            --pack "$pack" --probe-dir "$out/probes" --lock "$out/lock.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-pack-${{ matrix.id }}
+          path: ${{ runner.temp }}/media-out
+          compression-level: 0
+          if-no-files-found: error
+
+  ffmpeg:
+    needs: plan
+    if: needs.plan.outputs.ffmpeg_any == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.ffmpeg_cells) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+      CELL: ${{ matrix.cell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Fetch the pinned upstream build and verify its checksums
+        run: |
+          set -euo pipefail
+          python scripts/lock_media_runtime.py fetch --runtime "$RUNTIME" --cell "$CELL" \
+            --dest "$RUNNER_TEMP/upstream"
+
+      - name: Restage into the pack layout
+        run: |
+          set -euo pipefail
+          python scripts/lock_media_runtime.py stage --runtime "$RUNTIME" --cell "$CELL" \
+            --downloads "$RUNNER_TEMP/upstream" --stage "$RUNNER_TEMP/stage"
+
+      - name: Smoke (-version / -encoders / -filters), pack and lock
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/media-out"
+          python scripts/lock_media_runtime.py smoke --runtime "$RUNTIME" --cell "$CELL" \
+            --stage "$RUNNER_TEMP/stage" --out "$out/probes"
+          pack="$(python scripts/lock_media_runtime.py pack --runtime "$RUNTIME" --cell "$CELL" \
+            --stage "$RUNNER_TEMP/stage" --out "$out")"
+          python scripts/lock_media_runtime.py lock --runtime "$RUNTIME" --cell "$CELL" \
+            --pack "$pack" --probe-dir "$out/probes" --lock "$out/lock.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-pack-${{ matrix.id }}
+          path: ${{ runner.temp }}/media-out
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: [whisper, ffmpeg]
+    # Skipped runtimes are fine; any failed cell blocks the whole publication.
+    if: >-
+      ${{ !cancelled() && inputs.publish
+      && !contains(needs.*.result, 'failure')
+      && (needs.whisper.result == 'success' || needs.ffmpeg.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+    steps:
+      - name: Publish only from main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::publish=true must be dispatched on main (got $GITHUB_REF)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: media-pack-*
+          path: artifacts
+
+      - name: Check out gh-pages
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin gh-pages
+          git worktree add --detach pages-worktree FETCH_HEAD
+
+      - name: Re-lock each pack into the gh-pages packs/ tree and render the manifest
+        env:
+          DOWNLOADS_BASE: ${{ inputs.downloads_base }}
+        run: |
+          set -euo pipefail
+          for dir in artifacts/media-pack-*/; do
+            id="$(basename "$dir")"; id="${id#media-pack-}"
+            runtime="${id%%-*}"; cell="${id#*-}"
+            mapfile -t found < <(find "$dir" -maxdepth 1 -type f \
+              \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tar.xz' \))
+            if [ "${#found[@]}" -ne 1 ]; then
+              echo "::error::$id: expected exactly one pack, found ${#found[@]}"
+              exit 1
+            fi
+            python scripts/lock_media_runtime.py lock --runtime "$runtime" --cell "$cell" \
+              --pack "${found[0]}" --probe-dir "$dir/probes" \
+              --lock packaging/media-runtime-lock.json \
+              --publish-root pages-worktree/packs
+          done
+          python scripts/render_media_runtime_manifests.py \
+            --packs-dir pages-worktree/packs --downloads-base "$DOWNLOADS_BASE"
+
+      - name: Publish packs to gh-pages
+        run: |
+          set -euo pipefail
+          cd pages-worktree
+          {
+            printf '<!doctype html><meta charset="utf-8"><title>VieNeuTTSApp packs</title>\n'
+            printf '<h1>VieNeuTTSApp runtime packs</h1><ul>\n'
+            find packs -type f | sort | sed 's|.*|<li><a href="&">&</a></li>|'
+            printf '</ul>\n'
+          } > index.html
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A packs index.html
+          if git diff --cached --quiet; then
+            echo "no new packs to publish"
+          else
+            git commit -m "Publish media runtime packs (run $GITHUB_RUN_ID)"
+            git push origin HEAD:gh-pages
+          fi
+
+      - name: Commit the lock and shipped manifest to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/media-runtime-lock.json \
+                  src/vienetts_app/core/media_runtime_manifests.json
+          if git diff --cached --quiet; then
+            echo "no manifest changes"
+          else
+            git commit -m "chore(media): lock and ship CI-built media runtime packs"
+            git push origin HEAD:main
+          fi

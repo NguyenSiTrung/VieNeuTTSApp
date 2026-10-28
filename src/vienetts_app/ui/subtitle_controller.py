@@ -57,6 +57,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -64,6 +65,7 @@ import threading
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
@@ -91,6 +93,7 @@ from vienetts_app.core.diarization import (
     remap_speakers_to_previous,
     select_speaker_reference_clip,
 )
+from vienetts_app.core.engine import VOICES_FILENAME
 from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.processes import terminate_children
@@ -99,6 +102,7 @@ from vienetts_app.core.subtitle_project import (
     SubtitleProjectError,
     SubtitleProjectStore,
     SubtitleTrackRenderer,
+    UnitClipCache,
     build_project,
     export_srt_file,
     render_fingerprint,
@@ -197,6 +201,50 @@ def _speaker_ref_is_current(ref_wav: Path, key: str) -> bool:
         )
     except OSError:
         return False
+
+
+@lru_cache(maxsize=2)
+def _voice_entry_digests(path: str, mtime_ns: int, size: int) -> dict[str, str]:
+    """name → digest of its ``voices.json`` entry, parsed once per file version."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    presets = data.get("presets") if isinstance(data, dict) else None
+    if not isinstance(presets, dict):
+        return {}
+    return {
+        str(name): hashlib.sha256(
+            json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        for name, entry in presets.items()
+        if isinstance(entry, dict)
+    }
+
+
+def _voice_stamp(voices_file: Path, voice: str) -> str:
+    """Digest of ``voice``'s saved entry in ``voices.json``; ``""`` without one.
+
+    Part of a unit clip cache key (FR-5.1): a VieNeu voice re-enrolled under
+    the same name gets new reference codes, which must not reuse the clips
+    the old ones produced. (A Qwen clone's context carries a fresh clone id.)
+    """
+    try:
+        stat = voices_file.stat()
+    except OSError:
+        return ""
+    return _voice_entry_digests(str(voices_file), stat.st_mtime_ns, stat.st_size).get(voice, "")
+
+
+@dataclass(frozen=True)
+class _UnitRequest:
+    """What one speech unit is synthesized from; ``key`` names its cached clip
+    (``""`` when the engine identity is unknown: such audio is never reused)."""
+
+    text: str
+    voice: str
+    context: SynthesisContext | None
+    key: str
 
 
 # Keys of one `cues` row — the roles of `cueModel`.
@@ -418,6 +466,11 @@ class SubtitleController(QObject):
         # unit worker that commits a render.
         self._render_commit: _RenderCommitStore | None = None
         self._store_lock = threading.Lock()
+        # FR-5.1: the running render's raw unit clip cache, the cache key of
+        # the unit being synthesized, and its voices' voices.json stamps.
+        self._render_cache: UnitClipCache | None = None
+        self._unit_key = ""
+        self._render_voice_stamps: dict[str, str] = {}
         self._units: list[tuple[int, ...]] = []
         self._unit_index = 0
         self._job_id: str | None = None
@@ -1924,6 +1977,10 @@ class SubtitleController(QObject):
         if loaded is None:
             self._set_error(self.tr("Không mở được dự án phụ đề đã chọn."))
             return False
+        if loaded.rendered and loaded.render_id != self._store.track_render_id(pid):
+            # FR-5.7: a commit cut off between project.json and the track
+            # promote — track.wav belongs to another render, never this one.
+            loaded = replace(loaded, total_ms=0, stats=None, adjusted=())
         self.videoReleaseRequested.emit()
         self._cancel_owners()
         self._stop_playback()
@@ -2032,6 +2089,17 @@ class SubtitleController(QObject):
         project = self._project
         if project is None or self._rendering or self._refuse_if_busy("render"):
             return
+        if not any(cue.speakable for cue in project.cues):
+            # Only sound cues, ♪ or symbols: there is nothing to dub, and the
+            # "track" would be silence (or empty, which finish() refuses).
+            self._play_after_render = False
+            self._set_error(
+                self.tr(
+                    "Phụ đề không có lời thoại nào để lồng tiếng "
+                    "(chỉ có chú thích âm thanh, ♪ hoặc ký hiệu)."
+                )
+            )
+            return
         context, refused = self._submission_context()
         if refused:
             self._set_error(
@@ -2107,6 +2175,10 @@ class SubtitleController(QObject):
         self._render_commit = commit
         self._render_project = project
         self._render_voice = self._effective_voice()
+        # FR-5.1: one clip cache per render — units already synthesized under
+        # the same inputs are re-placed from it instead of re-synthesized.
+        self._render_cache = self._store.unit_cache(project.id)
+        self._render_voice_stamps = {}
         self._rendering = True
         self._set_error("")
         self.renderingChanged.emit()
@@ -2181,20 +2253,30 @@ class SubtitleController(QObject):
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
         # A unit with nothing to speak (a sound cue, ♪ or emoji only — always
-        # a unit of its own) is placed as silence. Synthesized alone, its
-        # empty clip failed the whole render. A loop, not recursion: a long
-        # run of such cues must not grow the stack.
+        # a unit of its own) is placed as silence; synthesized alone, its empty
+        # clip failed the whole render. A unit whose clip is cached (FR-5.1)
+        # is re-placed from it. Neither is synthesized. A loop, not recursion:
+        # a long run of such units must not grow the stack.
         generation = self._render_generation
-        while self._unit_index < len(self._units) and not any(
-            project.cues[index].speakable for index in self._units[self._unit_index]
-        ):
-            self._place_silent_unit(self._units[self._unit_index])
+        while self._unit_index < len(self._units):
+            unit = self._units[self._unit_index]
+            if not any(project.cues[index].speakable for index in unit):
+                self._queue_placement(unit, "")
+            else:
+                request = self._unit_request(project, unit)
+                if request is None:
+                    return  # refused: the render failed
+                cache = self._render_cache
+                if not request.key or cache is None or not cache.contains(request.key):
+                    self._submit_unit(request)
+                    return
+                self._queue_placement(unit, request.key)
             if generation != self._render_generation:
                 return  # its placement failed (inline): the render is over
-        if self._unit_index >= len(self._units):
-            self._finish_render()
-            return
-        unit = self._units[self._unit_index]
+        self._finish_render()
+
+    def _unit_request(self, project: SubtitleProject, unit: tuple[int, ...]) -> _UnitRequest | None:
+        """``unit``'s text, voice, identity and clip key; ``None`` once refused."""
         text = " ".join(project.cues[index].text for index in unit).strip()
         first_cue = project.cues[unit[0]] if unit else None
         default_voice = self._render_voice
@@ -2203,10 +2285,6 @@ class SubtitleController(QObject):
             if first_cue is not None and first_cue.speaker
             else ""
         ) or default_voice
-        submit = getattr(self._app, "submit_stream_for_listener", None)
-        if not callable(submit):
-            self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
-            return
         context = project.context
         if unit_voice and unit_voice != default_voice:
             probe = getattr(self._app, "submission_context_for", None)
@@ -2222,13 +2300,39 @@ class SubtitleController(QObject):
                                 voice=unit_voice
                             )
                         )
-                        return
+                        return None
                     context = alt_ctx
+        key = ""
+        if context is not None:
+            stamp = self._render_voice_stamps.get(unit_voice)
+            if stamp is None:
+                voices_file = self._data_dir / "voices" / VOICES_FILENAME
+                stamp = self._render_voice_stamps[unit_voice] = _voice_stamp(
+                    voices_file, unit_voice
+                )
+            key = UnitClipCache.key(
+                text,
+                voice_id=unit_voice,
+                voice_stamp=stamp,
+                profile=context.profile,
+                model_revision=context.model_revision,
+                speed=context.generation.speed,
+                context_fingerprint=context.fingerprint(),
+            )
+        return _UnitRequest(text, unit_voice, context, key)
+
+    def _submit_unit(self, request: _UnitRequest) -> None:
+        """Hand one unit to the engine; its terminal comes back to this listener."""
+        submit = getattr(self._app, "submit_stream_for_listener", None)
+        if not callable(submit):
+            self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
+            return
+        voice = request.voice or None
         try:
-            if context is None:
-                job_id = submit(text, unit_voice or None, self, kind="bulk")
+            if request.context is None:
+                job_id = submit(request.text, voice, self, kind="bulk")
             else:
-                job_id = submit(text, unit_voice or None, self, kind="bulk", context=context)
+                job_id = submit(request.text, voice, self, kind="bulk", context=request.context)
         except Exception as exc:  # noqa: BLE001 - engine seam errors are render failures
             logger.exception("submitting a subtitle synthesis unit failed")
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp: {error}").format(error=exc))
@@ -2237,6 +2341,7 @@ class SubtitleController(QObject):
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
         self._job_id = job_id
+        self._unit_key = request.key
         self._unit_progress = 0.0
 
     # ── synthesis-listener contract (called by AppController) ────────────────
@@ -2276,6 +2381,8 @@ class SubtitleController(QObject):
         Placement (WAV read → per-cue split → time-stretch → track write) runs
         on ``_units_exec`` in submission order while the engine already works
         on the following unit; failures come back here and fail the render.
+        The raw clip is cached first (FR-5.1), even when the render has moved
+        on meanwhile, so a retry after a failure or cancel resumes there.
         """
         project = self._render_project
         renderer = self._renderer
@@ -2288,11 +2395,20 @@ class SubtitleController(QObject):
             self._fail_render(self.tr("Tệp âm thanh vừa tạo không hợp lệ."))
             return
         generation = self._render_generation
+        cache = self._render_cache if self._unit_key else None
+        key = self._unit_key
 
         def work() -> None:
             try:
+                if generation != self._render_generation and cache is None:
+                    return  # dropped, with nothing worth keeping
+                audio = self._unit_audio(project, artifact)
+                if cache is not None and audio is not None:
+                    # A cache write failure only costs a re-synthesis later.
+                    with contextlib.suppress(SubtitleProjectError):
+                        cache.put(key, audio, project.sample_rate)
                 if generation == self._render_generation:  # else: dropped
-                    self._place_unit(renderer, project, unit, artifact)
+                    self._place_audio(renderer, unit, audio)
             finally:
                 self._release_artifact(artifact)
 
@@ -2309,19 +2425,38 @@ class SubtitleController(QObject):
         self._emit_progress()
         self._submit_next_unit()
 
-    def _place_silent_unit(self, unit: tuple[int, ...]) -> None:
-        """Queue ``unit`` as silence on the ordered worker and move past it.
+    def _queue_placement(self, unit: tuple[int, ...], key: str) -> None:
+        """Queue ``unit`` on the ordered worker without synthesizing it.
 
-        It goes through the same worker as every placement, so it lands in
-        cue order, and counts as one finished unit of progress.
+        ``key`` names its cached clip; ``""`` places it as silence. It goes
+        through the same worker as every placement, so it lands in cue order,
+        and counts as one finished unit of progress.
         """
         renderer = self._renderer
+        project = self._render_project
+        cache = self._render_cache
         generation = self._render_generation
 
         def work() -> None:
-            if generation == self._render_generation and renderer is not None:
-                for index in unit:
-                    renderer.add_silent_cue(index)
+            if generation != self._render_generation or renderer is None or project is None:
+                return
+            audio = None
+            if key:
+                audio = None if cache is None else cache.get(key, project.sample_rate)
+                if audio is None:
+                    # Evicted or unreadable since the lookup: drop the entry
+                    # so the retry synthesizes this unit again.
+                    path = None if cache is None else cache.path_for(key)
+                    if path is not None:
+                        with contextlib.suppress(OSError):
+                            path.unlink(missing_ok=True)
+                    raise SubtitleProjectError(
+                        self.tr(
+                            "Không đọc được âm thanh đã lưu của một đoạn; "
+                            "hãy tạo lại để tổng hợp lại đoạn đó."
+                        )
+                    )
+            self._place_audio(renderer, unit, audio)
 
         def placed(_result: None) -> None:
             return None
@@ -2335,15 +2470,14 @@ class SubtitleController(QObject):
         self._unit_progress = 0.0
         self._emit_progress()
 
-    def _place_unit(
-        self,
-        renderer: SubtitleTrackRenderer,
-        project: SubtitleProject,
-        unit: tuple[int, ...],
-        artifact: SynthesisArtifact,
-    ) -> None:
-        """Worker thread: place one unit's audio; raises with the banner text."""
-        if not artifact.path.is_file() or artifact.samples <= 0:
+    def _unit_audio(self, project: SubtitleProject, artifact: SynthesisArtifact) -> Any:
+        """Worker thread: a synthesized unit's audio; ``None`` when it is empty.
+
+        Raises with the banner text when the artifact is missing or unreadable.
+        """
+        if artifact.samples <= 0:
+            return None  # the engine spoke nothing: the unit is placed silent
+        if not artifact.path.is_file():
             raise SubtitleProjectError(self.tr("Tệp âm thanh vừa tạo không hợp lệ."))
         try:
             audio, sample_rate = read_wav(artifact.path)
@@ -2358,6 +2492,16 @@ class SubtitleController(QObject):
                     rate=sample_rate
                 )
             )
+        return audio if audio.size else None
+
+    def _place_audio(
+        self, renderer: SubtitleTrackRenderer, unit: tuple[int, ...], audio: Any
+    ) -> None:
+        """Worker thread: place one unit (``None`` = silence); raises with the banner text."""
+        if audio is None:
+            for index in unit:
+                renderer.add_silent_cue(index)
+            return
         try:
             renderer.add_unit_clip(unit, audio, split_fn=split_unit_audio)
         except SubtitleProjectError:
@@ -2408,6 +2552,7 @@ class SubtitleController(QObject):
             self._renderer = None
             self._render_commit = None
             self._render_project = None
+            self._render_cache = None
             self._project = loaded
             self._reset_staleness()
             if edit:
@@ -2466,6 +2611,7 @@ class SubtitleController(QObject):
         self._renderer = None
         self._render_commit = None
         self._render_project = None
+        self._render_cache = None
         self._render_generation += 1
         if renderer is None:
             return
@@ -2502,13 +2648,20 @@ class SubtitleController(QObject):
             self._play_track()
 
     def _release_artifact(self, value: Any) -> None:
-        """Delete an interactive-store artifact WAV — only under OUR data dir."""
+        """Delete an interactive-store artifact WAV — only under OUR data dir.
+
+        Never a workspace file: a cached unit clip (FR-5.1) or a track
+        outlives every render that placed it.
+        """
         if not isinstance(value, SynthesisArtifact):
             return
         try:
             path = value.path.resolve()
             root = self._data_dir.resolve()
             if root == path or root not in path.parents:
+                return
+            workspaces = getattr(self._store, "root", None)
+            if workspaces is not None and Path(workspaces).resolve() in path.parents:
                 return
             path.unlink(missing_ok=True)
         except OSError:

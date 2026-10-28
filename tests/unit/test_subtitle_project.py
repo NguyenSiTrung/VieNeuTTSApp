@@ -755,13 +755,15 @@ def test_unit_clip_cache_key(tmp_path) -> None:
 def test_unit_clip_cache_storage_and_lru(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
+    store.save(project)
     cache = store.unit_cache(project.id)
     units = store.project_dir(project.id) / "units"
     key = UnitClipCache.key("Hello world.", voice_id="voice-a")
     audio = np.linspace(-0.5, 0.5, 700, dtype=np.float32)
-    assert cache.get(key, SR) is None  # miss
+    assert cache.get(key, SR) is None and cache.contains(key) is False  # miss
     path = cache.put(key, audio, SR)
     assert path == units / f"{key}.wav"
+    assert cache.contains(key) is True  # an index lookup: no WAV read
     # A fresh instance (the next app run) reads the exact clip back.
     np.testing.assert_array_equal(store.unit_cache(project.id).get(key, SR), audio)
     assert cache.get(key, SR * 2) is None  # another output rate is a miss
@@ -787,9 +789,14 @@ def test_unit_clip_cache_storage_and_lru(tmp_path) -> None:
     UnitClipCache(lru_dir, cap_bytes=3 * size).put(keys[1], audio, SR)
     assert {p.stem for p in lru_dir.glob("*.wav")} == {keys[0], keys[3], keys[1]}
 
-    # The cache lives inside the workspace: removing the project drops it too.
+    # The cache lives inside the workspace: removing the project drops it too,
+    # and a clip put after that (a late unit placement) never resurrects it.
     store.remove(project.id)
     assert not units.exists()
+    assert cache.contains(key) is False
+    with pytest.raises(SubtitleProjectError):
+        cache.put(key, audio, SR)
+    assert not store.project_dir(project.id).exists()
 
 
 # ── engine identity (Phase 5 Task 5.3) ───────────────────────────────────────
@@ -902,6 +909,32 @@ def test_cache_keying(tmp_path) -> None:
     # A legacy render whose INPUTS moved is not reusable either.
     changed = make_project(tmp_path, policy=FitPolicy.dub(rate_cap=1.2), context=render_context())
     assert store.cached_render(changed) is None
+
+    # The legacy comparison covers the used speakers' voices: mapping a voice
+    # onto a speaker of a render made without one re-renders, while a legacy
+    # render made with the same map is still adopted.
+    spk_cues = [replace(cue, speaker="SPK") for cue in parse_cues(SAMPLE_SRT)]
+
+    def spk_project(voices: dict[str, str], context: Any = None) -> Any:
+        return build_project(
+            "/media/movie.srt",
+            spk_cues,
+            FitPolicy.dub(rate_cap=1.5),
+            sample_rate=SR,
+            voice_key="voice-a",
+            context=context,
+            speaker_voices=voices,
+        )
+
+    store = make_store(tmp_path / "case-c")
+    render_three(store, spk_project({}))
+    assert store.cached_render(spk_project({}, render_context())) is not None
+    assert store.cached_render(spk_project({"SPK": "Ngoc"}, render_context())) is None
+    assert store.cached_render(spk_project({"SPK": "Ngoc"})) is None
+    store = make_store(tmp_path / "case-d")
+    render_three(store, spk_project({"SPK": "Binh", "UNUSED": "Mai"}))
+    assert store.cached_render(spk_project({"SPK": "Binh"}, render_context())) is not None
+    assert store.cached_render(spk_project({"SPK": "Ngoc"}, render_context())) is None
 
 
 def test_render_identity_and_gguf(tmp_path) -> None:

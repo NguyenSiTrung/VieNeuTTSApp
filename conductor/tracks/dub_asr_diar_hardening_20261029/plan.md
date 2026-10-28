@@ -359,7 +359,7 @@ Test seams and fakes:
     - Bench gate: run `scripts/benchmarks/transcribe_parallel.py` with real runtimes. Enable `parallel` by default only if it wins ≥ 15 % wall time.
     - If no real runtime exists on the host, ship `parallel=False`, record "unmeasured" in learnings, and file a follow-up bead.
 
-- [~] **Task 7.2: Render path — unit-cache wiring, placement-only re-render, zero-sample units (FR-5.1 wiring)**
+- [x] **Task 7.2: Render path — unit-cache wiring, placement-only re-render, zero-sample units (FR-5.1 wiring)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - **Single-unit edit:** editing 1 of 30 cues in a rendered project re-synthesizes exactly 1 unit (spy on `submit_stream_for_listener`).
@@ -397,7 +397,7 @@ Test seams and fakes:
     - Add the QML with `AppTextField`/`AppSwitch`/existing row components, using `Accessible.name` and the 44 px targets.
     - Run `scripts/update_i18n.sh`, translate, and run it again until 0 entries are unfinished.
 
-- [ ] **Task 8.2: README "Dubbing runtimes" section (FR-7.4)**
+- [~] **Task 8.2: README "Dubbing runtimes" section (FR-7.4)**
   <!-- files: README.md -->
   <!-- depends: task1 -->
   - Docs only; still run the full gate before committing. The section covers:

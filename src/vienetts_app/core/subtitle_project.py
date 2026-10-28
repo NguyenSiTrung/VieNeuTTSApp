@@ -314,19 +314,11 @@ def _fingerprint_digest(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _pre_normalization_fingerprint(project: SubtitleProject) -> str:
-    """``project``'s digest as hashed before FR-5.7 (raw speaker map, unused
-    speakers included); only :meth:`SubtitleProjectStore.cached_render` uses
-    it, to keep reusing tracks rendered before the normalization."""
-    raw_map = {str(k): str(v) for k, v in project.speaker_voices.items() if k and v}
-    return _fingerprint_digest(
-        project.cues,
-        project.policy,
-        project.sample_rate,
-        project.voice_key,
-        project.context,
-        raw_map,
-    )
+def _raw_speaker_map(project: SubtitleProject) -> dict[str, str]:
+    """``project``'s speaker map as hashed before FR-5.7 (unused speakers and
+    padded names included); only :meth:`SubtitleProjectStore.cached_render`
+    uses it, to keep reusing tracks rendered before the normalization."""
+    return {str(k): str(v) for k, v in project.speaker_voices.items() if k and v}
 
 
 def project_id_for(source_path: str | Path, cues: Sequence[Cue]) -> str:
@@ -523,34 +515,57 @@ class UnitClipCache:
             return None
         return self.directory / f"{key}.wav"
 
+    def contains(self, key: str) -> bool:
+        """Whether a clip is stored under ``key``, from the index (no WAV read).
+
+        A hit counts as a use, so the clips a render is about to place are
+        the last ones a later put evicts.
+        """
+        path = self.path_for(key)
+        if path is None:
+            return False
+        with self._lock:
+            index = self._load_index()
+            if key not in index:
+                return False
+            self._touch(key, path)  # drops the entry when the file is gone
+            return key in index
+
     def get(self, key: str, sample_rate: int) -> np.ndarray | None:
-        """The cached clip, when present at ``sample_rate``; never raises."""
+        """The cached clip, when present at ``sample_rate``; never raises.
+
+        The WAV is read outside the lock, so a :meth:`contains` lookup on the
+        GUI thread never waits for a clip read on the placement worker.
+        """
         path = self.path_for(key)
         if path is None:
             return None
+        try:
+            audio, rate = read_wav(path)
+        except FileNotFoundError:
+            with self._lock:
+                self._load_index().pop(key, None)
+            return None
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("dropping unreadable cached unit clip %s (%s)", path, exc)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            with self._lock:
+                self._load_index().pop(key, None)
+            return None
+        if rate != int(sample_rate) or audio.ndim != 1 or audio.size == 0:
+            return None
         with self._lock:
-            index = self._load_index()
-            try:
-                audio, rate = read_wav(path)
-            except FileNotFoundError:
-                index.pop(key, None)
-                return None
-            except (OSError, RuntimeError, ValueError) as exc:
-                logger.warning("dropping unreadable cached unit clip %s (%s)", path, exc)
-                with contextlib.suppress(OSError):
-                    path.unlink(missing_ok=True)
-                index.pop(key, None)
-                return None
-            if rate != int(sample_rate) or audio.ndim != 1 or audio.size == 0:
-                return None
+            self._load_index()
             self._touch(key, path)
-            return audio
+        return audio
 
     def put(self, key: str, audio: np.ndarray, sample_rate: int) -> Path | None:
         """Store one unit's raw clip atomically, then evict down to the cap.
 
         Returns the clip's path, or ``None`` for an empty clip (a 0-sample unit
-        is placed silent and never cached).
+        is placed silent and never cached). Only ``units/`` itself is created:
+        a put landing after its workspace was removed never resurrects it.
 
         Raises:
             SubtitleProjectError: the key is malformed or the clip can't be written.
@@ -563,7 +578,7 @@ class UnitClipCache:
             return None
         temp = self.directory / f".{key}.{uuid.uuid4().hex}.tmp.wav"
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
+            self.directory.mkdir(exist_ok=True)
             write_wav_file(clip, temp, int(sample_rate))
             _replace_retrying(temp, path)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -907,7 +922,8 @@ class SubtitleProjectStore:
         pre-multi-engine app used — is asking for it, and never for another
         profile (``synthesis_context.legacy_render_compatible``). And a render
         whose digest hashed a speaker map with unused or padded entries (before
-        FR-5.7 normalized it) is matched against that raw map.
+        FR-5.7 normalized it) is matched against that raw map. Either way the
+        used speakers' voices are compared, so re-voicing one re-renders.
         """
         if not self.has_track(project.id):
             return None
@@ -926,14 +942,24 @@ class SubtitleProjectStore:
             return None
         if stored.fingerprint == project.fingerprint:
             return stored
-        if project.speaker_voices and stored.fingerprint == _pre_normalization_fingerprint(project):
-            return stored  # rendered before speaker maps were normalized
+        contexts = [project.context]
         if stored.context is None and context_matches(None, project.context):
-            legacy = render_fingerprint(
-                project.cues, project.policy, project.sample_rate, project.voice_key
-            )
-            if legacy == stored.fingerprint:
-                return stored
+            contexts.append(None)  # rendered before provenance: inputs only
+        active = _active_speaker_voices(project.cues, project.speaker_voices)
+        raw = _raw_speaker_map(project)
+        speaker_maps = [active] if raw == active else [active, raw]
+        for context in contexts:
+            for speaker_map in speaker_maps:
+                digest = _fingerprint_digest(
+                    project.cues,
+                    project.policy,
+                    project.sample_rate,
+                    project.voice_key,
+                    context,
+                    speaker_map,
+                )
+                if digest == stored.fingerprint:
+                    return stored
         return None
 
     def needs_render(self, project: SubtitleProject) -> bool:

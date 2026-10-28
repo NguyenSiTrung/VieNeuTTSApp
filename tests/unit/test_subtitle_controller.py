@@ -9,6 +9,7 @@ all exercised without an engine or an audio device.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import threading
 import uuid
@@ -659,12 +660,103 @@ def test_an_engine_switch_re_renders_instead_of_adopting_the_track(tmp_path):
     assert controller.rendered is True
     assert controller._project.context.profile == "qwen_custom_0_6b"  # noqa: SLF001
 
-    # ...and switching back re-renders too (the new track is the Qwen one).
+    # ...and switching back re-renders too (the new track is the Qwen one),
+    # from the VieNeu clips the unit cache still holds (FR-5.1).
     fake.contexts["voice-a"] = render_context()
     fake.submitted.clear()
     controller.render()
-    assert len(fake.pending) == 1
-    assert fake.submitted[0]["context"].profile == "vieneu"
+    assert fake.submitted == [] and fake.pending == []
+    assert controller.rendered is True and controller.rendering is False
+    assert controller._project.context.profile == "vieneu"  # noqa: SLF001
+
+
+def numbered_srt(count: int) -> str:
+    """``count`` cues of 2 s, 3 s apart, reading "Câu số N."."""
+
+    def stamp(ms: int) -> str:
+        minutes, ms = divmod(ms, 60_000)
+        return f"00:{minutes:02d}:{ms // 1000:02d},{ms % 1000:03d}"
+
+    return "".join(
+        f"{n + 1}\n{stamp(n * 3000)} --> {stamp(n * 3000 + 2000)}\nCâu số {n + 1}.\n\n"
+        for n in range(count)
+    )
+
+
+def test_a_rerender_synthesizes_only_units_missing_from_the_clip_cache(tmp_path):
+    # FR-5.1: each synthesized unit's raw clip is cached under its inputs, so
+    # a re-render synthesizes only what changed and re-places the rest.
+    controller, fake, _ = identified_env(tmp_path)
+    controller.importSrt(load_srt(tmp_path, numbered_srt(30)))
+    render_all(controller, fake, tmp_path)
+    assert len(fake.submitted) == 30 and controller.rendered is True
+    clips = sorted((project_dir(controller) / "units").glob("*.wav"))
+    assert len(clips) == 30
+    # The engine's artifacts are released; a cached clip never is.
+    assert not list((tmp_path / "artifacts").rglob("*.wav"))
+    controller._release_artifact(  # noqa: SLF001
+        SynthesisArtifact("cached", clips[0], DEFAULT_SAMPLE_RATE, 1, 1)
+    )
+    assert clips[0].is_file()
+
+    def stage(knob: str, value: Any) -> None:
+        setattr(controller, knob, value)
+        controller.confirmRenderInvalidation()
+
+    def rerender() -> list[str]:
+        fake.submitted.clear()
+        render_all(controller, fake, tmp_path)
+        assert controller.rendered is True and controller.rendering is False
+        return [entry["text"] for entry in fake.submitted]
+
+    # Editing 1 of 30 cues re-synthesizes exactly that unit.
+    assert controller.updateCue(4, "Câu đã sửa.", "") is True
+    controller.confirmRenderInvalidation()
+    assert rerender() == ["Câu đã sửa."]
+    # Offset and rate cap only move placement: nothing is synthesized.
+    duration = controller.durationMs
+    stage("offsetMs", 120)
+    assert rerender() == []
+    assert controller.durationMs == duration + 120
+    stage("rateCap", 1.2)
+    assert rerender() == []
+    assert controller._project.policy.rate_cap == 1.2  # noqa: SLF001
+
+    # A voice re-enrolled under the same name (its voices.json entry changed)
+    # re-synthesizes its units; another voice's entry changing does not.
+    voices = tmp_path / "voices" / "voices.json"
+    voices.parent.mkdir(parents=True, exist_ok=True)
+    voices.write_text(json.dumps({"presets": {"voice-a": {"codes": [1, 2]}}}), encoding="utf-8")
+    stage("offsetMs", 0)
+    assert len(rerender()) == 30
+    entries = {"voice-a": {"codes": [1, 2]}, "voice-z": {"codes": [3]}}
+    voices.write_text(json.dumps({"presets": entries}), encoding="utf-8")
+    stage("offsetMs", 60)
+    assert rerender() == []
+
+    # A unit failing at index 5 fails the render; the retry resumes there.
+    vieneu_clips = set((project_dir(controller) / "units").glob("*.wav"))
+    fake.contexts["voice-a"] = render_context("qwen_custom_0_6b", voice_id="Vivian")
+    fake.submitted.clear()
+    controller.render()
+    for _ in range(5):
+        complete_next_unit(fake, tmp_path)
+    job_id, _text, listener = fake.pending.pop(0)
+    listener.on_synthesis_terminal(
+        JobTerminal(job_id=job_id, owner="audiobook", state="failed", error="boom")
+    )
+    assert controller.rendering is False and controller.errorText == "boom"
+    assert rerender() == [f"Câu số {n}." for n in range(6, 31)]
+
+    # A cached clip found unreadable at placement fails the render with a
+    # clear message, and the retry synthesizes just that unit again.
+    qwen_clips = sorted(set((project_dir(controller) / "units").glob("*.wav")) - vieneu_clips)
+    assert len(qwen_clips) == 30
+    qwen_clips[7].write_bytes(b"not a wav")
+    stage("offsetMs", 0)
+    controller.render()
+    assert controller.rendering is False and "âm thanh đã lưu" in controller.errorText
+    assert len(rerender()) == 1
 
 
 def test_a_refused_combination_reports_and_submits_nothing(tmp_path):
@@ -1176,6 +1268,38 @@ class TestOrderedUnitWorker:
         assert silent == [1]
         assert controller.rendered is True
         assert progress == sorted(progress) and progress[-1] == 1.0
+
+        # A unit the engine returns empty (0 samples) is placed as silence
+        # too, its artifact released, and the render completes.
+        silent.clear()
+        assert controller.importSrt(load_srt(tmp_path, SRT)) is True
+        controller.render()
+        job_id, text, listener = fake.pending.pop(0)
+        artifact, artifact_path = make_artifact(job_id, text, tmp_path)
+        listener.on_synthesis_terminal(
+            JobTerminal(
+                job_id=job_id,
+                owner="audiobook",
+                state="completed",
+                value=replace(artifact, samples=0, duration_ms=0),
+            )
+        )
+        complete_next_unit(fake, tmp_path)
+        executor.drain()
+        assert silent == [0]
+        assert not artifact_path.exists()
+        assert controller.rendered is True and controller.errorText == ""
+
+        # An SRT with nothing to speak at all is refused up front.
+        only_sound = (
+            "1\n00:00:01,000 --> 00:00:02,000\n♪\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n[Tiếng nhạc]\n"
+        )
+        assert controller.importSrt(load_srt(tmp_path, only_sound)) is True
+        controller.render()
+        assert fake.pending == [] and executor.queue == []
+        assert controller.rendering is False and controller.rendered is False
+        assert "lời thoại" in controller.errorText
 
     def test_finish_writes_the_track_off_thread(self, tmp_path: Path) -> None:
         controller, fake, executor = deferred_env(tmp_path)
@@ -1914,11 +2038,6 @@ def test_a_speaker_voice_change_on_a_live_render_is_staged(env, tmp_path):
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))
     assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True  # unrendered: at once
-    # Unrendered, a voice applies at once too. (Mapped before the render: a
-    # context-less render with no speaker map matches the legacy pre-context
-    # fingerprint, which ignores speaker voices — see cached_render.)
-    assert controller.setSpeakerVoice("SPEAKER_01", "voice-a") is True
-    assert controller.invalidationPending is False
     render_all(controller, fake, tmp_path)
     assert controller.rendered is True
     reasons: list[str] = []
@@ -1941,6 +2060,10 @@ def test_a_speaker_voice_change_on_a_live_render_is_staged(env, tmp_path):
     assert controller.rendered is False and controller.renderStale is True
     assert controller._stale_reason == "speaker_voice"  # noqa: SLF001
     assert "giọng người nói" in controller.renderStaleReason
+    # The render made before the voice was mapped is not re-adopted: the
+    # context-less (legacy) comparison covers the used speakers' voices.
+    controller.render()
+    assert [text for _id, text, _l in fake.pending] == ["Xin chào"]
 
 
 def test_diarization_and_llm_refinement_are_gated(tmp_path, monkeypatch):
@@ -2180,8 +2303,19 @@ def test_project_lifecycle_lists_opens_and_removes(tmp_path, monkeypatch):
     assert controller.rendered is True
     assert controller.cueCount == 2
     assert controller.mode == "dub"
-
     assert changed_once()
+
+    # FR-5.7: a commit cut off between project.json and the track promote
+    # leaves another render's track.wav — the project reopens unrendered.
+    project_json = controller._store.project_path(first_id)  # noqa: SLF001
+    payload = json.loads(project_json.read_text(encoding="utf-8"))
+    payload["renderId"] = "f" * 32
+    project_json.write_text(json.dumps(payload), encoding="utf-8")
+    assert controller.openProject(first_id) is True
+    assert controller.rendered is False and controller.durationMs == 0
+    assert controller.canExportTrack is False
+    changes.clear()
+
     assert controller.removeProject(first_id) is True
     assert changed_once()  # remove (it clears the active project too)
     assert controller.loaded is False

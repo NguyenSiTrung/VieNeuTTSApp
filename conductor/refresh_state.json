@@ -1,71 +1,70 @@
 {
-  "timestamp": "2026-10-28T15:15:00+07:00",
+  "timestamp": "2026-10-28T22:45:00+07:00",
   "scope": "all",
-  "drift": "FEATURE ADDED — track `llm_provider_hardening_20261028` (epic `VieNeuTTSApp-f783`) implemented, verified, and archived since the previous 2026-10-28 (2) refresh (`8e4ce55`); no root dependency, CI, gate, or packaging drift.",
-  "commits_since_last_refresh": "8e4ce55..4374d0f (13 commits: 3dfb2b5 track spec/plan/learnings, 5d4bb35/2ca09b8 beads exports, d6a5ab0 Task 1.1 core/llm_client.py transport, ca2d344 Task 1.2 settings clamping + 0600 permissions, ddf561d Task 2.1 strict reply parsing + slim prompt envelope, f87ecb5 Task 2.2 resilient concurrent batch refinement, e1743cf Task 3.1 separate Whisper API model + auto gating, c2a28c2 Task 3.2 600 s silence-aware PCM16 chunked upload, 952b315 Task 4.1 controller provider wiring + project glossary, ac1272f section 1 handoff, cecff8a Task 4.2 Settings/Prepare QML + i18n, 16f8e28 Task 4.3 README provider docs, 4374d0f track archive)",
+  "drift": "RELEASE + CI/TEARDOWN FIXES + 3-PASS TEST DIET — `v0.4.0` released (`59aa085`), Windows shebang CLI stub dispatch & QML restart teardown hardened (`8398dd8`, `0d0320a`, closing `VieNeuTTSApp-snqi` & `VieNeuTTSApp-qjkk` in `bd4d06e`), and 3-pass test-suite diet completed (`6648bf0`, beads `sd4e`/`948h`/`tyk1`: 1630/1612 -> 1278/1261 tests, 216 -> 192 formatted files); zero third-party dependency drift.",
+  "commits_since_last_refresh": "92c0e7d..6648bf0 (5 commits: 59aa085 v0.4.0 release & notes, 8398dd8 Windows shebang CLI stub dispatch & macOS subtitle list polish, 0d0320a pure-Python CLI stubs & deterministic multi-engine QML teardown, bd4d06e close snqi & qjkk beads, 6648bf0 3-pass test-suite diet)",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "Implementation Status prose synced through 2026-10-28: added `video_preview_panel_20261028` and `llm_provider_hardening_20261028` to the feature-11 track list, updated archived track count 14 -> 16, and refreshed live gate counts to 1630 collected / 1612 selected (-m 'not slow' -> 1590, -m 'not slow and not benchmark' -> 1572), ruff 216 files formatted, and i18n 1216/1216 finished",
-        "enriched the 2026-10-28 (3) refresh marker with the 8e4ce55..4374d0f commit range (13 commits) and Beads stats (553 total / 0 open / 1 blocked / 40 deferred / 512 closed)"
+        "Implementation Status synced to live post-`6648bf0` gate: 1278 collected / 1261 selected (17 benchmark deselected; `-m 'not slow'` -> 1243, `-m 'not slow and not benchmark'` -> 1226), ruff 192 files formatted, wall ~24-43 s",
+        "noted closure of `VieNeuTTSApp-qjkk` (`test_ui_shell.py` null-context-property race fixed in `0d0320a` via `app._teardown_qml()`) and extended the suite-size history with the `6648bf0` 3-pass test diet (`sd4e`/`948h`/`tyk1`, -352 collected / -351 selected)",
+        "added top 2026-10-28 (4) refresh marker covering `59aa085..6648bf0` and updated Beads stats (557 total / 0 open / 1 blocked / 39 deferred / 517 closed)"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "UI Framework component inventory updated with `AppTextField.passwordEcho` (`llm_provider_hardening_20261028`) and `SubtitleVideoPreview` (`video_preview_panel_20261028`)",
-        "File Import > SRT subtitle dub/transcript studio updated with `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`) and `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`), sparse `llmGlossary` persistence outside `render_fingerprint`, and `SubtitleController` video preview signals/slots",
-        "File Import > Video dubbing, Whisper ASR, speaker diarization, LLM refinement & managed AI downloads updated with `core/asr.py` separate `AsrConfig.api_model` (`whisper-1`), `asr_api_*` credential isolation, gated `auto` fallback, and 600 s / 24 MiB silence-aware `PCM_16` chunked upload, plus `core/llm_client.py` + `core/llm_refine.py` shared transport, error taxonomy, capability downgrade cache, `<think>`/fence-tolerant `raw_decode` reply scanning, strict index matching, `allowedSpeakers`, slim JSON envelope with `llmGlossary` + `contextBefore`/`contextAfter`, batch failure isolation, length bisection, missing-cue follow-up, verified `fit_timing`, `ThreadPoolExecutor` concurrency, and per-task model overrides",
-        "Persistence section updated with per-field settings validation/clamping (`load_settings`) and POSIX `0o600` owner-only permissions on `settings.json`",
-        "Build & Dev Tooling post-v0.3.0 summary extended through 2026-10-28 with `video_preview_panel_20261028` and `llm_provider_hardening_20261028`, suite 1630/1612, ruff 216 files green, and i18n 1216/1216 finished"
+        "added top 2026-10-28 (4) refresh marker recording app `v0.4.0` (`59aa085`), `ai_models.cli_command()` Windows shebang CLI stub dispatch (`8398dd8`, `0d0320a`), `app._teardown_qml()` multi-engine anchor retention (`0d0320a`, closing `qjkk`), and the `6648bf0` test diet (1278/1261 tests, 192 formatted files)",
+        "File Import > `core/ai_models.py` updated with `cli_command()` shebang test-stub dispatch on Windows and extensionless CLI lookup (`8398dd8`, `0d0320a`)",
+        "Build & Dev Tooling > `Shipped (2026-10-28, v0.4.0)` updated with `8398dd8`/`0d0320a` CI/teardown fixes, `6648bf0` 3-pass test-suite diet, and current suite/ruff counts (1278 collected / 1261 selected, 17 benchmark deselected, 192 formatted files)"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "added top 2026-10-28 (3) refresh marker for `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `3dfb2b5..4374d0f`) with live gate figures (1630 collected / 1612 selected, +15 items across `test_llm_client.py`, `test_llm_refine.py`, `test_asr.py`, `test_settings.py`, `test_subtitle_controller.py`; ruff 216 files green; i18n 1216/1216 finished)",
-        "extended the suite-size history bullet with 2026-10-28 `llm_provider_hardening_20261028` (`f783`, `d6a5ab0..16f8e28`, +15 items) -> 1630 collected / 1612 selected"
+        "added top 2026-10-28 (4) refresh marker for `59aa085..6648bf0` with live gate figures (1278 collected / 1261 selected, 17 benchmark deselected; ruff 192 files green; i18n 1216/1216 finished)",
+        "updated Testing section: noted `test_i18n.py` removal in `6648bf0` (`scripts/update_i18n.sh` is the catalog check), marked `VieNeuTTSApp-qjkk` (`test_ui_shell.py` null-context-property race) fixed and closed (`0d0320a` + `bd4d06e`), and appended the `6648bf0` 3-pass test diet (`sd4e`/`948h`/`tyk1`, -> 1278/1261) to the suite-size history"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "updated `Tiered pytest runs` bullet to 1612 selected / 1630 collected (18 benchmark deselected; `-m 'not slow'` -> 1590, `-m 'not slow and not benchmark'` -> 1572; 2026-10-28)",
-        "merged the cross-track `isinstance(v, bool)` before `isinstance(v, int)` recurrence from `llm_provider_hardening_20261028` Tasks 1.2 & 4.1 (`core/settings.py` + `AppController._set_ai_number`) into the existing `Python bool subclasses int` gotcha bullet (226 bullets total)",
-        "updated `Last refreshed` footer for the full 16-track refresh"
+        "extended `QML teardown must be DETERMINISTIC` with `0d0320a` multi-engine rebuild anchor retention (`app._retired_qml_anchors`, `_update_timer` stop, `removeTranslator`, filter/prebuild detach, 3x `DeferredDelete`, closing `VieNeuTTSApp-qjkk`)",
+        "added Windows shebang CLI stub gotcha (`ai_models.cli_command()`, pure-Python `#!/usr/bin/env python3` stubs to avoid `WinError 216` and CRLF `sh` loops, extensionless lookup in `_locate_cli`/`_locate_whisper_cli`)",
+        "updated `New user-facing qsTr/self.tr strings`, `Low-value test criteria`, `Suite size is a MOVING number` (1278 collected / 1261 selected), `Full-suite failures on a LOADED host` (`qjkk` closed), and `Last refreshed` footer (227 bullets total)"
       ]
     },
     {
       "file": "conductor/tracks.md",
       "updates": [
-        "no change needed — the archived `llm_provider_hardening_20261028` entry was already recorded by `/conductor-archive` in `4374d0f`"
+        "no change needed — `conductor/tracks/` is empty and all 16 completed tracks remain archived in `conductor/archive/`"
       ]
     }
   ],
   "verification": {
-    "collect_only": "1630 collected / 1612 selected (18 benchmark deselected) — was 1615/1597 (+15 items)",
-    "collect_slow": "-m 'not slow' -> 1590 / 1630 (40 deselected)",
-    "collect_slow_no_bench": "-m 'not slow and not benchmark' -> 1572 / 1630 (58 deselected)",
-    "ruff": "ruff check . -> All checks passed!; ruff format --check . -> 216 files already formatted",
-    "i18n": "scripts/update_i18n.sh -> 1216 source text(s), 1216 finished and 0 unfinished (was 1190/0; +26 strings)",
-    "deps": "git diff 8e4ce55..HEAD -- pyproject.toml uv.lock -> empty",
-    "packaging": "git diff 8e4ce55..HEAD -- packaging/ .github/ -> empty",
+    "collect_only": "1278 collected / 1261 selected (17 benchmark deselected) — was 1630/1612 (-352 collected / -351 selected in 6648bf0)",
+    "collect_slow": "-m 'not slow' -> 1243 / 1278 (35 deselected)",
+    "collect_slow_no_bench": "-m 'not slow and not benchmark' -> 1226 / 1278 (52 deselected)",
+    "ruff": "ruff check . -> All checks passed!; ruff format --check . -> 192 files already formatted",
+    "i18n": "scripts/update_i18n.sh -> 1216 source text(s), 1216 finished and 0 unfinished",
+    "deps": "git diff 92c0e7d..HEAD -- pyproject.toml uv.lock -> version 0.3.0 -> 0.4.0 only (zero third-party dependency drift)",
+    "packaging": "packaging/release-notes/v0.4.0.md added; packaging/vienetts-app.spec CFBundleShortVersionString fallback 0.3.0 -> 0.4.0",
     "tracks": "conductor/tracks/ empty; conductor/archive/ holds 16 track dirs, all 16 documented in conductor/tracks.md"
   },
   "learnings_consolidation": {
     "tracks_scanned": 16,
-    "new_tracks_since_last_refresh": ["llm_provider_hardening_20261028"],
-    "patterns_before": 222,
-    "new_patterns_added": 4,
-    "duplicate_patterns_merged": 1,
-    "patterns_after": 226,
-    "source": "4 new patterns from `llm_provider_hardening_20261028` were elevated during archival in `4374d0f` (`core/llm_client.py` transport/capability-downgrade/resilient batched refinement & isolated chunked Whisper API, float32 WAV -> PCM16 conversion for oversized single-chunk uploads, `AppTextField.passwordEcho` + `TextArea` focus-loss commit, and per-field settings clamping with POSIX `0600` `settings.json`); this refresh merged the recurring `isinstance(v, bool)` before `isinstance(v, int)` gotcha (Tasks 1.2 & 4.1) into the existing bullet and refreshed `Tiered pytest runs`."
+    "new_tracks_since_last_refresh": [],
+    "patterns_before": 226,
+    "new_patterns_added": 1,
+    "duplicate_patterns_merged": 2,
+    "patterns_after": 227,
+    "source": "Added 1 new gotcha from `8398dd8`/`0d0320a` (Windows `cli_command()` shebang test-stub dispatch + pure-Python `#!/usr/bin/env python3` stubs to avoid `WinError 216` and CRLF `sh` loops) and merged `0d0320a` multi-engine `_teardown_qml()` anchor retention (`VieNeuTTSApp-qjkk` closed) and `6648bf0` 3-pass test diet (`sd4e`/`948h`/`tyk1`, `test_i18n.py` removal, 1278/1261 counts) into existing bullets."
   },
-  "beads_drift": "CHECKED via `bd stats --json`, `bd list --status open`, and `bd blocked`: 553 total / 0 open / 0 in_progress / 1 blocked / 40 deferred / 512 closed (was 539 total / 498 closed at the previous refresh; +14 issues created and closed for epic `VieNeuTTSApp-f783`: 4 phase beads + 9 task beads + epic). The single blocked issue is `VieNeuTTSApp-nqx.2.4` (blocked by `VieNeuTTSApp-nqx.2.3`). Zero plan.md drift possible: `conductor/tracks/` is empty.",
+  "beads_drift": "CHECKED via `bd stats --json`, `bd list --status open`, and `bd blocked`: 557 total / 0 open / 0 in_progress / 1 blocked / 39 deferred / 517 closed (was 553 total / 40 deferred / 512 closed at `92c0e7d`; closed `VieNeuTTSApp-snqi` and `VieNeuTTSApp-qjkk` in `bd4d06e`, and created+closed `VieNeuTTSApp-sd4e`, `VieNeuTTSApp-948h`, `VieNeuTTSApp-tyk1` in `6648bf0`). The single blocked issue is `VieNeuTTSApp-nqx.2.4` (blocked by `VieNeuTTSApp-nqx.2.3`). Zero plan.md drift possible: `conductor/tracks/` is empty.",
   "known_baseline_failures": {
-    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy) plus 6 x64-cell Qwen/GGUF manifest tests on linux-aarch64 (beads VieNeuTTSApp-4jwz / VieNeuTTSApp-x898)",
-    "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, test_qwen_host.py::TestFrameLoop::test_session_lifecycle, or test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk)"
+    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy) plus x64-cell Qwen/GGUF host-cell tests on linux-aarch64 (beads VieNeuTTSApp-4jwz / VieNeuTTSApp-x898)",
+    "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, or test_qwen_host.py::TestFrameLoop::test_session_lifecycle; test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk was fixed in 0d0320a and closed in bd4d06e)"
   },
-  "notes": "Scope defaulted to `all`. Synced the body sections of `product.md`, `tech-stack.md`, `workflow.md`, `patterns.md`, and `refresh_state.json` that `/conductor-archive` (`4374d0f`) left behind."
+  "notes": "Scope: `all`. Synced `product.md`, `tech-stack.md`, `workflow.md`, `patterns.md`, and `refresh_state.json` through `6648bf0`."
 }

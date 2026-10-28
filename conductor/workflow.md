@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-28 (4): v0.4.0 release (`59aa085`), Windows shebang CLI stub + QML restart teardown fixes (`8398dd8`, `0d0320a`, closing `VieNeuTTSApp-snqi` & `VieNeuTTSApp-qjkk` in `bd4d06e`), and 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1`). Gates re-verified live: suite 1278 collected / 1261 selected (17 benchmark deselected; `-m "not slow"` → 1243, `-m "not slow and not benchmark"` → 1226; -352 collected / -351 selected across 24 removed non-product/redundant test files and trimmed parameter tables); `ruff check .` + `ruff format --check .` (192 files) green; `scripts/update_i18n.sh` 100% clean (1216 messages, 0 unfinished). -->
 <!-- refreshed 2026-10-28 (3): track `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `3dfb2b5..4374d0f`, archived `4374d0f`) — no gate or policy change. Gates re-verified live: suite 1630 collected / 1612 selected (18 benchmark deselected; `-m "not slow"` → 1590, `-m "not slow and not benchmark"` → 1572), +15 pytest items across new `tests/unit/test_llm_client.py` (6 items) and expanded `test_llm_refine.py` (+6), `test_asr.py` (+1), `test_settings.py` (+1), and `test_subtitle_controller.py` (+1), plus consolidated QML/smoke assertions in `test_subtitle_components.py`, `test_subtitle_project.py`, `test_controller.py`, and `test_ui_tabs.py`; `ruff check .` + `ruff format --check .` (216 files) green; `scripts/update_i18n.sh` 100% clean (1216 messages, 0 unfinished, +26 strings). -->
 <!-- refreshed 2026-10-28 (2): track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `4ddf6f8..2e96c3a`, archived `2faa30a`) — no gate or policy change. Gates re-verified live: suite 1615 collected / 1597 selected (18 benchmark deselected; `-m "not slow"` → 1575, `-m "not slow and not benchmark"` → 1557), +1 pytest item (`test_subtitle_controller.py` 66 → 67 test functions) while the new QML coverage extends the existing consolidated `test_subtitle_components.py` (`COMPONENTS` gains `SubtitleVideoPreview`) and `test_ui_tabs.py` scenarios; `ruff check .` + `ruff format --check .` (214 files) green; `scripts/update_i18n.sh` 100% clean (1190 messages, 0 unfinished, +15 strings). -->
 <!-- refreshed 2026-10-28: no drift — 1 commit since the 2026-10-26 refresh (`c0c482d`: beads export + `vienetts_en.ts` `<location>` offsets only). Gates re-verified live: suite 1614 collected / 1596 selected (18 benchmark deselected; `-m "not slow"` -> 1574, `-m "not slow and not benchmark"` -> 1556), `ruff check .` + `ruff format --check .` (214 files) green, `scripts/update_i18n.sh` 100% clean (1175/1175 finished, 0 unfinished) -->
@@ -35,16 +36,19 @@
   `run_matrix` sweep under `docs/performance/` showing a win outside the
   run-to-run range, re-confirmed in interleaved rounds, one flip per commit.
 - User-facing string changes run `scripts/update_i18n.sh` before commit
-  (`test_i18n` does not catch unfinished catalog entries).
-- On linux-aarch64 hosts, 6 Qwen/GGUF tests fail on a clean tree (no arm64
-  host cell in the manifests; was 7 before `7coj` merged 4 `TestInstallPacks` items into 3; beads `VieNeuTTSApp-4jwz` / `VieNeuTTSApp-x898`) — a known baseline,
-  like the real-`QAudioSink` smoke below.
+  (`tests/unit/test_i18n.py` was removed in the 2026-10-28 test diet `6648bf0`,
+  so `scripts/update_i18n.sh` is the gate for unfinished or drifted catalog
+  entries).
+- On linux-aarch64 hosts, Qwen/GGUF tests that call `host_cell_key("cpu")`
+  without monkeypatching fail on a clean tree (no arm64 host cell in the
+  manifests; beads `VieNeuTTSApp-4jwz` / `VieNeuTTSApp-x898`) — a known
+  baseline, like the real-`QAudioSink` smoke below.
 - A local `pytest` run on a device-less host is expected to show one
   documented red test: `test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
   (real `QAudioSink` never drains; CI-skipped, bead `VieNeuTTSApp-3iy`). Judge
   the gate on the rest of the run — do not "fix" it by editing app code, and
   do not treat it as a regression from the current change.
-- **Loaded-host flake family (2026-10-21 refresh).** A full `-n auto` run on a
+- **Loaded-host flake family (2026-10-21 refresh; updated 2026-10-28).** A full `-n auto` run on a
   busy machine (this 18-core host at load avg ~9–11 with a desktop browser open)
   typically also fails 2–4 tests that VARY between runs and all pass in
   isolation. Confirmed at both `e08a58e` (the previous refresh commit) and
@@ -61,11 +65,11 @@
   the two long-standing smoke flakes
   (`TestAudiobookTabSmoke::test_waveform_render_progress_interactions_and_render_all`,
   `TestStreamLifecycleSmoke::test_stream_cancel_cross_tab_and_error_recovery`).
-  One of them is NOT load-dependent and flakes in ISOLATION too:
-  `test_ui_shell.py::TestShellSmoke::test_shell_navigation_theme_badge_and_edge_surfaces`
-  (~1-in-5 at `-n 0`; 4/5 passed at HEAD), where the driver's QML instantiates
-  before `setContextProperty` and every context property reads null (bead
-  `VieNeuTTSApp-qjkk`). Procedure: re-run any suspect test in isolation
+  The earlier isolated `test_ui_shell.py::TestShellSmoke` null-context-property
+  race (`VieNeuTTSApp-qjkk`) was fixed in `0d0320a` (`app._teardown_qml()`
+  retains retired context `QObject`s in `app._retired_qml_anchors` and detaches
+  window filters/prebuild hooks across rebuilds) and closed in `bd4d06e`.
+  Procedure: re-run any suspect test in isolation
   (`pytest <nodeid> -q`); if it STILL fails, re-run it again and reproduce it at
   the previous commit before calling it a regression. Prefer `-n 4` for a clean
   read on a loaded box.
@@ -90,7 +94,7 @@
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
   1742 selected**; 2026-10-09: the perf hardening track added coverage →
-  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial, `57634dc`) → **1884 collected / 1866 selected**; 2026-10-12 full semantic-merge pass (bead `7coj`, `d6f70bb..3a5ed39`, -381 items across 25 unit files) + `2f44ee1` → **1504 collected / 1486 selected**; 2026-10-19 SRT Studio + Video Dubbing/ASR/Diarization/LLM (`n5ts` + `cf39f07` + `b3nq` + `ab1aad1`, +26 items) → **1530 collected / 1512 selected**; 2026-10-20 `SubtitlesTab` promotion + Video Dubbing Studio (`aef1d87` + `12734a0`, bead `eet9`, +2 items) → **1532 collected / 1514 selected**; 2026-10-21 subtitle burn-in / embed-mode batch (`d17a261` + `6e7c747` + `d7b8721`, beads `4kht`/`poph`/`ni2i`/`vxil`, +9 items) → **1541 collected / 1523 selected**; 2026-10-21 diarization hardening (`2ifr`, `b41caf7..cb0c1e9`) + test-runtime reduction (`4mqj`, `1542053` + `5eb6f85`, +13 net items) → **1554 collected / 1536 selected**; 2026-10-21 `asr_hardening_20261021` (`7u58`, `b09dd45..d50f43b`, +13 items) → **1567 collected / 1549 selected**; 2026-10-23 `subtitles_ux_overhaul_20261023` + post-review fix (`weit`, `da92163..42ab565`, +30 net items) → **1597 collected / 1579 selected**; 2026-10-26 `dub_pacing_alignment_20261026` (`o8af`, `765c10a..dfac5b8`, +17 items) → **1614 collected / 1596 selected**; 2026-10-28 `video_preview_panel_20261028` (`t80a`, `e2d9492..52e4f25`, +1 item — the new `SubtitleVideoPreview` coverage rides inside the existing consolidated `test_subtitle_components.py` / `test_ui_tabs.py` scenario items) → **1615 collected / 1597 selected**; 2026-10-28 `llm_provider_hardening_20261028` (`f783`, `d6a5ab0..16f8e28`, +15 items, incl. new `tests/unit/test_llm_client.py`) → **1630 collected / 1612 selected**).
+  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial, `57634dc`) → **1884 collected / 1866 selected**; 2026-10-12 full semantic-merge pass (bead `7coj`, `d6f70bb..3a5ed39`, -381 items across 25 unit files) + `2f44ee1` → **1504 collected / 1486 selected**; 2026-10-19 SRT Studio + Video Dubbing/ASR/Diarization/LLM (`n5ts` + `cf39f07` + `b3nq` + `ab1aad1`, +26 items) → **1530 collected / 1512 selected**; 2026-10-20 `SubtitlesTab` promotion + Video Dubbing Studio (`aef1d87` + `12734a0`, bead `eet9`, +2 items) → **1532 collected / 1514 selected**; 2026-10-21 subtitle burn-in / embed-mode batch (`d17a261` + `6e7c747` + `d7b8721`, beads `4kht`/`poph`/`ni2i`/`vxil`, +9 items) → **1541 collected / 1523 selected**; 2026-10-21 diarization hardening (`2ifr`, `b41caf7..cb0c1e9`) + test-runtime reduction (`4mqj`, `1542053` + `5eb6f85`, +13 net items) → **1554 collected / 1536 selected**; 2026-10-21 `asr_hardening_20261021` (`7u58`, `b09dd45..d50f43b`, +13 items) → **1567 collected / 1549 selected**; 2026-10-23 `subtitles_ux_overhaul_20261023` + post-review fix (`weit`, `da92163..42ab565`, +30 net items) → **1597 collected / 1579 selected**; 2026-10-26 `dub_pacing_alignment_20261026` (`o8af`, `765c10a..dfac5b8`, +17 items) → **1614 collected / 1596 selected**; 2026-10-28 `video_preview_panel_20261028` (`t80a`, `e2d9492..52e4f25`, +1 item — the new `SubtitleVideoPreview` coverage rides inside the existing consolidated `test_subtitle_components.py` / `test_ui_tabs.py` scenario items) → **1615 collected / 1597 selected**; 2026-10-28 `llm_provider_hardening_20261028` (`f783`, `d6a5ab0..16f8e28`, +15 items, incl. new `tests/unit/test_llm_client.py`) → **1630 collected / 1612 selected**; 2026-10-28 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1`, -352 collected / -351 selected across 24 removed non-product/redundant test files and trimmed parameter tables) → **1278 collected / 1261 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

@@ -434,13 +434,13 @@ the 2026-10-28 OpenAI-compatible LLM & Whisper API provider hardening track
 batches (incl. `VieNeuTTSApp-2ifr` diarization hardening and `VieNeuTTSApp-4mqj`
 test-runtime reduction). All 16 conductor tracks are complete and archived under
 `conductor/archive/`. Current app version 0.4.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1630
-items collected / 1612 selected (18 benchmarks deselected via
-`-m 'not benchmark'`; `-m "not slow"` → 1590, `-m "not slow and not benchmark"`
-→ 1572; verified live 2026-10-28 with `pytest --collect-only -q`). Latest gate
+`packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1278
+items collected / 1261 selected (17 benchmarks deselected via
+`-m 'not benchmark'`; `-m "not slow"` → 1243, `-m "not slow and not benchmark"`
+→ 1226; verified live 2026-10-28 with `pytest --collect-only -q`). Latest gate
 (2026-10-28 refresh): `ruff check .` passes, `ruff format --check .` passes
-(216 files), and `scripts/update_i18n.sh` is 100% clean (1216/1216 finished, 0
-unfinished). Full `pytest` on this 18-core host runs in ~32–43 s wall under
+(192 files), and `scripts/update_i18n.sh` is 100% clean (1216/1216 finished, 0
+unfinished). Full `pytest` on this 18-core host runs in ~24–43 s wall under
 `-n auto --dist worksteal` after `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`)
 split the 12 giant smoke items (`test_ui_tabs.py`, `test_ui_shell.py`,
 `test_ui_studio.py`) into smaller scenario-group fixtures and fixed the
@@ -448,10 +448,15 @@ in-process `test_qwen_host.py::TestTorchPosture` `sys.modules["torch"]`
 deletion bug (`monkeypatch.setitem(sys.modules, "torch", None)` instead of
 `delitem`, eliminating the self-inflicted `RuntimeError: Only a single
 TORCH_LIBRARY can be used to register the namespace triton` when
-`TestTorchPosture` and `TestFrameLoop` share an xdist worker). A full loaded-host
+`TestTorchPosture` and `TestFrameLoop` share an xdist worker) and the
+2026-10-28 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1`)
+pruned 24 non-product/redundant test files and duplicate parameter rows
+(`1630/1612` → `1278/1261`). A full loaded-host
 run can still flake 1–2 order-/load-sensitive tests (`test_controller.py::TestBgOpsAsync`,
-`test_worker_thread_safety_smoke`, `test_qwen_host::TestFrameLoop::test_session_lifecycle`,
-or `test_ui_shell.py` null-context-property race `VieNeuTTSApp-qjkk`); always
+`test_worker_thread_safety_smoke`, or `test_qwen_host::TestFrameLoop::test_session_lifecycle`;
+the `test_ui_shell.py` null-context-property race `VieNeuTTSApp-qjkk` was fixed
+in `0d0320a` by retaining retired context `QObject`s in `app._teardown_qml()`
+and closed in `bd4d06e`); always
 re-run any suspect test in isolation and reproduce at the previous commit
 before calling it a regression. The documented device-less-host failure remains
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
@@ -524,11 +529,12 @@ feature 14: 32/32 tasks across 7 phases, epic `VieNeuTTSApp-w1in` closed
 missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
-`4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1630 collected / 1612 selected (18
+`4jwz` / `x898` record Qwen/GGUF tests that assume an x64 host cell and fail on
+linux-aarch64. Suite at this refresh: 1278 collected / 1261 selected (17
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596), +1 in track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `e2d9492..52e4f25`, → 1615/1597), and +15 in track `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `d6a5ab0..16f8e28`, → 1630/1612)).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596), +1 in track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `e2d9492..52e4f25`, → 1615/1597), +15 in track `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `d6a5ab0..16f8e28`, → 1630/1612), and -352 collected / -351 selected in the 2026-10-28 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1`, → 1278/1261)).
 
+<!-- refreshed 2026-10-28 (4): 5 commits since the 2026-10-28 (3) refresh (`92c0e7d`: `59aa085..6648bf0`) — `v0.4.0` released (`59aa085`, `packaging/release-notes/v0.4.0.md`, bead `snqi` closed in `bd4d06e`), Windows shebang CLI stub dispatch (`ai_models.cli_command` + extensionless CLI lookup) and macOS `SubtitleCueEditor` `ListView` `implicitHeight` / `available_audiocpp_variants` fixes (`8398dd8`, `0d0320a`), deterministic multi-engine `app._teardown_qml()` (`app._retired_qml_anchors` + filter/prebuild detach, `0d0320a`, closing `VieNeuTTSApp-qjkk` in `bd4d06e`), and 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1` closed: -352 collected / -351 selected across 24 removed non-product/redundant test files and trimmed parameter tables). Root package version 0.4.0 (zero third-party dep drift); 16 archived tracks, `conductor/tracks/` empty; suite 1278 collected / 1261 selected (17 benchmark deselected; `-m "not slow"` → 1243, `-m "not slow and not benchmark"` → 1226), ruff check + format --check green (192 files), i18n 1216 messages / 0 unfinished, beads 557 total / 0 open / 1 blocked (`nqx.2.4`) / 39 deferred / 517 closed. -->
 <!-- refreshed 2026-10-28 (3): 13 commits since the 2026-10-28 (2) refresh (`8e4ce55`: `3dfb2b5..4374d0f`) — track `llm_provider_hardening_20261028` (epic `VieNeuTTSApp-f783`, closed) implemented (`d6a5ab0..16f8e28`) and archived in `4374d0f`. Feature 11 gains hardened OpenAI-compatible LLM & Whisper API provider support (`core/llm_client.py`, `core/llm_refine.py`, `core/asr.py`, `core/models.py`, `core/settings.py`, `core/subtitle_project.py`, `ui/controller.py`, `ui/subtitle_controller.py`, `SettingsModels.qml`, `SubtitlePreparePanel.qml`, `README.md`). Zero `pyproject.toml`/`uv.lock` dep drift (stdlib only); 16 archived tracks, `conductor/tracks/` empty; suite 1630 collected / 1612 selected (18 benchmark deselected, +15 items; `-m "not slow"` → 1590, `-m "not slow and not benchmark"` → 1572), ruff check + format --check green (216 files), i18n 1216 messages / 0 unfinished (+26 strings), beads 553 total / 0 open / 1 blocked (`nqx.2.4`) / 40 deferred / 512 closed (+14 issues created and closed for `f783`). -->
 
 <!-- refreshed 2026-10-28 (2): 9 commits since the 2026-10-28 no-drift refresh (`4ddf6f8..2e96c3a`) — track `video_preview_panel_20261028` (epic `VieNeuTTSApp-t80a`, closed; audit finding 3.6 resolved) implemented and archived in `2faa30a`. Feature 11 gains the in-app video preview panel (`SubtitleVideoPreview.qml`: `MediaPlayer` + `VideoOutput` + `Loader`-wrapped `AudioOutput`, source/dub audio exclusivity, `videoSeekRequested` unrendered cue seeking, `syncActiveCueFromVideo` scrub highlight, caption overlay, 560 px auto-collapse, codec fallback notice, `videoReleaseRequested` handle release) wired through `ui/subtitle_controller.py` (`videoPath`/`videoUrl`, `notifyVideoPreviewPlaying`, `syncActiveCueFromVideo`, `API_ONLY_PROPERTIES` reconciliation) and placed in `SubtitleCard`'s all-stage layout (1- and 2-column). No `pyproject.toml`/`uv.lock` dep drift (QtMultimedia already resident via the `PySide6` meta-package's `PySide6-Addons` 6.11.2; frozen-build multimedia plugins already collected since `e15bfa3`); 15 archived tracks, `conductor/tracks/` empty; suite 1615 collected / 1597 selected (18 benchmark deselected, +1 item; `-m "not slow"` → 1575, `-m "not slow and not benchmark"` → 1557), ruff check + format --check green (214 files), i18n 1190 messages / 0 unfinished (+15 strings), beads 539 total / 0 open / 1 blocked (`nqx.2.3`) / 40 deferred / 498 closed. -->

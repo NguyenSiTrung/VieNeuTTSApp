@@ -20,7 +20,8 @@
 - Vietnamese source copy must render with full diacritics (bundled Be Vietnam
   Pro; system fallback when the fonts are absent).
 - English is a shipped translation, not a follow-up: `vienetts_en.ts` is the
-  single catalog and `test_i18n` fails on unfinished or context-drifted strings.
+  single catalog and must stay free of unfinished or context-drifted strings
+  (the i18n pytest guard was removed in the 2026-10-28 test-suite diet).
 - Add future locales as sibling `vienetts_<lang>.ts` catalogs; never fork copy
   inside QML.
 

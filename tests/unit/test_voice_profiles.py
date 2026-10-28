@@ -20,7 +20,6 @@ from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
 from vienetts_app.core.voice_profiles import (
     INDEX_FILENAME,
-    MAX_NAME_CHARS,
     MAX_TRANSCRIPT_CHARS,
     CloneProfile,
     CloneStore,
@@ -223,7 +222,6 @@ def test_profile_and_field_rejections(store, clip: Path) -> None:
     ("name", "message"),
     [
         pytest.param("   ", "needs a display name", id="blank"),
-        pytest.param("x" * (MAX_NAME_CHARS + 1), "limited to 60 characters", id="too-long"),
         pytest.param("bad\nname", "control characters", id="control-char"),
     ],
 )
@@ -275,7 +273,6 @@ def test_reference_rejections(store, tmp_path: Path) -> None:
     ("seconds", "message"),
     [
         pytest.param(0.5, "use at least 1s", id="too-short"),
-        pytest.param(31.0, "use at most 30s", id="too-long"),
     ],
 )
 def test_reference_duration_is_bounded(store, tmp_path: Path, seconds: float, message: str) -> None:

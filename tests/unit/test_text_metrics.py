@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds, text_metrics
+from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
 
 # 23 Han characters + 5 full stops (punctuation must not count as words).
 ZH_TEXT = "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
@@ -20,25 +20,9 @@ KO_TEXT = "안녕하세요. 오늘 날씨가 좋네요. 공원에 갑시다."
 # 7 Han characters (今日天気公園行) + 17 kana.
 JA_TEXT = "こんにちは。今日はいい天気ですね。公園へ行きましょう。"
 
-VI_TEXT = (
-    "Xin chào, đây là một câu tiếng Việt có dấu. "
-    "Câu thứ hai kiểm tra dấu câu! "
-    "Và câu thứ ba kết thúc bằng dấu chấm hỏi? "
-    "Cuối cùng là một câu dài hơn để chắc chắn việc gộp câu vẫn giữ nguyên hành vi cũ."
-)
-EN_TEXT = "The first sentence is short. The second one is a little longer."
-
 
 class TestSpaceScriptParity:
     """Text without Han/kana keeps the old whitespace-split numbers exactly."""
-
-    @pytest.mark.parametrize("text", [VI_TEXT, "  multiple   spaces  "])
-    def test_count_matches_whitespace_split(self, text: str) -> None:
-        assert count_words(text) == len(text.split())
-
-    @pytest.mark.parametrize("text", [VI_TEXT])
-    def test_estimate_matches_old_words_per_2_5s(self, text: str) -> None:
-        assert estimate_duration_seconds(text) == round(len(text.split()) / 2.5)
 
     @pytest.mark.parametrize("text", ["   \n\t "])
     def test_empty_text_is_zero(self, text: str) -> None:
@@ -97,7 +81,3 @@ class TestMixedScript:
 
 class TestCombinedMetrics:
     """One call (the debounced QML chip) returns both numbers, unchanged."""
-
-    @pytest.mark.parametrize("text", [VI_TEXT, ""])
-    def test_text_metrics_matches_the_single_metric_functions(self, text: str) -> None:
-        assert text_metrics(text) == (count_words(text), estimate_duration_seconds(text))

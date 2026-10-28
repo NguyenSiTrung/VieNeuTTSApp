@@ -192,9 +192,9 @@ latency, and clean shutdown.
 | `macos-arm64-mps` | **pending** | needs Apple Silicon |
 
 Flipping a platform to `verified` requires committing its probe JSON and
-updating `evidence.status`; `tests/unit/test_qwen_runtime_requirements.py`
-then enforces that the file exists, matches the probe schema, has no errors,
-produced audio, and shut down cleanly.
+updating `evidence.status`; the committed probe JSON is the release evidence
+record (the evidence-path pytest guards were removed in the 2026-10-28
+test-suite diet).
 
 Verified **without** a Qwen-capable device (audit host: Linux arm64, no CUDA):
 

@@ -224,8 +224,8 @@ enumeration, not just headers.
 | `macos-arm64-metal` | pending | 1/4 probes pass (customvoice Q4_K_M, Apple M4); base + Q8_0 remain |
 
 A cell flips to `verified` only when all four variant probes pass and their
-JSONs are committed; `tests/unit/test_qwen_gguf_probe.py` enforces file
-existence, schema version, `verdict == "pass"`, and full variant coverage.
+JSONs are committed; the committed JSONs are the release evidence record (the
+probe pytest guards were removed in the 2026-10-28 test-suite diet).
 
 ### linux-x64-cpu measurements (this audit host, CPU backend)
 

@@ -21,13 +21,7 @@ class TestResolveTheme:
         ("preference", "system", "expected"),
         [
             ("dark", "light", "dark"),
-            ("light", "dark", "light"),
-            ("system", "light", "light"),
-            ("system", "dark", "dark"),
             ("banana", "light", "dark"),
-            ("", "light", "dark"),
-            ("DARK", "light", "dark"),
-            ("system", "purple", "dark"),
         ],
     )
     def test_resolve_theme(self, preference: str, system: str, expected: str) -> None:

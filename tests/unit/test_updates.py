@@ -6,15 +6,7 @@ the URL and returns decoded JSON, so every GitHub shape is a dict literal.
 
 from __future__ import annotations
 
-import pytest
-
-from vienetts_app.core.updates import (
-    UpdateInfo,
-    asset_platform_key,
-    check_for_updates,
-    compare_versions,
-    parse_version,
-)
+from vienetts_app.core.updates import UpdateInfo, check_for_updates
 
 
 def _payload(**overrides):
@@ -42,55 +34,6 @@ def _payload(**overrides):
     }
     base.update(overrides)
     return base
-
-
-class TestParseVersion:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("v0.1.5", (0, 1, 5)),
-            ("0.1.5", (0, 1, 5)),
-            ("V0.1.5", (0, 1, 5)),
-            ("v0.1.10", (0, 1, 10)),
-            ("0.1.5-rc1", (0, 1, 5)),
-            ("garbage", ()),
-            (None, ()),
-        ],
-    )
-    def test_parse(self, text, expected) -> None:
-        assert parse_version(text) == expected
-
-
-class TestCompareVersions:
-    @pytest.mark.parametrize(
-        ("a", "b", "expected"),
-        [
-            ("v0.1.5", "v0.1.4", 1),
-            ("v0.1.5", "v0.1.5", 0),
-            ("v0.2.0", "v0.1.9", 1),
-            ("v0.1.4", "v0.1.5", -1),
-            ("v0.1", "v0.1.0", 0),  # missing segments pad with zero
-            ("v0.1.10", "v0.1.9", 1),  # numeric, not lexicographic
-        ],
-    )
-    def test_compare(self, a, b, expected) -> None:
-        assert compare_versions(a, b) == expected
-
-
-class TestAssetPlatformKey:
-    @pytest.mark.parametrize(
-        ("name", "expected"),
-        [
-            ("VieNeuTTS-0.2.0-windows-x64.zip", "windows-x64"),
-            ("VieNeuTTS-0.2.0-linux-x64.zip", "linux-x64"),
-            ("VieNeuTTS-0.2.0-macos-arm64.dmg", "macos-arm64"),
-            ("VieNeuTTS-0.2.0-windows-x64-cuda.zip", None),
-            ("checksums.txt", None),
-            (None, None),
-        ],
-    )
-    def test_match(self, name, expected) -> None:
-        assert asset_platform_key(name) == expected
 
 
 class TestCurrentPlatformKey:

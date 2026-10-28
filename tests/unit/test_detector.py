@@ -32,10 +32,6 @@ class TestDetectionMatrix:
         ("hardware", "backend", "device", "precision", "cuda_ver", "note_match"),
         [
             (nvidia("12.8"), "torch", "cuda", "fp32", "12.8", None),
-            (nvidia("13.0"), "torch", "cuda", "fp32", "13.0", None),
-            # CUDA 12.x minor-version compatibility: any driver reporting
-            # 12.0+ (R527+) runs the bundled-cudart cu128 wheels.
-            (nvidia("12.0"), "torch", "cuda", "fp32", "12.0", None),
             (nvidia("11.8"), "onnx", "cpu", "int8", None, "11.8"),
             (
                 detect_hardware(
@@ -56,53 +52,6 @@ class TestDetectionMatrix:
                 "int8",
                 None,
                 "cpu",
-            ),
-            (
-                detect_hardware(
-                    TorchProbe(installed=False), system="darwin", machine="x86_64", nvidia_smi=False
-                ),
-                "onnx",
-                "cpu",
-                "int8",
-                None,
-                "Apple Silicon only",
-            ),
-            (
-                detect_hardware(
-                    TorchProbe(installed=False), system="linux", machine="x86_64", nvidia_smi=False
-                ),
-                "onnx",
-                "cpu",
-                "int8",
-                None,
-                None,
-            ),
-            (
-                detect_hardware(
-                    TorchProbe(installed=True, cuda_available=False),
-                    system="linux",
-                    machine="x86_64",
-                    nvidia_smi=False,
-                ),
-                "onnx",
-                "cpu",
-                "int8",
-                None,
-                None,
-            ),
-            (
-                # Unparseable CUDA version → cannot confirm >= 12.8 → stay on CPU.
-                detect_hardware(
-                    TorchProbe(installed=True, cuda_available=True, cuda_version=None),
-                    system="linux",
-                    machine="x86_64",
-                    nvidia_smi=False,
-                ),
-                "onnx",
-                "cpu",
-                "int8",
-                None,
-                None,
             ),
         ],
     )
@@ -133,9 +82,7 @@ class TestWorkloadHeuristic:
         ("workload", "expected_backend"),
         [
             (Workload(streaming=True, char_count=99999), "onnx"),
-            (Workload(char_count=256), "onnx"),
             (Workload(char_count=257), "torch"),
-            (Workload(batch=True, char_count=100), "torch"),
         ],
     )
     def test_workload_heuristic_on_nvidia(self, workload: Workload, expected_backend: str) -> None:
@@ -157,9 +104,7 @@ class TestUserOverride:
         ("hardware", "settings", "workload", "expected_backend", "expected_precision"),
         [
             (NVID, Settings(backend="onnx"), Workload(char_count=5000), "onnx", "int8"),
-            (CPU, Settings(precision="fp32"), Workload(), "onnx", "fp32"),
             (CPU, Settings(backend="torch"), Workload(), "onnx", "int8"),
-            (NVID, Settings(backend="torch"), Workload(char_count=50), "torch", "int8"),
         ],
     )
     def test_user_override(

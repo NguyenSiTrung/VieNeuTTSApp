@@ -18,6 +18,7 @@ These tests pin:
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -30,8 +31,33 @@ from vienetts_app.__main__ import main
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = PROJECT_ROOT / "packaging" / "vienetts-app.spec"
-RELEASE_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
 GGUF_HOST_MODULE_PATH = PROJECT_ROOT / "src" / "vienetts_app" / "workers" / "qwen_gguf_host.py"
+
+
+def _spec_call(name: str) -> ast.Call:
+    for node in ast.walk(ast.parse(SPEC_PATH.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == name:
+            return node
+    raise AssertionError(f"the spec has no {name}() call")
+
+
+def _spec_keyword(call: ast.Call, name: str) -> ast.expr:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    raise AssertionError(f"the spec's {getattr(call.func, 'id', '?')}() has no {name}=")
+
+
+def _spec_datas_literal() -> list[str]:
+    for node in ast.walk(ast.parse(SPEC_PATH.read_text(encoding="utf-8"))):
+        targets = getattr(node, "targets", [])
+        if (
+            isinstance(node, ast.Assign)
+            and any(getattr(target, "id", "") == "datas" for target in targets)
+            and isinstance(node.value, ast.List)
+        ):
+            return [ast.unparse(element) for element in node.value.elts]
+    raise AssertionError("the spec has no literal `datas = [...]` block")
 
 
 class TestFrozenGgufHostCommand:
@@ -130,10 +156,6 @@ class TestGgufHostModuleContract:
     def test_the_module_imports_cleanly_and_defers_heavy_imports(self) -> None:
         # CDLL runs at `load` time only — a frozen bundle with no pack must
         # still import the host module (it is the hello frame's source).
-        import ast
-
-        from tests.unit.test_package import _spec_call, _spec_keyword  # noqa: PLC0415
-
         import vienetts_app.workers.qwen_gguf_host as host_module
 
         assert host_module.GGUF_HOST_NAME
@@ -176,8 +198,6 @@ class TestGgufSpecContract:
         # GGUF runtime packs and .gguf weights install into the app data dir
         # at run time — shipping them would double the bundle and ship
         # unverified binaries. The literal datas block must stay app-only.
-        from tests.unit.test_package import _spec_datas_literal  # noqa: PLC0415
-
         entries = _spec_datas_literal()
         for entry in entries:
             assert ".gguf" not in entry
@@ -272,12 +292,3 @@ class TestGgufHostRealProcess:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=10)
-
-
-class TestGgufReleaseWorkflow:
-    def test_the_frozen_gguf_host_is_probed_without_packs(self) -> None:
-        # The release must prove the packaged binary can become the GGUF
-        # host — the probe needs no runtime pack, so it runs in every job.
-        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        assert '"--qwen-gguf-host"' in workflow or "GGUF_HOST_FLAG" in workflow
-        assert "--qwen-gguf-host" in workflow

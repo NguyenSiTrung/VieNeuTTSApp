@@ -122,7 +122,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
     - Add the QML per FR-7.1 / FR-7.2 using `AppTextField` / `AppNumberField` and a disclosure modelled on the Settings CUDA "Details & diagnostics" pattern.
     - Run `scripts/update_i18n.sh` to 0 unfinished entries, translating the new strings in `vienetts_en.ts`.
 
-- [~] **Task 4.3: README "AI dubbing providers (LLM & Whisper API)" section**
+- [x] **Task 4.3: README "AI dubbing providers (LLM & Whisper API)" section**
   <!-- files: README.md -->
   <!-- depends: task1 -->
   - Add the FR-7.4 section after `## Models`: a provider/Base-URL table, per-task models, JSON-mode/temperature auto-fallback, the Ollama `OLLAMA_CONTEXT_LENGTH` tip, the Whisper API fields with the "LLM key is never sent to a different ASR host" rule and 10-minute chunking, owner-only `settings.json`, and the Azure-classic limitation. Docs-only — still run the full gate before committing.

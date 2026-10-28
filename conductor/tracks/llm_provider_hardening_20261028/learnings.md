@@ -74,4 +74,9 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - PySide6 cannot convert `QQuickTextInput::EchoMode` directly via `.property("echoMode")`; expose `readonly property bool passwordEcho: root.echoMode === TextInput.Password` on `AppTextField` for Python smoke assertions.
 - Multi-line `TextArea` (`subtitleGlossaryField`) has no built-in `editingFinished` signal like `TextField`; commit via a custom `signal editingFinished()` + `onActiveFocusChanged` when focus leaves so programmatic and interactive edits both persist.
 - Translation catalog updated and compiled via `scripts/update_i18n.sh` (1216 finished, 0 unfinished); offscreen screenshots verified with `view_media`.
-- Focused gate: 27 UI/smoke/i18n tests green.
+- Removed `llmGlossary` from `API_ONLY_PROPERTIES` in `ui/subtitle_controller.py` now that `SubtitlePreparePanel.qml` consumes `subtitleController.llmGlossary`.
+- Focused gate: 27 UI/smoke/i18n tests + 73 subtitle controller tests green.
+
+## 2026-10-28 - Phase 4 Task 4.3: README AI dubbing providers documentation
+- Documented OpenAI-compatible LLM endpoints table, per-task model overrides, JSON-mode/temperature capability auto-fallback, Prepare-stage glossary, Ollama `OLLAMA_CONTEXT_LENGTH` guidance, separate Whisper API settings with credential isolation and 10-minute silence-aware PCM16 chunking, POSIX `0600` `settings.json`, and the classic Azure `api-key` header limitation in `README.md`.
+- Full non-slow gate: 1581 passed, 4 skipped, and the 5 documented linux-aarch64 baseline failures.

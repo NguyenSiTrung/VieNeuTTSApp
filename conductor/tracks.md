@@ -43,5 +43,5 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: OpenAI-Compatible LLM & Whisper API Provider Hardening — shared transport with readable errors, retries and capability fallback; correct reply parsing; glossary/context-aware batched refinement with failure isolation and concurrency; per-task models; separate chunked Whisper API; owner-only settings.json
+## [x] Track: OpenAI-Compatible LLM & Whisper API Provider Hardening — shared transport with readable errors, retries and capability fallback; correct reply parsing; glossary/context-aware batched refinement with failure isolation and concurrency; per-task models; separate chunked Whisper API; owner-only settings.json
 *Link: [./conductor/tracks/llm_provider_hardening_20261028/](./conductor/tracks/llm_provider_hardening_20261028/)*

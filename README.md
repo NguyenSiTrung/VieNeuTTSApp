@@ -382,6 +382,78 @@ guidance — no terminal or repository required.
   (~455 MB extra) or `--backbone owner/repo` only for explicit custom-repo
   development; custom bundles record `"format": "custom"`.
 
+## AI dubbing providers (LLM & Whisper API)
+
+Subtitle dubbing's optional AI tools (**AI Làm sạch phụ đề**, **AI Dịch lồng tiếng**,
+**AI Rút gọn khớp thời gian**) and remote speech-to-text talk to any
+OpenAI-compatible `/v1/chat/completions` and `/v1/audio/transcriptions`
+endpoint configured in *Cài đặt → Mô hình*. All network calls are opt-in and
+triggered only when you run an AI subtitle action or select a remote Whisper
+API backend.
+
+### OpenAI-compatible LLM endpoints
+
+| Provider | Example Base URL | Example Model | API Key |
+| --- | --- | --- | --- |
+| **Ollama** (local) | `http://localhost:11434/v1` | `qwen2.5:7b` | Leave empty |
+| **LM Studio** (local) | `http://localhost:1234/v1` | Loaded model ID | Leave empty |
+| **llama.cpp server** (local) | `http://localhost:8080/v1` | Alias / GGUF name | Leave empty |
+| **vLLM** (local / LAN) | `http://localhost:8000/v1` | Served model name | Optional |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini`, `gpt-5-mini` | `sk-...` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `qwen/qwen-2.5-72b-instruct` | `sk-or-...` |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat`, `deepseek-reasoner` | `sk-...` |
+| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `gsk_...` |
+| **Google Gemini** (OpenAI compat) | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | Gemini API key |
+
+- **Per-task models & tuning (*Tùy chọn LLM nâng cao*):** override the main
+  model separately for ASR cleanup (`llm_model_refine`), dubbing translation
+  (`llm_model_translate`), or timing fit (`llm_model_fit`) — e.g. a fast local
+  model for cleanup/shortening and a larger model for translation. You can also
+  tune parallel requests (`0` = auto: `1` for localhost/LAN, `3` for cloud, up
+  to `8`), per-request timeout (`15–600 s`, default `120 s`), and cues per
+  batch (`5–60`, default `25`).
+- **Automatic JSON-mode & temperature fallback:** requests send
+  `response_format: {"type": "json_object"}` and task-appropriate
+  `temperature`. If a model or server rejects either parameter with HTTP 400
+  (for example reasoning models such as `o3`, `gpt-5`, or `deepseek-reasoner`
+  that forbid `temperature`, or local servers without `json_object` support),
+  VieNeuTTS automatically retries without the rejected parameter and caches that
+  capability per `(base_url, model)` for the rest of the session.
+- **Per-project glossary (*Thuật ngữ & cách xưng hô*):** in the Subtitles
+  *Chuẩn bị* stage, expand **Thuật ngữ & cách xưng hô** to record character
+  names, terminology, and Vietnamese pronoun pairs (up to 4,000 characters,
+  saved in `project.json`). The glossary is attached to every AI subtitle
+  request without invalidating already-rendered cue audio.
+- **Ollama context length tip:** Ollama's OpenAI-compatible `/v1` endpoint
+  ignores `num_ctx` in request bodies and defaults to a 4,096-token context on
+  GPUs with under 24 GiB VRAM. Set `OLLAMA_CONTEXT_LENGTH=8192` (or higher) in
+  the Ollama server environment, or lower **Số câu phụ đề mỗi lô LLM** to
+  `10–15` in *Tùy chọn LLM nâng cao*.
+
+### Cloud Whisper API (`/v1/audio/transcriptions`)
+
+- **Separate Whisper API settings:** configure **Máy chủ Whisper API (URL)**
+  (`asr_api_base_url`), **Tên mô hình Whisper API** (`asr_api_model`, default
+  `whisper-1`, or e.g. `whisper-large-v3-turbo` on Groq), and **Whisper API
+  Key** (`asr_api_key`) independently of the chat LLM.
+- **Credential isolation & auto-mode gating:** your LLM API key is **never**
+  sent to a different Whisper API host — it is reused only when the Whisper API
+  URL is left blank and the ASR backend is explicitly set to `openai_api`
+  (sharing the LLM server). When the ASR backend is `auto`, `/audio/transcriptions`
+  is only attempted as a fallback if **Máy chủ Whisper API (URL)** is
+  explicitly configured.
+- **Silence-aware 10-minute chunking:** audio longer than 10 minutes (or any
+  float32 WAV exceeding 24 MiB) is split at the quietest 200 ms RMS window near
+  each 10-minute boundary, converted to temporary 16 kHz mono PCM16 WAV chunks
+  well under the 25 MB OpenAI upload limit, uploaded with a trailing 200-character
+  `prompt` for cross-chunk continuity, and reassembled with offset segment and
+  word timestamps.
+- **Local credential storage & limitations:** `settings.json` is written and
+  tightened to owner-only permissions (`0600`) on POSIX systems, and API keys
+  are redacted from all error banners and logs. Classic Azure OpenAI deployment
+  URLs that authenticate via the `api-key:` header instead of
+  `Authorization: Bearer` are not supported.
+
 ## Run
 
 ```bash

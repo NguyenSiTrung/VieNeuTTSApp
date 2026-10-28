@@ -100,6 +100,9 @@ datas = [
     (str(REPO / "src/vienetts_app/core/qwen_model_manifests.json"), "vienetts_app/core"),
     (str(REPO / "src/vienetts_app/core/qwen_gguf_runtime_manifests.json"), "vienetts_app/core"),
     (str(REPO / "src/vienetts_app/core/qwen_gguf_model_manifests.json"), "vienetts_app/core"),
+    # Same loader pattern for the media runtime packs (macOS whisper-cli,
+    # ffmpeg): without it a frozen app reports every pack as unpublished.
+    (str(REPO / "src/vienetts_app/core/media_runtime_manifests.json"), "vienetts_app/core"),
 ]
 # Ahead-of-time QML (perf track 6.5): a compiled unit (``Foo.qmlc``) beside
 # every QML/JS file, which Qt loads instead of compiling the UI on the first

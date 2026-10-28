@@ -5,16 +5,22 @@ Provides:
   (``nemotron-3-diarization-q8_0.gguf`` and ``nemotron-3-diarization-bf16.gguf``).
 - ``WHISPER_GGUF_MODELS``: ``ggerganov/whisper.cpp`` weights
   (``tiny``, ``base``, ``small``, ``medium``, ``large-v3-turbo``).
+- ``AUDIO_MODELS``: optional Silero VAD (whisper.cpp ggml + ONNX) and ONNX
+  speaker-embedding weights, behind a generic catalog API.
 - ``audiocpp_cli`` runtime discovery and download from ``0xShug0/audio.cpp`` releases.
+- ``whisper-cli`` and ``ffmpeg``/``ffprobe`` runtimes; macOS ``whisper-cli`` and
+  every ffmpeg pack come from the project-published ``media_runtime_manifests.json``.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -23,13 +29,13 @@ import tarfile
 import time
 import uuid
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from vienetts_app.core.managed_install import free_space_bytes, safe_remove
+from vienetts_app.core.managed_install import check_download_url, free_space_bytes, safe_remove
 from vienetts_app.core.processes import PROBE_TIMEOUT_S, find_executable, run_cli
 
 CHUNK_BYTES = 256 * 1024
@@ -43,6 +49,10 @@ RUNTIME_META_FILENAME = "runtime.json"
 
 class AiModelInstallError(RuntimeError):
     """Downloading or installing an ASR/Diarization model or runtime failed."""
+
+
+class AiModelDownloadCancelled(AiModelInstallError):
+    """``cancel_check`` stopped a download or install; nothing was installed."""
 
 
 @dataclass(frozen=True)
@@ -161,6 +171,7 @@ def _stream_download(
     expected_size: int = 0,
     expected_sha256: str = "",
     min_free_bytes: int = 0,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     """Download ``url`` to ``target`` atomically, refusing a partial artifact.
 
@@ -174,7 +185,9 @@ def _stream_download(
     * ``expected_size`` (catalog knowledge) must equal the byte count;
     * ``expected_sha256`` (catalog knowledge) must match the streamed digest.
 
-    The part file is always removed on failure, so a retry starts clean.
+    ``cancel_check`` is polled before every chunk and raises
+    :class:`AiModelDownloadCancelled`. The part file is always removed on
+    failure or cancel, so a retry starts clean.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     if min_free_bytes:
@@ -195,6 +208,8 @@ def _stream_download(
             written = 0
             with part.open("wb") as fh:
                 while True:
+                    if cancel_check is not None and cancel_check():
+                        raise AiModelDownloadCancelled(f"Đã huỷ tải {target.name}.")
                     chunk = resp.read(CHUNK_BYTES)
                     if not chunk:
                         break
@@ -232,6 +247,54 @@ def _stream_download(
         with contextlib.suppress(OSError):
             part.unlink(missing_ok=True)
         raise AiModelInstallError(f"Không thể tải mô hình từ '{url}': {exc}") from exc
+
+
+def _scaled_progress(
+    progress_cb: Callable[[float], None] | None, start: float, span: float
+) -> Callable[[float], None] | None:
+    """Map one download's 0..1 progress onto ``[start, start + span]``."""
+    if progress_cb is None:
+        return None
+    return lambda p: progress_cb(min(1.0, start + float(p) * span))
+
+
+def _runtime_space_needed(archive_bytes: int) -> int:
+    """Free space a runtime pack needs: the archive, its extracted tree, headroom."""
+    return archive_bytes * 3 + INSTALL_SPACE_HEADROOM if archive_bytes > 0 else 0
+
+
+def _archive_suffix(url: str, archive: str = "") -> str:
+    """Suffix of a staged archive: the manifest's ``archive`` kind, else the URL's."""
+    lowered = url.lower()
+    kind = archive or next(
+        (k for k in ("zip", "tar.xz", "tar.gz") if lowered.endswith(f".{k}")), "tar.gz"
+    )
+    return f".{kind}"
+
+
+def _host_arch() -> str:
+    """``x64`` / ``arm64`` for the running interpreter, "" for anything else."""
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64", "x64"):
+        return "x64"
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return ""
+
+
+def _promote_runtime_dir(staging: Path, rt_dir: Path, backup: Path, label: str) -> None:
+    """Swap a probed ``staging`` tree in as ``rt_dir``, restoring the old one on failure."""
+    if rt_dir.exists():
+        os.replace(rt_dir, backup)
+    try:
+        os.replace(staging, rt_dir)
+    except OSError as exc:
+        if backup.exists():
+            with contextlib.suppress(OSError):
+                os.replace(backup, rt_dir)
+        raise AiModelInstallError(f"Không thể kích hoạt runtime {label} mới: {exc}") from exc
+    if backup.exists():
+        safe_remove(backup)
 
 
 # ── Diarization models (audio-cpp/Nemotron-3-Diarization-GGUF) ───────────────
@@ -424,6 +487,311 @@ def remove_asr_model(model_id: str, data_dir: Path) -> bool:
     return False
 
 
+# ── Optional audio models (Silero VAD, speaker embedding) ────────────────────
+
+WHISPER_VAD_MODEL_ID = "whisper-vad-silero-v6.2.0"
+SILERO_VAD_MODEL_ID = "silero-vad"
+SPEAKER_EMBEDDING_MODEL_ID = "speaker-embedding"
+
+
+@dataclass(frozen=True)
+class AudioModelSpec:
+    """One optional model file the ASR/diarization pipeline uses when installed.
+
+    ``subdir`` is the folder under ``<data_dir>/models``: the whisper.cpp VAD
+    model sits beside the Whisper weights (``whisper-cli -vm``). ``license`` is
+    the SPDX id of the weights — spec D2 admits only Apache-2.0 or MIT — and
+    ``source`` the upstream project. URLs are pinned to an immutable revision.
+    """
+
+    id: str
+    label: str
+    filename: str
+    url: str
+    size_bytes: int
+    sha256: str
+    license: str
+    source: str
+    subdir: str
+    format: str  # "ggml" | "onnx"
+
+
+AUDIO_MODELS: dict[str, AudioModelSpec] = {
+    WHISPER_VAD_MODEL_ID: AudioModelSpec(
+        id=WHISPER_VAD_MODEL_ID,
+        label="Silero VAD v6.2.0 cho whisper.cpp (0,8 MB — bỏ qua đoạn không có lời)",
+        filename="ggml-silero-v6.2.0.bin",
+        url=(
+            "https://huggingface.co/ggml-org/whisper-vad/resolve/"
+            "9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin"
+        ),
+        size_bytes=885_098,
+        sha256="2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+        license="MIT",
+        source="https://github.com/snakers4/silero-vad",
+        subdir="whisper",
+        format="ggml",
+    ),
+    SILERO_VAD_MODEL_ID: AudioModelSpec(
+        id=SILERO_VAD_MODEL_ID,
+        label="Silero VAD v6.2 ONNX (2,2 MB — ranh giới lời nói chính xác hơn)",
+        filename="silero_vad.onnx",
+        url=(
+            "https://raw.githubusercontent.com/snakers4/silero-vad/"
+            "be95df9152c0d7618fa1edfeb296fc3dae32376f/src/silero_vad/data/silero_vad.onnx"
+        ),
+        size_bytes=2_327_524,
+        sha256="1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        license="MIT",
+        source="https://github.com/snakers4/silero-vad",
+        subdir="vad",
+        format="onnx",
+    ),
+    SPEAKER_EMBEDDING_MODEL_ID: AudioModelSpec(
+        id=SPEAKER_EMBEDDING_MODEL_ID,
+        label="3D-Speaker CAM++ ONNX (28 MB — phân biệt người nói chính xác hơn)",
+        filename="3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+        url=(
+            "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/"
+            "0743f301363dec56491a490f6d6cbc9d67f9a3bf/"
+            "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+        ),
+        size_bytes=29_596_978,
+        sha256="357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+        license="Apache-2.0",
+        source="https://www.modelscope.cn/models/iic/speech_campplus_sv_en_voxceleb_16k",
+        subdir="speaker",
+        format="onnx",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class AudioModelStatus:
+    """Install state of one :data:`AUDIO_MODELS` entry."""
+
+    spec: AudioModelSpec
+    path: Path | None
+
+    @property
+    def installed(self) -> bool:
+        return self.path is not None
+
+
+def audio_model_catalog() -> tuple[AudioModelSpec, ...]:
+    """The optional audio models, in display order."""
+    return tuple(AUDIO_MODELS.values())
+
+
+def _audio_model_spec(model_id: str) -> AudioModelSpec:
+    spec = AUDIO_MODELS.get((model_id or "").strip())
+    if spec is None:
+        raise AiModelInstallError(f"Mô hình {model_id!r} không có trong danh mục của ứng dụng.")
+    return spec
+
+
+def _audio_model_target(spec: AudioModelSpec, data_dir: Path) -> Path:
+    return Path(data_dir) / "models" / spec.subdir / spec.filename
+
+
+def audio_model_path(model_id: str, data_dir: Path | None) -> Path | None:
+    """The installed file of ``model_id``; None when missing, unknown or truncated.
+
+    Like the GGUF catalog, a size mismatch reads as "not installed" (the
+    SHA-256 was verified when the file was downloaded).
+    """
+    spec = AUDIO_MODELS.get((model_id or "").strip())
+    if spec is None or data_dir is None:
+        return None
+    path = _audio_model_target(spec, data_dir)
+    if path.is_file() and _managed_model_size_ok(path, spec):
+        return path
+    return None
+
+
+def audio_model_status(model_id: str, data_dir: Path | None) -> AudioModelStatus:
+    spec = _audio_model_spec(model_id)
+    return AudioModelStatus(spec=spec, path=audio_model_path(spec.id, data_dir))
+
+
+def download_audio_model(
+    model_id: str,
+    data_dir: Path,
+    *,
+    progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Path:
+    """Download one optional audio model, verified against its size and SHA-256."""
+    spec = _audio_model_spec(model_id)
+    return _stream_download(
+        spec.url,
+        _audio_model_target(spec, data_dir),
+        progress_cb=progress_cb,
+        expected_size=spec.size_bytes,
+        expected_sha256=spec.sha256,
+        min_free_bytes=spec.size_bytes + INSTALL_SPACE_HEADROOM,
+        cancel_check=cancel_check,
+    )
+
+
+def remove_audio_model(model_id: str, data_dir: Path) -> bool:
+    """Remove an installed optional model, refusing anything outside its model dir.
+
+    The guard resolves against ``<data_dir>/models``, so a model file — or a
+    model subdir — symlinked out of the app's data is never followed.
+    """
+    spec = AUDIO_MODELS.get((model_id or "").strip())
+    if spec is None:
+        return False
+    target = _audio_model_target(spec, data_dir)
+    if not target.is_file():
+        return False
+    try:
+        resolved = target.resolve()
+        base = (Path(data_dir) / "models").resolve() / spec.subdir
+    except OSError:
+        return False
+    if not resolved.is_relative_to(base) or resolved.suffix != target.suffix:
+        return False
+    with contextlib.suppress(OSError):
+        resolved.unlink(missing_ok=True)
+        return not resolved.exists()
+    return False
+
+
+# ── Media runtime packs (project-published whisper-cli / ffmpeg) ─────────────
+
+#: Rendered by ``scripts/render_media_runtime_manifests.py`` from locked packs;
+#: listed as frozen data in ``packaging/vienetts-app.spec``.
+MEDIA_RUNTIME_MANIFEST_PATH = Path(__file__).with_name("media_runtime_manifests.json")
+MEDIA_RUNTIME_SCHEMA = 1
+WHISPER_CPP_RUNTIME = "whisper_cpp"
+FFMPEG_RUNTIME = "ffmpeg"
+WHISPER_CPP_CELLS = ("macos-arm64-metal", "macos-x64-cpu")
+FFMPEG_CELLS = ("windows-x64", "linux-x64", "linux-arm64", "macos-arm64", "macos-x64")
+MEDIA_PACK_ARCHIVES = ("zip", "tar.gz", "tar.xz")
+#: Direct-serving artifact hosts (gh-pages ``packs/`` is the publish target).
+MEDIA_PACK_DOWNLOAD_HOSTS = frozenset(
+    {"nguyensitrung.github.io", "github.com", "objects.githubusercontent.com"}
+)
+_MEDIA_RUNTIME_CELLS: dict[str, tuple[str, ...]] = {
+    WHISPER_CPP_RUNTIME: WHISPER_CPP_CELLS,
+    FFMPEG_RUNTIME: FFMPEG_CELLS,
+}
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class MediaRuntimeCell:
+    """One platform cell of a managed runtime pack.
+
+    Only a ``published`` cell carries a download recipe (``url`` + ``size_bytes``
+    + ``sha256``); an unpublished one is a truthful "not available yet".
+    """
+
+    runtime: str
+    cell: str
+    published: bool
+    url: str
+    size_bytes: int
+    sha256: str
+    archive: str
+    license: str
+    source: str
+    version: str = ""
+
+
+@dataclass(frozen=True)
+class MediaRuntimeManifest:
+    runtimes: Mapping[str, Mapping[str, MediaRuntimeCell]]
+
+    def cells(self, runtime: str) -> Mapping[str, MediaRuntimeCell]:
+        return self.runtimes.get(runtime, {})
+
+    def cell(self, runtime: str, cell: str) -> MediaRuntimeCell | None:
+        return self.cells(runtime).get(cell)
+
+
+def _parse_media_cell(runtime: str, cell_id: str, raw: object) -> MediaRuntimeCell:
+    where = f"{runtime}/{cell_id}"
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where}: a cell must be an object")
+    published, size = raw.get("published"), raw.get("size")
+    text = {k: raw.get(k) for k in ("url", "sha256", "archive", "license", "source")}
+    version = raw.get("version", "")
+    if not isinstance(published, bool):
+        raise ValueError(f"{where}: published must be a boolean")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ValueError(f"{where}: size must be a non-negative integer")
+    if not all(isinstance(v, str) for v in (*text.values(), version)):
+        raise ValueError(f"{where}: url/sha256/archive/license/source/version must be strings")
+    url, sha256, archive = text["url"], text["sha256"], text["archive"]
+    if archive not in MEDIA_PACK_ARCHIVES:
+        raise ValueError(f"{where}: unsupported archive {archive!r}")
+    if not text["license"].strip() or not text["source"].strip():
+        raise ValueError(f"{where}: license and source are required")
+    if published:
+        check_download_url(url, allowed_hosts=MEDIA_PACK_DOWNLOAD_HOSTS)
+        if not url.endswith(f".{archive}"):
+            raise ValueError(f"{where}: the URL is not a .{archive} pack: {url}")
+        if size <= 0 or not _SHA256_HEX.fullmatch(sha256):
+            raise ValueError(f"{where}: a published cell needs its size and sha256")
+    elif url:
+        raise ValueError(f"{where}: an unpublished cell must not carry a download URL")
+    return MediaRuntimeCell(
+        runtime=runtime,
+        cell=cell_id,
+        published=published,
+        url=url,
+        size_bytes=size,
+        sha256=sha256,
+        archive=archive,
+        license=text["license"],
+        source=text["source"],
+        version=version,
+    )
+
+
+def parse_media_runtime_manifest(data: object) -> MediaRuntimeManifest:
+    """Validate a ``{schema: 1, runtimes: {<runtime>: {cells: {...}}}}`` document.
+
+    Any violation — unknown schema, runtime or cell, a published cell without a
+    pinned HTTPS pack on an allowed host, an unpublished cell with a URL —
+    raises ``ValueError``. Runtimes and cells may be absent (= unpublished).
+    """
+    if not isinstance(data, Mapping):
+        raise ValueError("the media runtime manifest must be an object")
+    schema = data.get("schema")
+    if isinstance(schema, bool) or schema != MEDIA_RUNTIME_SCHEMA:
+        raise ValueError(f"unsupported media runtime manifest schema: {schema!r}")
+    runtimes = data.get("runtimes")
+    if not isinstance(runtimes, Mapping):
+        raise ValueError("the media runtime manifest has no runtimes object")
+    parsed: dict[str, dict[str, MediaRuntimeCell]] = {}
+    for runtime, body in runtimes.items():
+        known = _MEDIA_RUNTIME_CELLS.get(runtime)
+        if known is None:
+            raise ValueError(f"unknown media runtime: {runtime!r}")
+        cells = body.get("cells") if isinstance(body, Mapping) else None
+        if not isinstance(cells, Mapping):
+            raise ValueError(f"{runtime}: missing cells object")
+        parsed[runtime] = {}
+        for cell_id, raw in cells.items():
+            if cell_id not in known:
+                raise ValueError(f"{runtime}: unknown cell {cell_id!r}")
+            parsed[runtime][cell_id] = _parse_media_cell(runtime, cell_id, raw)
+    return MediaRuntimeManifest(parsed)
+
+
+def load_media_runtime_manifest(path: Path | None = None) -> MediaRuntimeManifest:
+    """The shipped manifest (or ``path``). Missing or invalid data publishes nothing."""
+    source = MEDIA_RUNTIME_MANIFEST_PATH if path is None else Path(path)
+    try:
+        return parse_media_runtime_manifest(json.loads(source.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return MediaRuntimeManifest({})
+
+
 # ── audio.cpp Native Runtime (audiocpp_cli) ──────────────────────────────────
 
 
@@ -447,57 +815,172 @@ def is_audiocpp_installed(data_dir: Path | None = None) -> bool:
 
 
 @dataclass(frozen=True)
+class ReleaseAsset:
+    """One upstream release asset, pinned by size and SHA-256."""
+
+    filename: str
+    size_bytes: int = 0
+    sha256: str = ""
+
+
+@dataclass(frozen=True)
 class AudiocppRuntimeVariant:
     """One downloadable ``audiocpp_cli`` build.
 
-    The variant is picked from the ``diarization_device`` setting; the CPU and
-    Metal archives were the only ones the app knew about. Upstream also ships
-    a Linux/Windows Vulkan build that contains the CLI (verified in v0.9.2)
-    and no Linux CUDA CLI at all, so "cuda" is intentionally not offered here.
+    The variant is picked from the ``diarization_device`` setting. Upstream
+    ships CPU/Vulkan builds for Windows and Linux x64, Metal for macOS, CUDA
+    CLI zips for Windows only and nothing for Linux arm64. ``companions`` are
+    archives extracted into the same runtime dir: a Windows CUDA zip carries
+    ``ggml-cuda.dll`` but not the cudart/cuBLAS DLLs it loads, which upstream
+    publishes as a separate ``cudart`` zip.
     """
 
     id: str
     label: str
     filename: str
+    size_bytes: int = 0
+    sha256: str = ""
+    companions: tuple[ReleaseAsset, ...] = ()
+
+
+#: ``audiocpp_unavailable_reason()`` when upstream ships no build for the host.
+AUDIOCPP_UNSUPPORTED = "unsupported"
+
+#: Size and SHA-256 of every audio.cpp asset the app may download, from
+#: ``gh release view v0.9.2 -R 0xShug0/audio.cpp --json assets``.
+_AUDIOCPP_ASSET_PINS: dict[str, tuple[int, str]] = {
+    "audio-v0.9.2-bin-windows-x64-cpu-portable.zip": (
+        28_114_705,
+        "4bea04239d753d2d0a294580ad4af2a0fa81b0de244a1b9146650c7f9fa4e84d",
+    ),
+    "audio-v0.9.2-bin-windows-x64-vulkan-portable.zip": (
+        62_556_276,
+        "4d11a82c560f7a1dc0934e6fef847d6e0b779cf79854aa7d90d8b28e4ad04d93",
+    ),
+    "audio-v0.9.2-bin-windows-x64-cuda12.4.zip": (
+        463_532_839,
+        "099bd43b74a5175fd9e03ac95c9fabe8b97718826d547890a03950483e81b168",
+    ),
+    "audio-v0.9.2-cudart-windows-x64-cuda12.4.zip": (
+        607_273_675,
+        "50e278d213daa38e782a10b501b764c5c0738381898dacee7243101b890eeb0d",
+    ),
+    "audio-v0.9.2-bin-windows-x64-cuda13.3.zip": (
+        275_142_402,
+        "ddf7474656e4c47a1bc5b5a53a268709d968d87132367d646baae5a77c34391f",
+    ),
+    "audio-v0.9.2-cudart-windows-x64-cuda13.3.zip": (
+        575_457_454,
+        "f3bb616e43f4b8aec4be7f2c2b323aec381a1993bac382401a011c121c126e59",
+    ),
+    "audio-v0.9.2-bin-macos-arm64-metal.tar.gz": (
+        31_972_675,
+        "827239e1d5824f8294cce461661dc7f20f933869bd333dfc60ba3c089f29faab",
+    ),
+    "audio-v0.9.2-bin-macos-x64-metal.tar.gz": (
+        33_862_576,
+        "b199add8ab8d53f81769367b9869a021eae838fa6104c9b05a012ec7899774d8",
+    ),
+    "audio-v0.9.2-bin-ubuntu-x64-cpu-portable.tar.gz": (
+        59_857_917,
+        "72bfb07f46bb8f4cc0217a604619dbb78cfc388dfa4e639feb412ca7e2410980",
+    ),
+    "audio-v0.9.2-bin-ubuntu-x64-vulkan-portable.tar.gz": (
+        73_616_441,
+        "37294a0d9d52383475a47df95dc725c83faee0dbfae00088f1509ed4d7f3619d",
+    ),
+}
+
+#: Windows CUDA builds and the oldest driver CUDA version each runs on. The
+#: cudart companion bundles the CUDA runtime, so minor-version compatibility
+#: applies (the reasoning behind ``detector.REQUIRED_CUDA``).
+_AUDIOCPP_CUDA_BUILDS: tuple[tuple[str, str, tuple[int, int]], ...] = (
+    ("cuda12.4", "NVIDIA CUDA 12.4 (GPU NVIDIA — tải ~1,1 GB)", (12, 0)),
+    ("cuda13.3", "NVIDIA CUDA 13.3 (driver NVIDIA R580+ — tải ~850 MB)", (13, 0)),
+)
+
+
+def _audiocpp_asset(kind: str, platform_id: str) -> ReleaseAsset:
+    ext = ".zip" if platform_id.startswith("windows-") else ".tar.gz"
+    filename = f"audio-{AUDIOCPP_RELEASE_TAG}-{kind}-{platform_id}{ext}"
+    size, sha256 = _AUDIOCPP_ASSET_PINS.get(filename, (0, ""))
+    return ReleaseAsset(filename, size, sha256)
+
+
+def _audiocpp_variant(
+    variant_id: str, label: str, platform_id: str, *, cudart: str = ""
+) -> AudiocppRuntimeVariant:
+    asset = _audiocpp_asset("bin", platform_id)
+    return AudiocppRuntimeVariant(
+        variant_id,
+        label,
+        asset.filename,
+        asset.size_bytes,
+        asset.sha256,
+        (_audiocpp_asset("cudart", cudart),) if cudart else (),
+    )
+
+
+@functools.cache
+def _nvidia_driver_cuda_version() -> str | None:
+    """The NVIDIA driver's maximum CUDA version, or None without a driver.
+
+    Reuses the hardware detector's probe (NVML, then ``nvidia-smi``) once per
+    process: the variant list feeds QML property reads on the GUI thread.
+    """
+    from vienetts_app.core.detector import probe_cuda_driver
+
+    probe = probe_cuda_driver()
+    return probe.cuda_version if probe.available else None
+
+
+def _cuda_at_least(version: str | None, required: tuple[int, int]) -> bool:
+    try:
+        parts = tuple(int(p) for p in (version or "").split(".")[:2])
+    except ValueError:
+        return False
+    return bool(parts) and parts >= required
 
 
 def available_audiocpp_variants() -> dict[str, AudiocppRuntimeVariant]:
-    tag = AUDIOCPP_RELEASE_TAG
     if sys.platform == "win32":
-        return {
-            "cpu": AudiocppRuntimeVariant(
-                "cpu",
-                "CPU (tương thích rộng)",
-                f"audio-{tag}-bin-windows-x64-cpu-portable.zip",
-            ),
-            "vulkan": AudiocppRuntimeVariant(
+        variants = {
+            "cpu": _audiocpp_variant("cpu", "CPU (tương thích rộng)", "windows-x64-cpu-portable"),
+            "vulkan": _audiocpp_variant(
                 "vulkan",
                 "Vulkan GPU (nhanh hơn trên GPU rời/tích hợp)",
-                f"audio-{tag}-bin-windows-x64-vulkan-portable.zip",
+                "windows-x64-vulkan-portable",
             ),
         }
+        driver = _nvidia_driver_cuda_version()
+        for variant_id, label, floor in _AUDIOCPP_CUDA_BUILDS:
+            if _cuda_at_least(driver, floor):
+                cell = f"windows-x64-{variant_id}"
+                variants[variant_id] = _audiocpp_variant(variant_id, label, cell, cudart=cell)
+        return variants
     if sys.platform == "darwin":
-        machine = platform.machine().lower()
-        arch = "arm64" if ("arm" in machine or "aarch64" in machine) else "x64"
+        arch = "arm64" if _host_arch() == "arm64" else "x64"
         return {
-            "metal": AudiocppRuntimeVariant(
-                "metal",
-                "Metal GPU (Apple Silicon/Intel)",
-                f"audio-{tag}-bin-macos-{arch}-metal.tar.gz",
+            "metal": _audiocpp_variant(
+                "metal", "Metal GPU (Apple Silicon/Intel)", f"macos-{arch}-metal"
             )
         }
+    if _host_arch() != "x64":
+        # No Linux arm64 build upstream; the x64 one would only fail to exec.
+        return {}
     return {
-        "cpu": AudiocppRuntimeVariant(
-            "cpu",
-            "CPU (tương thích rộng)",
-            f"audio-{tag}-bin-ubuntu-x64-cpu-portable.tar.gz",
-        ),
-        "vulkan": AudiocppRuntimeVariant(
+        "cpu": _audiocpp_variant("cpu", "CPU (tương thích rộng)", "ubuntu-x64-cpu-portable"),
+        "vulkan": _audiocpp_variant(
             "vulkan",
             "Vulkan GPU (nhanh hơn trên GPU rời/tích hợp)",
-            f"audio-{tag}-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "ubuntu-x64-vulkan-portable",
         ),
     }
+
+
+def audiocpp_unavailable_reason() -> str:
+    """:data:`AUDIOCPP_UNSUPPORTED` when upstream ships no build for this host, else ""."""
+    return "" if available_audiocpp_variants() else AUDIOCPP_UNSUPPORTED
 
 
 def default_audiocpp_variant() -> str:
@@ -506,9 +989,20 @@ def default_audiocpp_variant() -> str:
 
 def resolve_audiocpp_variant(requested: str = "") -> AudiocppRuntimeVariant:
     variants = available_audiocpp_variants()
+    if not variants:
+        raise AiModelInstallError(
+            f"audio.cpp không phát hành bản dựng cho {sys.platform}/{platform.machine()} "
+            f"({AUDIOCPP_UNSUPPORTED}) — hãy dùng phân tách người nói âm học (acoustic)."
+        )
     key = (requested or "").strip().lower()
     if not key or key == "auto":
         key = default_audiocpp_variant()
+    elif key == "cuda":
+        # The newest CUDA build the installed driver can run.
+        key = next(
+            (vid for vid, _label, _floor in reversed(_AUDIOCPP_CUDA_BUILDS) if vid in variants),
+            key,
+        )
     variant = variants.get(key)
     if variant is None:
         offered = ", ".join(sorted(variants))
@@ -519,9 +1013,13 @@ def resolve_audiocpp_variant(requested: str = "") -> AudiocppRuntimeVariant:
     return variant
 
 
-def audiocpp_archive_url(variant: AudiocppRuntimeVariant) -> str:
+def _audiocpp_release_url(filename: str) -> str:
     base = f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_RELEASE_TAG}"
-    return f"{base}/{variant.filename}"
+    return f"{base}/{filename}"
+
+
+def audiocpp_archive_url(variant: AudiocppRuntimeVariant) -> str:
+    return _audiocpp_release_url(variant.filename)
 
 
 def installed_audiocpp_variant(data_dir: Path) -> str:
@@ -614,23 +1112,43 @@ def download_audiocpp_runtime(
 
     Extraction happens in a staging directory; the previous runtime stays
     untouched until the new one has been probed. A failed download or a
-    non-runnable archive therefore never destroys a working install.
+    non-runnable archive therefore never destroys a working install. Catalog
+    archives (and their companions) are verified against their pinned size
+    and SHA-256; a ``url_override`` artifact is fetched alone and unverified.
     """
     runtime_variant = resolve_audiocpp_variant(variant)
-    url = url_override.strip() or audiocpp_archive_url(runtime_variant)
+    override = url_override.strip()
+    if override:
+        downloads = [(override, 0, "")]
+    else:
+        downloads = [
+            (_audiocpp_release_url(a.filename), a.size_bytes, a.sha256)
+            for a in (runtime_variant, *runtime_variant.companions)
+        ]
+    total_bytes = sum(size for _url, size, _sha in downloads)
     rt_dir = audiocpp_runtime_dir(data_dir)
     root = rt_dir.parent
     root.mkdir(parents=True, exist_ok=True)
     staging = root / f".audiocpp_staging_{uuid.uuid4().hex}"
     backup = rt_dir.with_name(f".audiocpp_old_{uuid.uuid4().hex}")
     staging.mkdir(parents=True, exist_ok=False)
-    suffix = ".zip" if url.lower().endswith(".zip") else ".tar.gz"
-    archive_path = staging / f"runtime{suffix}"
     try:
-        _stream_download(url, archive_path, progress_cb=progress_cb)
-        _extract_archive(archive_path, staging)
-        with contextlib.suppress(OSError):
-            archive_path.unlink(missing_ok=True)
+        start = 0.0
+        for index, (url, size, sha256) in enumerate(downloads):
+            span = size / total_bytes if total_bytes else 1.0 / len(downloads)
+            archive_path = staging / f"runtime{index}{_archive_suffix(url)}"
+            _stream_download(
+                url,
+                archive_path,
+                progress_cb=_scaled_progress(progress_cb, start, span),
+                expected_size=size,
+                expected_sha256=sha256,
+                min_free_bytes=_runtime_space_needed(size),
+            )
+            _extract_archive(archive_path, staging)
+            with contextlib.suppress(OSError):
+                archive_path.unlink(missing_ok=True)
+            start += span
         cli = _locate_cli(staging)
         if cli is None:
             raise AiModelInstallError("Không tìm thấy thực thi audiocpp_cli trong gói tải về.")
@@ -642,17 +1160,7 @@ def download_audiocpp_runtime(
             json.dumps({"variant": runtime_variant.id, "tag": AUDIOCPP_RELEASE_TAG}),
             encoding="utf-8",
         )
-        if rt_dir.exists():
-            os.replace(rt_dir, backup)
-        try:
-            os.replace(staging, rt_dir)
-        except OSError as exc:
-            if backup.exists():
-                with contextlib.suppress(OSError):
-                    os.replace(backup, rt_dir)
-            raise AiModelInstallError(f"Không thể kích hoạt runtime audio.cpp mới: {exc}") from exc
-        if backup.exists():
-            safe_remove(backup)
+        _promote_runtime_dir(staging, rt_dir, backup, "audio.cpp")
     finally:
         with contextlib.suppress(OSError):
             if staging.exists():
@@ -726,16 +1234,65 @@ def is_whisper_cpp_installed(data_dir: Path | None = None) -> bool:
 
 @dataclass(frozen=True)
 class WhisperCppRuntimeVariant:
-    """One downloadable ``whisper.cpp`` CLI build."""
+    """One downloadable ``whisper.cpp`` CLI build.
+
+    Windows/Linux builds are upstream release assets (``filename``). Upstream
+    ships no macOS CLI, so macOS builds are project-published packs named by
+    their media-runtime manifest ``cell`` and pinned by ``url``/``size_bytes``/
+    ``sha256``/``archive``. A cell that is not published yet has no URL and
+    carries ``unavailable_reason`` (Homebrew guidance) instead.
+    """
 
     id: str
     label: str
     filename: str
+    cell: str = ""
+    url: str = ""
+    size_bytes: int = 0
+    sha256: str = ""
+    archive: str = ""
+    unavailable_reason: str = ""
+
+
+WHISPER_CPP_HOMEBREW_HINT = (
+    "Bản whisper-cli dựng sẵn cho macOS chưa được phát hành — hãy cài `whisper-cpp` "
+    "bằng Homebrew (`brew install whisper-cpp`); ứng dụng sẽ tự tìm thấy whisper-cli."
+)
+
+
+def _macos_whisper_cpp_variant(
+    variant_id: str, label: str, cell_id: str
+) -> WhisperCppRuntimeVariant:
+    cell = load_media_runtime_manifest().cell(WHISPER_CPP_RUNTIME, cell_id)
+    if cell is None or not cell.published:
+        return WhisperCppRuntimeVariant(
+            variant_id, label, "", cell=cell_id, unavailable_reason=WHISPER_CPP_HOMEBREW_HINT
+        )
+    return WhisperCppRuntimeVariant(
+        variant_id,
+        label,
+        cell.url.rsplit("/", 1)[-1],
+        cell=cell_id,
+        url=cell.url,
+        size_bytes=cell.size_bytes,
+        sha256=cell.sha256,
+        archive=cell.archive,
+    )
 
 
 def available_whisper_cpp_variants() -> dict[str, WhisperCppRuntimeVariant]:
     machine = platform.machine().lower()
     is_arm = "arm" in machine or "aarch64" in machine
+    if sys.platform == "darwin":
+        # Never an upstream ``ubuntu`` tarball: that binary cannot exec here.
+        if _host_arch() == "arm64":
+            # One Metal build per arch; it also serves ``cpu`` (``-ng``).
+            cell = "macos-arm64-metal"
+            return {
+                "cpu": _macos_whisper_cpp_variant("cpu", "CPU (bản dựng Metal, tắt GPU)", cell),
+                "metal": _macos_whisper_cpp_variant("metal", "Metal GPU (Apple Silicon)", cell),
+            }
+        return {"cpu": _macos_whisper_cpp_variant("cpu", "CPU (Mac Intel)", "macos-x64-cpu")}
     if sys.platform == "win32":
         if is_arm:
             return {
@@ -773,7 +1330,7 @@ def available_whisper_cpp_variants() -> dict[str, WhisperCppRuntimeVariant]:
 
 
 def default_whisper_cpp_variant() -> str:
-    return "cpu"
+    return "metal" if sys.platform == "darwin" and _host_arch() == "arm64" else "cpu"
 
 
 def resolve_whisper_cpp_variant(requested: str = "") -> WhisperCppRuntimeVariant:
@@ -792,6 +1349,9 @@ def resolve_whisper_cpp_variant(requested: str = "") -> WhisperCppRuntimeVariant
 
 
 def whisper_cpp_archive_url(variant: WhisperCppRuntimeVariant) -> str:
+    """The pack URL: the manifest cell's, else the upstream release asset ("" if none)."""
+    if variant.url or variant.cell:
+        return variant.url
     base = f"https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_CPP_RELEASE_TAG}"
     return f"{base}/{variant.filename}"
 
@@ -814,19 +1374,35 @@ def download_whisper_cpp_runtime(
     url_override: str = "",
     variant: str = "",
 ) -> Path:
-    """Download, extract, validate and atomically install ``whisper-cli``."""
+    """Download, extract, validate and atomically install ``whisper-cli``.
+
+    An unpublished macOS cell raises its Homebrew guidance before anything is
+    fetched; a published one is verified against its pinned size and SHA-256.
+    """
     runtime_variant = resolve_whisper_cpp_variant(variant)
-    url = url_override.strip() or whisper_cpp_archive_url(runtime_variant)
+    override = url_override.strip()
+    if not override and runtime_variant.unavailable_reason:
+        raise AiModelInstallError(runtime_variant.unavailable_reason)
+    url = override or whisper_cpp_archive_url(runtime_variant)
     rt_dir = whisper_runtime_dir(data_dir)
     root = rt_dir.parent
     root.mkdir(parents=True, exist_ok=True)
     staging = root / f".whisper_staging_{uuid.uuid4().hex}"
     backup = rt_dir.with_name(f".whisper_old_{uuid.uuid4().hex}")
     staging.mkdir(parents=True, exist_ok=False)
-    suffix = ".zip" if url.lower().endswith(".zip") else ".tar.gz"
-    archive_path = staging / f"runtime{suffix}"
+    archive_path = (
+        staging / f"runtime{_archive_suffix(url, '' if override else runtime_variant.archive)}"
+    )
+    size = 0 if override else runtime_variant.size_bytes
     try:
-        _stream_download(url, archive_path, progress_cb=progress_cb)
+        _stream_download(
+            url,
+            archive_path,
+            progress_cb=progress_cb,
+            expected_size=size,
+            expected_sha256="" if override else runtime_variant.sha256,
+            min_free_bytes=_runtime_space_needed(size),
+        )
         _extract_archive(archive_path, staging)
         with contextlib.suppress(OSError):
             archive_path.unlink(missing_ok=True)
@@ -837,23 +1413,11 @@ def download_whisper_cpp_runtime(
             with contextlib.suppress(OSError):
                 cli.chmod(cli.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         _probe_runtime(cli, "whisper.cpp")
-        (staging / RUNTIME_META_FILENAME).write_text(
-            json.dumps({"variant": runtime_variant.id, "tag": WHISPER_CPP_RELEASE_TAG}),
-            encoding="utf-8",
-        )
-        if rt_dir.exists():
-            os.replace(rt_dir, backup)
-        try:
-            os.replace(staging, rt_dir)
-        except OSError as exc:
-            if backup.exists():
-                with contextlib.suppress(OSError):
-                    os.replace(backup, rt_dir)
-            raise AiModelInstallError(
-                f"Không thể kích hoạt runtime whisper.cpp mới: {exc}"
-            ) from exc
-        if backup.exists():
-            safe_remove(backup)
+        meta = {"variant": runtime_variant.id, "tag": WHISPER_CPP_RELEASE_TAG}
+        if runtime_variant.cell:
+            meta["cell"] = runtime_variant.cell
+        (staging / RUNTIME_META_FILENAME).write_text(json.dumps(meta), encoding="utf-8")
+        _promote_runtime_dir(staging, rt_dir, backup, "whisper.cpp")
     finally:
         with contextlib.suppress(OSError):
             if staging.exists():
@@ -868,6 +1432,251 @@ def download_whisper_cpp_runtime(
 def remove_whisper_cpp_runtime(data_dir: Path) -> bool:
     rt_dir = whisper_runtime_dir(data_dir)
     if not rt_dir.is_dir():
+        return False
+    safe_remove(rt_dir)
+    return not rt_dir.exists()
+
+
+# ── Managed ffmpeg runtime (ffmpeg + ffprobe) ────────────────────────────────
+
+#: What dubbing needs from ffmpeg: H.264/AAC and VP9 encoders for the MP4 and
+#: WebM exports, and libass's ``subtitles`` filter for burn-in.
+FFMPEG_REQUIRED_ENCODERS = ("libx264", "aac", "libvpx-vp9")
+FFMPEG_REQUIRED_FILTERS = ("subtitles",)
+
+
+@dataclass(frozen=True)
+class FfmpegRuntimeStatus:
+    """What the Settings card needs to show about ffmpeg.
+
+    ``ffmpeg``/``ffprobe`` are what ``video_dub`` runs (managed runtime → PATH
+    → well-known dirs) and ``managed`` says whether the app-installed pack is
+    present. ``downloadable`` is whether this host's ``cell`` is published;
+    when it is not, ``note`` is the install guidance to show instead.
+    ``version`` is the managed pack's ffmpeg version ("" without one).
+    """
+
+    cell: str
+    downloadable: bool
+    managed: bool
+    ffmpeg: Path | None
+    ffprobe: Path | None
+    version: str
+    note: str
+
+
+def ffmpeg_runtime_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "runtimes" / "ffmpeg"
+
+
+def ffmpeg_runtime_bin_dir(data_dir: Path) -> Path:
+    """Where the managed ``ffmpeg``/``ffprobe`` live (``video_dub`` looks here first)."""
+    return ffmpeg_runtime_dir(data_dir) / "bin"
+
+
+def ffmpeg_host_cell() -> str:
+    """The ffmpeg manifest cell of this host, or "" when no pack can exist."""
+    if sys.platform == "win32":
+        os_key = "windows"
+    elif sys.platform == "darwin":
+        os_key = "macos"
+    elif sys.platform.startswith("linux"):
+        os_key = "linux"
+    else:
+        return ""
+    cell = f"{os_key}-{_host_arch()}"
+    return cell if cell in FFMPEG_CELLS else ""
+
+
+def _ffmpeg_install_hint() -> str:
+    if sys.platform == "darwin":
+        return "hãy cài ffmpeg bằng Homebrew (`brew install ffmpeg`)"
+    if sys.platform == "win32":
+        return "hãy cài ffmpeg (ví dụ `winget install Gyan.FFmpeg`) rồi mở lại ứng dụng"
+    return "hãy cài ffmpeg bằng trình quản lý gói (ví dụ `sudo apt install ffmpeg`)"
+
+
+def _published_ffmpeg_cell() -> tuple[MediaRuntimeCell | None, str]:
+    """This host's published pack, or ``(None, guidance)``."""
+    cell_id = ffmpeg_host_cell()
+    if not cell_id:
+        return None, (
+            f"Chưa có gói ffmpeg dựng sẵn cho {sys.platform}/{platform.machine()} — "
+            f"{_ffmpeg_install_hint()}."
+        )
+    cell = load_media_runtime_manifest().cell(FFMPEG_RUNTIME, cell_id)
+    if cell is None or not cell.published:
+        return None, (
+            f"Gói ffmpeg dựng sẵn cho {cell_id} chưa được phát hành — {_ffmpeg_install_hint()}."
+        )
+    return cell, ""
+
+
+def _locate_ffmpeg_pair(bin_dir: Path) -> tuple[Path, Path] | None:
+    found: list[Path] = []
+    for tool in ("ffmpeg", "ffprobe"):
+        names = (f"{tool}.exe", tool) if os.name == "nt" else (tool,)
+        path = next((bin_dir / n for n in names if (bin_dir / n).is_file()), None)
+        if path is None:
+            return None
+        found.append(path)
+    return found[0], found[1]
+
+
+def _installed_ffmpeg_version(data_dir: Path) -> str:
+    try:
+        meta = json.loads((ffmpeg_runtime_dir(data_dir) / RUNTIME_META_FILENAME).read_text("utf-8"))
+    except (OSError, ValueError):
+        return ""
+    version = meta.get("ffmpeg_version") if isinstance(meta, dict) else None
+    return version if isinstance(version, str) else ""
+
+
+def ffmpeg_runtime_status(data_dir: Path | None) -> FfmpegRuntimeStatus:
+    cell, note = _published_ffmpeg_cell()
+    managed_dirs = [] if data_dir is None else [ffmpeg_runtime_bin_dir(data_dir)]
+    managed = (
+        data_dir is not None and _locate_ffmpeg_pair(ffmpeg_runtime_bin_dir(data_dir)) is not None
+    )
+    return FfmpegRuntimeStatus(
+        cell=ffmpeg_host_cell(),
+        downloadable=cell is not None,
+        managed=managed,
+        ffmpeg=find_executable("ffmpeg", managed_dirs=managed_dirs),
+        ffprobe=find_executable("ffprobe", managed_dirs=managed_dirs),
+        version=_installed_ffmpeg_version(data_dir) if managed and data_dir else "",
+        note=note,
+    )
+
+
+def _run_ffmpeg_probe(exe: Path, *args: str) -> str:
+    try:
+        proc = run_cli(cli_command(exe, *args), cwd=exe.parent, timeout=PROBE_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AiModelInstallError(f"Gói ffmpeg không chạy được trên máy này ({exc}).") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise AiModelInstallError(
+            f"Gói ffmpeg tải về không chạy được ({exe.name} {' '.join(args)})"
+            + (f": {detail[:300]}" if detail else ".")
+        )
+    return proc.stdout or ""
+
+
+def _listed_names(listing: str) -> set[str]:
+    """The name column of ``ffmpeg -encoders`` / ``-filters`` (legend lines skipped)."""
+    names: set[str] = set()
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] != "=":
+            names.add(parts[1])
+    return names
+
+
+def _probe_ffmpeg_pack(ffmpeg: Path, ffprobe: Path) -> str:
+    """Run a staged pack and return its version; reject a pack dubbing cannot use."""
+    match = re.search(r"ffmpeg version (\S+)", _run_ffmpeg_probe(ffmpeg, "-version"))
+    if match is None:
+        raise AiModelInstallError("Gói tải về không chứa ffmpeg hợp lệ.")
+    if "ffprobe version" not in _run_ffmpeg_probe(ffprobe, "-version"):
+        raise AiModelInstallError("Gói tải về không chứa ffprobe hợp lệ.")
+    encoders = _listed_names(_run_ffmpeg_probe(ffmpeg, "-hide_banner", "-encoders"))
+    filters = _listed_names(_run_ffmpeg_probe(ffmpeg, "-hide_banner", "-filters"))
+    missing = [f"bộ mã hoá {name}" for name in FFMPEG_REQUIRED_ENCODERS if name not in encoders]
+    missing += [
+        f"bộ lọc {name} (libass)" for name in FFMPEG_REQUIRED_FILTERS if name not in filters
+    ]
+    if missing:
+        raise AiModelInstallError(
+            "Gói ffmpeg tải về thiếu thành phần cần cho lồng tiếng và ghép phụ đề: "
+            + ", ".join(missing)
+            + "."
+        )
+    return match.group(1)
+
+
+def install_ffmpeg_runtime(
+    data_dir: Path,
+    *,
+    progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Path:
+    """Download, verify, probe and atomically install the managed ffmpeg pack.
+
+    The pack (``bin/ffmpeg`` + ``bin/ffprobe``, ``.exe`` on Windows, plus
+    ``LICENSE``/``SOURCE.txt``) is this host's published manifest cell, pinned
+    by size and SHA-256. It is staged beside the live runtime and must pass
+    the ``-version``/``-encoders``/``-filters`` probe before the swap, so any
+    failure leaves the previous runtime in place. Returns the managed ffmpeg.
+    """
+    cell, reason = _published_ffmpeg_cell()
+    if cell is None:
+        raise AiModelInstallError(reason)
+    rt_dir = ffmpeg_runtime_dir(data_dir)
+    root = rt_dir.parent
+    root.mkdir(parents=True, exist_ok=True)
+    staging = root / f".ffmpeg_staging_{uuid.uuid4().hex}"
+    backup = root / f".ffmpeg_old_{uuid.uuid4().hex}"
+    staging.mkdir(parents=True, exist_ok=False)
+    archive_path = staging / f"pack{_archive_suffix(cell.url, cell.archive)}"
+    try:
+        _stream_download(
+            cell.url,
+            archive_path,
+            progress_cb=progress_cb,
+            expected_size=cell.size_bytes,
+            expected_sha256=cell.sha256,
+            min_free_bytes=_runtime_space_needed(cell.size_bytes),
+            cancel_check=cancel_check,
+        )
+        _extract_archive(archive_path, staging)
+        with contextlib.suppress(OSError):
+            archive_path.unlink(missing_ok=True)
+        pair = _locate_ffmpeg_pair(staging / "bin")
+        if pair is None:
+            raise AiModelInstallError("Gói ffmpeg tải về thiếu bin/ffmpeg hoặc bin/ffprobe.")
+        if os.name != "nt":
+            for exe in pair:
+                with contextlib.suppress(OSError):
+                    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        version = _probe_ffmpeg_pack(*pair)
+        if cancel_check is not None and cancel_check():
+            raise AiModelDownloadCancelled("Đã huỷ cài đặt ffmpeg.")
+        meta = {
+            "runtime": FFMPEG_RUNTIME,
+            "cell": cell.cell,
+            "version": cell.version,
+            "ffmpeg_version": version,
+            "sha256": cell.sha256,
+        }
+        (staging / RUNTIME_META_FILENAME).write_text(json.dumps(meta), encoding="utf-8")
+        _promote_runtime_dir(staging, rt_dir, backup, "ffmpeg")
+    finally:
+        with contextlib.suppress(OSError):
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    installed = _locate_ffmpeg_pair(ffmpeg_runtime_bin_dir(data_dir))
+    if installed is None:
+        raise AiModelInstallError("Không tìm thấy ffmpeg sau khi cài đặt.")
+    return installed[0]
+
+
+def remove_ffmpeg_runtime(data_dir: Path) -> bool:
+    """Remove the managed ffmpeg pack, refusing a runtime dir that leads elsewhere.
+
+    A symlinked (or junctioned) ``runtimes/ffmpeg`` is never followed: the
+    resolved dir must stay inside the resolved ``runtimes`` dir.
+    """
+    rt_dir = ffmpeg_runtime_dir(data_dir)
+    if rt_dir.is_symlink() or not rt_dir.is_dir():
+        return False
+    try:
+        resolved = rt_dir.resolve()
+        root = rt_dir.parent.resolve()
+    except OSError:
+        return False
+    if resolved == root or not resolved.is_relative_to(root):
         return False
     safe_remove(rt_dir)
     return not rt_dir.exists()

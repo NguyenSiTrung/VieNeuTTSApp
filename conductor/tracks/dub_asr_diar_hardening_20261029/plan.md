@@ -146,7 +146,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [~] **Task 3.1: Catalog & installers — macOS whisper-cli cells, managed ffmpeg runtime, audio.cpp variants, optional audio models (FR-2.2, FR-2.3, FR-2.4, FR-3.1 catalog, FR-4.5 catalog)**
+- [x] **Task 3.1: Catalog & installers — macOS whisper-cli cells, managed ffmpeg runtime, audio.cpp variants, optional audio models (FR-2.2, FR-2.3, FR-2.4, FR-3.1 catalog, FR-4.5 catalog)**
   <!-- files: src/vienetts_app/core/ai_models.py, src/vienetts_app/core/media_runtime_manifests.json, packaging/vienetts-app.spec, tests/unit/test_ai_models.py -->
   - Red tests:
     - **macOS whisper cells:** darwin/arm64 → `available_whisper_cpp_variants()` returns `macos-arm64-metal` from the manifest, and darwin/x86_64 → `macos-x64-cpu`; neither offers an `ubuntu` asset. A `published: false` cell reports unavailable with Homebrew guidance and never downloads.

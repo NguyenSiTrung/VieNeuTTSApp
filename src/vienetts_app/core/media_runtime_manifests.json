@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "generatedFrom": "Placeholder until scripts/render_media_runtime_manifests.py renders locked packs (packaging/media-runtime-requirements.json + the pack lock). Only cells that were built, probed, locked and published carry published=true with url/size/sha256; every other cell is a truthful 'not available yet'.",
+  "runtimes": {
+    "whisper_cpp": {
+      "cells": {
+        "macos-arm64-metal": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "b5454",
+          "license": "MIT",
+          "source": "https://github.com/ggml-org/whisper.cpp/tree/b5454"
+        },
+        "macos-x64-cpu": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "b5454",
+          "license": "MIT",
+          "source": "https://github.com/ggml-org/whisper.cpp/tree/b5454"
+        }
+      }
+    },
+    "ffmpeg": {
+      "cells": {
+        "windows-x64": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "zip",
+          "version": "",
+          "license": "GPL-3.0-or-later",
+          "source": "https://github.com/BtbN/FFmpeg-Builds"
+        },
+        "linux-x64": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "",
+          "license": "GPL-3.0-or-later",
+          "source": "https://github.com/BtbN/FFmpeg-Builds"
+        },
+        "linux-arm64": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "",
+          "license": "GPL-3.0-or-later",
+          "source": "https://github.com/BtbN/FFmpeg-Builds"
+        },
+        "macos-arm64": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "",
+          "license": "GPL-3.0-or-later",
+          "source": "https://ffmpeg.martin-riedl.de"
+        },
+        "macos-x64": {
+          "published": false,
+          "url": "",
+          "size": 0,
+          "sha256": "",
+          "archive": "tar.gz",
+          "version": "",
+          "license": "GPL-3.0-or-later",
+          "source": "https://ffmpeg.martin-riedl.de"
+        }
+      }
+    }
+  }
+}

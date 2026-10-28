@@ -48,3 +48,4 @@ SubtitleCastPanel 1.0 components/SubtitleCastPanel.qml
 SubtitlePreparePanel 1.0 components/SubtitlePreparePanel.qml
 SubtitleCueEditor 1.0 components/SubtitleCueEditor.qml
 SubtitleSourcePanel 1.0 components/SubtitleSourcePanel.qml
+SubtitleVideoPreview 1.0 components/SubtitleVideoPreview.qml

@@ -24,6 +24,20 @@ COMPONENTS = (
     "SubtitleCueEditor.qml",
     "SubtitlePreparePanel.qml",
     "SubtitleCastPanel.qml",
+    "SubtitleVideoPreview.qml",
+)
+
+VIDEO_PREVIEW_OBJECT_NAMES = (
+    "subtitleVideoPreview",
+    "subtitleVideoViewport",
+    "subtitleVideoCaptionOverlay",
+    "subtitleVideoCaptionToggle",
+    "subtitleVideoPlayButton",
+    "subtitleVideoScrubSlider",
+    "subtitleVideoTimecodeLabel",
+    "subtitleVideoAudioModeSwitch",
+    "subtitleVideoCollapseButton",
+    "subtitleVideoFallbackLabel",
 )
 
 _DRIVER = textwrap.dedent(
@@ -31,7 +45,7 @@ _DRIVER = textwrap.dedent(
     import json
     import sys
 
-    from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+    from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Signal, Slot
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlComponent, QQmlEngine
 
@@ -39,11 +53,20 @@ _DRIVER = textwrap.dedent(
 
 
     class StubController(QObject):
+        loadedChanged = Signal()
+        renderedChanged = Signal()
+        cuesChanged = Signal()
         speakersChanged = Signal()
         cueModelChanged = Signal()
         activeCueChanged = Signal()
         aiProgressChanged = Signal()
         aiStageTextChanged = Signal()
+        videoChanged = Signal()
+        videoSeekRequested = Signal(int)
+        videoReleaseRequested = Signal()
+        positionMsChanged = Signal()
+        durationChanged = Signal()
+        playerStateChanged = Signal()
         videoOverrunMsChanged = Signal()
         embedSubtitlesChanged = Signal()
         subtitleEmbedModeChanged = Signal()
@@ -53,6 +76,35 @@ _DRIVER = textwrap.dedent(
 
         def __init__(self):
             super().__init__()
+            self._loaded = True
+            self._rendered = True
+            self._has_video = True
+            self._video_path = "/tmp/stub_video.mp4"
+            self._video_url = QUrl.fromLocalFile(self._video_path).toString()
+            self._video_name = "stub_video.mp4"
+            self._position_ms = 0
+            self._duration_ms = 12000
+            self._player_state = "stopped"
+            self._cues = [
+                {
+                    "index": 1,
+                    "startMs": 0,
+                    "endMs": 2000,
+                    "startLabel": "00:00:00,000",
+                    "endLabel": "00:00:02,000",
+                    "text": "Xin chào thế giới",
+                    "speaker": "SPEAKER_01",
+                },
+                {
+                    "index": 2,
+                    "startMs": 3000,
+                    "endMs": 5000,
+                    "startLabel": "00:00:03,000",
+                    "endLabel": "00:00:05,000",
+                    "text": "Câu thứ hai",
+                    "speaker": "",
+                },
+            ]
             self._speakers = []
             self._active_cue = 0
             self._ai_progress = 0.0
@@ -63,18 +115,71 @@ _DRIVER = textwrap.dedent(
             self._mix = "duck"
             self._gain = -16.0
             self._soft = True
+            self.notified_video_playing = 0
+            self.synced_positions = []
+
+        @Property(bool, notify=loadedChanged)
+        def loaded(self):
+            return self._loaded
+
+        @Property(bool, notify=renderedChanged)
+        def rendered(self):
+            return self._rendered
+
+        @Property(bool, notify=videoChanged)
+        def hasVideo(self):
+            return self._has_video
+
+        @Property(str, notify=videoChanged)
+        def videoPath(self):
+            return self._video_path
+
+        @Property(str, notify=videoChanged)
+        def videoUrl(self):
+            return self._video_url
+
+        @Property(str, notify=videoChanged)
+        def videoName(self):
+            return self._video_name
+
+        @Property(int, notify=positionMsChanged)
+        def positionMs(self):
+            return self._position_ms
+
+        @positionMs.setter
+        def positionMs(self, value):
+            self._position_ms = int(value)
+            self.positionMsChanged.emit()
+
+        @Property(int, notify=durationChanged)
+        def durationMs(self):
+            return self._duration_ms
+
+        @Property(str, notify=playerStateChanged)
+        def playerState(self):
+            return self._player_state
+
+        @playerState.setter
+        def playerState(self, value):
+            self._player_state = str(value)
+            self.playerStateChanged.emit()
 
         @Property("QVariant", notify=speakersChanged)
         def speakers(self):
             return self._speakers
 
-        @Property("QVariant", notify=cueModelChanged)
+        @Property("QVariantList", notify=cueModelChanged)
         def cueModel(self):
-            return []
+            return self._cues
 
         @Property(int, notify=activeCueChanged)
         def activeCue(self):
             return self._active_cue
+
+        @activeCue.setter
+        def activeCue(self, value):
+            self._active_cue = int(value)
+            self.activeCueChanged.emit()
 
         @Property(float, notify=aiProgressChanged)
         def aiProgress(self):
@@ -131,6 +236,18 @@ _DRIVER = textwrap.dedent(
         def videoBgGainDb(self, value):
             self._gain = float(value)
             self.videoBgGainDbChanged.emit()
+
+        @Slot()
+        def notifyVideoPreviewPlaying(self):
+            self.notified_video_playing += 1
+
+        @Slot(int)
+        def syncActiveCueFromVideo(self, ms):
+            self.synced_positions.append(int(ms))
+
+        @Slot()
+        def pause(self):
+            self.playerState = "paused"
 
         @Slot()
         def runDiarization(self):
@@ -204,18 +321,78 @@ _DRIVER = textwrap.dedent(
 
     results = {}
     for path in files:
+        name = path.rsplit("/", 1)[-1]
         component = QQmlComponent(engine, QUrl.fromLocalFile(path))
         item = component.create()
         created = item is not None
         loaded = False
+        extra = {}
         if created:
             item.setProperty("available", True)
             item.setProperty("shown", True)
             loaded = True
-        results[path.rsplit("/", 1)[-1]] = {
+            if name == "SubtitleVideoPreview.qml":
+                app.processEvents()
+                names = {item.objectName()} | {
+                    child.objectName() for child in item.findChildren(QObject) if child.objectName()
+                }
+                extra["object_names"] = sorted(names)
+                extra["initial_collapsed"] = bool(item.property("collapsed"))
+                extra["initial_audio_mode"] = str(item.property("audioMode"))
+                extra["initial_muted"] = bool(item.property("audioMuted"))
+                extra["caption_text_0"] = str(item.property("activeCaptionText"))
+                extra["caption_speaker_0"] = str(item.property("activeCaptionSpeaker"))
+                extra["captions_enabled_initial"] = bool(item.property("captionsEnabled"))
+
+                # Toggle captions off and back on
+                cap_btn = item.findChild(QObject, "subtitleVideoCaptionToggle")
+                QMetaObject.invokeMethod(cap_btn, "click")
+                app.processEvents()
+                extra["captions_enabled_after_click"] = bool(item.property("captionsEnabled"))
+                QMetaObject.invokeMethod(cap_btn, "click")
+                app.processEvents()
+
+                # Auto-collapse in compact mode outside "source" stage
+                item.setProperty("compact", True)
+                item.setProperty("stageName", "prepare")
+                app.processEvents()
+                extra["auto_collapsed_compact_prepare"] = bool(item.property("collapsed"))
+
+                # Manual expand via collapse button overrides auto-collapse
+                col_btn = item.findChild(QObject, "subtitleVideoCollapseButton")
+                QMetaObject.invokeMethod(col_btn, "click")
+                app.processEvents()
+                extra["expanded_after_toggle"] = not bool(item.property("collapsed"))
+
+                # Dub playback auto-switches to muted "dub" sync mode
+                controller.playerState = "playing"
+                controller.positionMs = 3400
+                controller.activeCue = 1
+                app.processEvents()
+                extra["dub_playing_mode"] = str(item.property("audioMode"))
+                extra["dub_playing_muted"] = bool(item.property("audioMuted"))
+                extra["caption_text_1"] = str(item.property("activeCaptionText"))
+                controller.playerState = "stopped"
+                app.processEvents()
+
+                # Seek and release signals
+                controller.videoSeekRequested.emit(4200)
+                app.processEvents()
+                extra["seek_position_ms"] = int(item.property("displayPositionMs"))
+                controller.videoReleaseRequested.emit()
+                app.processEvents()
+                extra["released_source"] = str(item.property("mediaSourceString"))
+
+                # Codec/backend fallback state
+                item.setProperty("forceFallbackError", True)
+                app.processEvents()
+                extra["fallback_error_active"] = bool(item.property("hasDecodeError"))
+
+        results[name] = {
             "created": created,
             "loaded": loaded,
             "errors": [str(err) for err in component.errors()],
+            **extra,
         }
     print("RESULT:" + json.dumps(results))
     """
@@ -242,3 +419,21 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
         assert results[name]["created"], results[name]
         assert results[name]["loaded"], results[name]
         assert results[name]["errors"] == [], results[name]
+
+    vp = results["SubtitleVideoPreview.qml"]
+    assert set(VIDEO_PREVIEW_OBJECT_NAMES) <= set(vp["object_names"])
+    assert vp["initial_collapsed"] is False
+    assert vp["initial_audio_mode"] == "source"
+    assert vp["initial_muted"] is False
+    assert vp["caption_text_0"] == "Xin chào thế giới"
+    assert vp["caption_speaker_0"] == "SPEAKER_01"
+    assert vp["captions_enabled_initial"] is True
+    assert vp["captions_enabled_after_click"] is False
+    assert vp["auto_collapsed_compact_prepare"] is True
+    assert vp["expanded_after_toggle"] is True
+    assert vp["dub_playing_mode"] == "dub"
+    assert vp["dub_playing_muted"] is True
+    assert vp["caption_text_1"] == "Câu thứ hai"
+    assert vp["seek_position_ms"] == 4200
+    assert vp["released_source"] == ""
+    assert vp["fallback_error_active"] is True

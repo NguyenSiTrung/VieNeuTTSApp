@@ -196,7 +196,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase1, phase3 -->
 
-- [~] **Task 4.1: whisper.cpp invocation — `-mc 0`, Silero `--vad`, JSON-full word timings, cache-dir outputs, `asr_version` (FR-3.1)**
+- [x] **Task 4.1: whisper.cpp invocation — `-mc 0`, Silero `--vad`, JSON-full word timings, cache-dir outputs, `asr_version` (FR-3.1)**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   - Red tests (the stub `whisper-cli` records argv and writes `<prefix>.json` in JSON-full shape):
     - argv has `-mc 0` and `-ojf`, plus `--vad -vm <path>` exactly when the VAD model file exists.
@@ -206,7 +206,7 @@ Test seams and fakes:
     - A cache without the current `asr_version` re-runs.
   - Green implementation: build the argv; add the JSON-full parser; move the output prefix; version the cache key.
 
-- [ ] **Task 4.2: Hallucination filter for every backend (FR-3.2)**
+- [~] **Task 4.2: Hallucination filter for every backend (FR-3.2)**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   - Red tests:
     - Drops a segment when `no_speech_prob > 0.6` and `avg_logprob < -1.0`, and when `compression_ratio > 2.4`.

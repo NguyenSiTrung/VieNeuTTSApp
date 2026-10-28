@@ -293,12 +293,20 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     assert shared.stat().st_mtime_ns == stamp
     assert not (work_dir / "input_16k.wav").exists()
 
+    # 2c. A segments cache from another ASR version (or none, pre-versioning) re-runs cleanly.
+    stale = json.loads(segments_cache.read_text(encoding="utf-8"))
+    assert stale.pop("asr_version") == asr.ASR_VERSION
+    segments_cache.write_text(json.dumps(stale), encoding="utf-8")
+    assert transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path) == cues1
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
+    assert json.loads(segments_cache.read_text(encoding="utf-8"))["asr_version"] == asr.ASR_VERSION
+
     # 3. Modifying the source WAV invalidates both the shared WAV sidecar and segment cache
     stereo_48k_2 = np.zeros((96_000, 2), dtype=np.float32)
     sf.write(str(src_wav), stereo_48k_2, 48_000, subtype="PCM_16")
     cues3 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
     assert [c.text for c in cues3] == ["Xin chào từ whisper-cli."]
-    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 3
     assert sf.info(str(shared)).frames == 32_000
 
 
@@ -530,28 +538,100 @@ def test_short_large_float_wav_is_converted_before_upload(
     assert not list(tmp_path.glob("vieneu-asr-*"))
 
 
-def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
+def _whisper_json_full(
+    segments: list[tuple[int, int, bytes, list[tuple[bytes, int, int, float]]]],
+) -> bytes:
+    """``whisper-cli -ojf`` output as raw bytes, laid out like ``cli.cpp``'s writer.
+
+    Token texts are written unescaped, so a pre-b5454 build may split one UTF-8
+    character across two tokens (invalid UTF-8 inside each JSON string).
+    """
+    items = []
+    for t0, t1, text, tokens in segments:
+        toks = b",\n".join(
+            b'\t\t\t\t{\n\t\t\t\t\t"text": "%s",\n'
+            b'\t\t\t\t\t"offsets": {\n\t\t\t\t\t\t"from": %d,\n\t\t\t\t\t\t"to": %d\n\t\t\t\t\t},\n'
+            b'\t\t\t\t\t"id": 1,\n\t\t\t\t\t"p": %g,\n\t\t\t\t\t"t_dtw": -1\n\t\t\t\t}'
+            % (tok, a, b, p)
+            for tok, a, b, p in tokens
+        )
+        items.append(
+            b'\t\t{\n\t\t\t"offsets": {\n\t\t\t\t"from": %d,\n\t\t\t\t"to": %d\n\t\t\t},\n'
+            b'\t\t\t"text": "%s",\n\t\t\t"tokens": [\n%s\n\t\t\t]\n\t\t}' % (t0, t1, text, toks)
+        )
+    return (
+        b'{\n\t"systeminfo": "NEON = 1",\n\t"result": {\n\t\t"language": "vi"\n\t},\n'
+        b'\t"transcription": [\n' + b",\n".join(items) + b"\n\t]\n}\n"
+    )
+
+
+def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
+    tmp_path: Path,
+) -> None:
+    import math
     import os
 
-    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+    from vienetts_app.core.ai_models import (
+        AUDIO_MODELS,
+        WHISPER_GGUF_MODELS,
+        WHISPER_VAD_MODEL_ID,
+    )
 
-    wav = write_wav_file(np.zeros(16_000 * 2, dtype=np.float32), tmp_path / "speech.wav", 16_000)
+    # An already-16 kHz mono WAV is transcribed in place, beside the user's other files.
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    wav = write_wav_file(np.zeros(16_000 * 4, dtype=np.float32), user_dir / "speech.wav", 16_000)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_bytes(
+        _whisper_json_full(
+            [
+                (
+                    0,
+                    2000,
+                    b" Xin ch\xc3\xa0o c\xc3\xa1c b\xe1\xba\xa1n.",
+                    [
+                        (b"[_BEG_]", 0, 0, 0.99),
+                        (b" Xin", 0, 400, 0.9),
+                        (b" ch", 400, 600, 0.8),
+                        (b"\xc3\xa0o", 600, 900, 0.9),
+                        (b" c\xc3\xa1c", 900, 1300, 0.9),
+                        (b" b\xe1\xba", 1300, 1500, 0.5),  # "ạ" split across two tokens
+                        (b"\xa1n", 1500, 1700, 0.5),
+                        (b".", 1700, 1800, 0.9),
+                        (b"[_TT_90]", 1800, 1800, 0.9),
+                    ],
+                ),
+                (
+                    2000,
+                    3500,
+                    b" T\xe1\xba\xa1m bi\xe1\xbb\x87t",
+                    [
+                        (b"[_TT_100]", 2000, 2000, 0.9),
+                        (b" T\xe1\xba\xa1m", 2100, 2600, 0.7),
+                        (b" bi\xe1\xbb\x87t", 2600, 3900, 0.6),  # overruns the segment end
+                    ],
+                ),
+            ]
+        )
+    )
     bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
     cli_path = bin_dir / cli_name
-    args_log = tmp_path / "args.txt"
+    args_log = tmp_path / "args.jsonl"
     cli_path.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import json, shutil, sys\n"
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
-        f"Path({str(args_log.as_posix())!r}).write_text(' '.join(args), encoding='utf-8')\n"
+        f"with open({str(args_log.as_posix())!r}, 'a', encoding='utf-8') as fh:\n"
+        "    fh.write(json.dumps(args) + '\\n')\n"
         "of = args[args.index('-of') + 1]\n"
         "sys.stderr.write('whisper_print_progress_callback: progress =  50%\\n')\n"
         "sys.stderr.flush()\n"
+        f"shutil.copyfile({str(fixture.as_posix())!r}, of + '.json')\n"
         "Path(of + '.srt').write_text(\n"
-        "    '1\\n00:00:00,000 --> 00:00:01,500\\nTiếng Việt có dấu.\\n\\n',\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,500\\nSRT không được đọc.\\n\\n',\n"
         "    encoding='utf-8',\n"
         ")\n",
         encoding="utf-8",
@@ -564,20 +644,54 @@ def test_whisper_cpp_flags_progress_utf8_and_timeout(tmp_path: Path) -> None:
     with model_file.open("wb") as fh:
         fh.truncate(int(WHISPER_GGUF_MODELS["base"].size_bytes))
 
+    def logged_args() -> list[list[str]]:
+        return [json.loads(line) for line in args_log.read_text(encoding="utf-8").splitlines()]
+
     progress: list[float] = []
+    work_dir = tmp_path / "cache"
+    cfg = AsrConfig(backend="whisper_cpp", model="base", device="cpu", threads=6)
     cues = transcribe_media_to_cues(
         wav,
-        AsrConfig(backend="whisper_cpp", model="base", device="cpu", threads=6),
+        cfg,
+        work_dir=work_dir,
         data_dir=tmp_path,
         progress_cb=lambda p, _m: progress.append(p),
     )
-    assert [c.text for c in cues] == ["Tiếng Việt có dấu."]
-    logged_args = args_log.read_text(encoding="utf-8")
-    assert "-t 6" in logged_args
-    assert "-sns" in logged_args
-    assert "-pp" in logged_args
-    assert "-ng" in logged_args
+    # Segments come from the JSON-full output; the SRT written beside it is never read.
+    assert [c.text for c in cues] == ["Xin chào các bạn.", "Tạm biệt"]
+    assert (cues[1].start_ms, cues[1].end_ms) == (2000, 3500)
+    assert (cues[1].speech_start_ms, cues[1].speech_end_ms) == (2100, 3500)
+    (args,) = logged_args()
+    assert args[args.index("-t") + 1] == "6"
+    assert args[args.index("-mc") + 1] == "0"
+    assert {"-sns", "-pp", "-ng", "-ojf"} <= set(args)
+    assert "--vad" not in args and "-vm" not in args
+    # whisper-cli writes into the media cache, never beside the user's file, and cleans up.
+    assert Path(args[args.index("-of") + 1]).parent == work_dir
+    assert [p.name for p in user_dir.iterdir()] == ["speech.wav"]
+    assert [p.name for p in work_dir.iterdir()] == ["asr_segments_cache.json"]
     assert any(0.5 < p < 0.96 for p in progress)
+
+    # With the Silero VAD model installed, whisper-cli runs with --vad -vm <model>.
+    vad_spec = AUDIO_MODELS[WHISPER_VAD_MODEL_ID]
+    vad_path = model_dir / vad_spec.filename
+    with vad_path.open("wb") as fh:
+        fh.truncate(vad_spec.size_bytes)
+    out_dir = tmp_path / "out"
+    segments = asr._run_whisper_cpp(wav, cfg, data_dir=tmp_path, out_dir=out_dir)
+    args = logged_args()[-1]
+    assert args[args.index("--vad") + 1 :][:2] == ["-vm", str(vad_path)]
+    assert not list(out_dir.iterdir())
+    # Tokens merge into words (special tokens skipped, split UTF-8 rejoined), clamped to
+    # their segment; text-token probabilities give avg_logprob.
+    assert [s.words for s in segments] == [
+        ((0, 400, "Xin"), (400, 900, "chào"), (900, 1300, "các"), (1300, 1800, "bạn.")),
+        ((2100, 2600, "Tạm"), (2600, 3500, "biệt")),
+    ]
+    assert segments[0].avg_logprob == pytest.approx(
+        sum(math.log(p) for p in (0.9, 0.8, 0.9, 0.9, 0.5, 0.5, 0.9)) / 7
+    )
+    assert segments[1].avg_logprob == pytest.approx((math.log(0.7) + math.log(0.6)) / 2)
 
     # Timeout kills hung process
     cli_path.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n", encoding="utf-8")

@@ -2,7 +2,8 @@
 
 Supports:
 1. ``faster_whisper`` (local CTranslate2 Whisper with VAD filtering).
-2. ``whisper_cpp`` (local ``whisper-cli`` / ``whisper-cpp`` binary producing ``.srt``).
+2. ``whisper_cpp`` (local ``whisper-cli`` / ``whisper-cpp`` binary; segments and word
+   timings come from its JSON-full ``-ojf`` output).
 3. ``openai_api`` (any OpenAI-compatible ``/v1/audio/transcriptions`` endpoint,
    including local ``whisper.cpp --server``, Speaches/LocalAI, or cloud APIs).
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -25,6 +27,8 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from vienetts_app.core.ai_models import (
+    WHISPER_VAD_MODEL_ID,
+    audio_model_path,
     cli_command,
     resolve_asr_model_path,
     resolve_whisper_cpp_cli,
@@ -49,9 +53,14 @@ _NON_SPEECH_TOKEN_RE = re.compile(
     r"|[♪♫]+)",
     re.IGNORECASE,
 )
+# whisper.cpp special tokens (``[_BEG_]``, ``[_TT_150]``, ``[_SOT_]``…) carry no text.
+_WHISPER_SPECIAL_TOKEN_RE = re.compile(r"\[_[^\]]*\]")
 MODEL_SAMPLE_RATE = 16_000
 API_CHUNK_SECONDS = 600
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
+# Bumped whenever the backends' output changes (2: whisper.cpp ``-mc 0``/VAD/JSON-full
+# words), so a segments cache written by an older version re-runs instead of being reused.
+ASR_VERSION = 2
 _FASTER_WHISPER_CACHE: dict[tuple[Any, str, str, str, int], Any] = {}
 
 
@@ -85,6 +94,7 @@ class RawSegment:
     words: tuple[tuple[int, int, str], ...] = ()
     speech_start_ms: int | None = None
     speech_end_ms: int | None = None
+    avg_logprob: float | None = None
 
 
 def _strip_non_speech(text: str) -> str:
@@ -580,14 +590,119 @@ def _resolve_whisper_cpp_bin(data_dir: Path | None = None) -> Path | None:
     return resolve_whisper_cpp_cli(data_dir)
 
 
+def _rejoin_utf8(text: str) -> str:
+    """Rebuild characters whose UTF-8 bytes ``surrogateescape`` kept as lone surrogates."""
+    try:
+        return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    except UnicodeEncodeError:  # a lone surrogate from a JSON \u escape, not a raw byte
+        return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+
+
+def _merge_whisper_tokens(
+    tokens: Any, seg_start_ms: int, seg_end_ms: int
+) -> tuple[tuple[tuple[int, int, str], ...], float | None]:
+    """whisper.cpp ``-ojf`` tokens → ``(words, avg_logprob)``.
+
+    A token that opens with a space starts a word; any other text token (a
+    sub-word piece, punctuation, the tail of a split UTF-8 character) extends
+    the current one. Special tokens are skipped. Words are clamped to the
+    segment; without per-token offsets there are no words. ``avg_logprob`` is
+    the mean log-probability of the text tokens.
+    """
+    pieces: list[list[Any]] = []  # [start_ms, end_ms, raw text]
+    logprobs: list[float] = []
+    timed = True
+    for tok in tokens if isinstance(tokens, list) else ():
+        if not isinstance(tok, dict):
+            continue
+        text = str(tok.get("text") or "")
+        if not text.strip() or _WHISPER_SPECIAL_TOKEN_RE.fullmatch(text.strip()):
+            continue
+        prob = tok.get("p")
+        if isinstance(prob, int | float) and not isinstance(prob, bool) and 0.0 <= prob <= 1.0:
+            logprobs.append(math.log(max(float(prob), 1e-10)))
+        try:
+            t0 = int(tok["offsets"]["from"])
+            t1 = max(t0, int(tok["offsets"]["to"]))
+        except (KeyError, TypeError, ValueError):
+            timed = False
+            t0 = t1 = 0
+        if pieces and not text.startswith(" "):
+            pieces[-1][1] = max(pieces[-1][1], t1)
+            pieces[-1][2] += text
+        else:
+            pieces.append([t0, t1, text])
+    avg_logprob = sum(logprobs) / len(logprobs) if logprobs else None
+    if not timed:
+        return (), avg_logprob
+    raw_words = [(start, end, _rejoin_utf8(text)) for start, end, text in pieces]
+    return _extract_words(raw_words, seg_start_ms, seg_end_ms), avg_logprob
+
+
+def _parse_whisper_json(raw: bytes) -> list[RawSegment]:
+    """Segments with word timings from ``whisper-cli -ojf`` (JSON-full) output.
+
+    Builds before b5454 write each token's bytes unescaped, so one character
+    can be split across two tokens (invalid UTF-8 in each JSON string): the
+    file is decoded with ``surrogateescape`` and the bytes are rejoined per
+    word. Offsets are in ms. Raises ``ValueError`` on anything but JSON-full.
+    """
+    payload = json.loads(raw.decode("utf-8", errors="surrogateescape"), strict=False)
+    transcription = payload.get("transcription") if isinstance(payload, dict) else None
+    if not isinstance(transcription, list):
+        raise ValueError("missing 'transcription'")
+    out: list[RawSegment] = []
+    for item in transcription:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start_ms = max(0, int(item["offsets"]["from"]))
+            end_ms = max(start_ms + 1, int(item["offsets"]["to"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        words, avg_logprob = _merge_whisper_tokens(item.get("tokens"), start_ms, end_ms)
+        text = _rejoin_utf8(str(item.get("text") or "")).strip()
+        if not text:
+            continue
+        sp_start, sp_end = _clamp_speech_bounds(start_ms, end_ms, None, None, words)
+        out.append(
+            RawSegment(
+                start_ms,
+                end_ms,
+                text,
+                words=words,
+                speech_start_ms=sp_start,
+                speech_end_ms=sp_end,
+                avg_logprob=avg_logprob,
+            )
+        )
+    return out
+
+
+def _read_whisper_cpp_output(json_out: Path, srt_out: Path) -> list[RawSegment]:
+    """Parse the JSON-full output; the SRT is read only when no valid JSON was written."""
+    if json_out.is_file():
+        with contextlib.suppress(OSError, ValueError):
+            return _parse_whisper_json(json_out.read_bytes())
+    if not srt_out.is_file() or srt_out.stat().st_size == 0:
+        return []
+    try:
+        cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:
+        raise AsrError(f"Tệp phụ đề từ whisper.cpp không hợp lệ: {exc}") from exc
+    return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues]
+
+
 def _run_whisper_cpp(
     wav_path: Path,
     config: AsrConfig,
     *,
+    out_dir: Path,
     data_dir: Path | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[RawSegment]:
+    """Run ``whisper-cli``; its output files go to ``out_dir`` (the media cache) and are removed."""
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     binary = _resolve_whisper_cpp_bin(data_dir)
@@ -599,10 +714,18 @@ def _run_whisper_cpp(
 
     if progress_cb is not None:
         progress_cb(0.2, "Đang chạy whisper.cpp…")
-    out_prefix = wav_path.parent / f".whisper_out_{uuid.uuid4().hex}"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AsrError(f"Không thể tạo thư mục tạm cho whisper.cpp: {exc}") from exc
+    # Absolute: whisper-cli runs with cwd=binary.parent.
+    out_prefix = out_dir.absolute() / f".whisper_out_{uuid.uuid4().hex}"
+    json_out = Path(f"{out_prefix}.json")
     srt_out = Path(f"{out_prefix}.srt")
     lang = "auto" if not config.language else config.language
     threads = _resolve_threads(config)
+    # -mc 0: no previous-text context, which stops repetition loops from carrying over
+    # windows. -ojf: segments plus per-token offsets/probabilities; -osrt is the fallback.
     cmd = cli_command(
         binary,
         "-m",
@@ -613,12 +736,18 @@ def _run_whisper_cpp(
         lang,
         "-t",
         str(threads),
+        "-mc",
+        "0",
         "-sns",
         "-pp",
+        "-ojf",
         "-osrt",
         "-of",
         str(out_prefix),
     )
+    vad_model = audio_model_path(WHISPER_VAD_MODEL_ID, data_dir)
+    if vad_model is not None:
+        cmd.extend(["--vad", "-vm", str(vad_model)])
     if (config.device or "auto").strip().lower() == "cpu":
         cmd.append("-ng")
 
@@ -660,20 +789,14 @@ def _run_whisper_cpp(
         if res.returncode != 0:
             detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["whisper-cli failed"]
             raise AsrError(f"whisper.cpp thất bại: {detail[0]}")
-        if not srt_out.is_file() or srt_out.stat().st_size == 0:
-            if progress_cb is not None:
-                progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
-            return []
-        try:
-            cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
-        except Exception as exc:
-            raise AsrError(f"Tệp phụ đề từ whisper.cpp không hợp lệ: {exc}") from exc
+        segments = _read_whisper_cpp_output(json_out, srt_out)
         if progress_cb is not None:
             progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")
-        return [RawSegment(c.start_ms, c.end_ms, c.text, c.speaker) for c in cues]
+        return segments
     finally:
-        with contextlib.suppress(OSError):
-            srt_out.unlink(missing_ok=True)
+        for out_file in (json_out, srt_out):
+            with contextlib.suppress(OSError):
+                out_file.unlink(missing_ok=True)
 
 
 def _upload_whisper_api(
@@ -992,7 +1115,10 @@ def _asr_cache_key(wav_path: Path, config: AsrConfig, *, key_path: Path | None =
 def _load_cached_segments(
     work_dir: Path | None, key: str, *, aliases: Sequence[str] = ()
 ) -> list[RawSegment] | None:
-    """Cached segments stored under ``key`` (or a legacy ``aliases`` key)."""
+    """Cached segments stored under ``key`` (or a legacy ``aliases`` key).
+
+    A cache from another :data:`ASR_VERSION` (or an unversioned one) is a miss.
+    """
     if work_dir is None or not key:
         return None
     path = work_dir / ASR_CACHE_FILENAME
@@ -1001,6 +1127,8 @@ def _load_cached_segments(
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("key") not in (key, *aliases):
+        return None
+    if data.get("asr_version") != ASR_VERSION:
         return None
     segs = data.get("segments")
     if not isinstance(segs, list) or not segs:
@@ -1027,6 +1155,9 @@ def _load_cached_segments(
             with contextlib.suppress(TypeError, ValueError):
                 sp_end = int(item["speech_end_ms"])
         sp_start, sp_end = _clamp_speech_bounds(s_ms, e_ms, sp_start, sp_end, words)
+        avg_logprob: float | None = None
+        with contextlib.suppress(TypeError, ValueError):
+            avg_logprob = float(item["avg_logprob"]) if "avg_logprob" in item else None
         out.append(
             RawSegment(
                 s_ms,
@@ -1036,6 +1167,7 @@ def _load_cached_segments(
                 words=words,
                 speech_start_ms=sp_start,
                 speech_end_ms=sp_end,
+                avg_logprob=avg_logprob,
             )
         )
     return out or None
@@ -1058,11 +1190,14 @@ def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[R
             item["speech_start_ms"] = int(s.speech_start_ms)
         if s.speech_end_ms is not None:
             item["speech_end_ms"] = int(s.speech_end_ms)
+        if s.avg_logprob is not None:
+            item["avg_logprob"] = float(s.avg_logprob)
         raw.append(item)
+    payload = {"asr_version": ASR_VERSION, "key": key, "segments": raw}
     with contextlib.suppress(OSError):
         work_dir.mkdir(parents=True, exist_ok=True)
         (work_dir / ASR_CACHE_FILENAME).write_text(
-            json.dumps({"key": key, "segments": raw}, ensure_ascii=False), encoding="utf-8"
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
 
 
@@ -1091,6 +1226,9 @@ def transcribe_media_to_cues(
         )
         if cancel_check is not None and cancel_check():
             raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        # whisper-cli output goes to the media cache (or this run's temp dir): a 16 kHz
+        # mono WAV is used in place, and nothing may be written beside the user's file.
+        out_dir = work_dir if work_dir is not None else Path(temp_dir_obj.name)
 
         cache_key = _asr_cache_key(wav_path, cfg)
         # A legacy input_16k.wav adopted as source_16k.wav keeps its size and
@@ -1111,6 +1249,7 @@ def transcribe_media_to_cues(
                 raw = _run_whisper_cpp(
                     wav_path,
                     cfg,
+                    out_dir=out_dir,
                     data_dir=data_dir,
                     progress_cb=progress_cb,
                     cancel_check=cancel_check,
@@ -1135,6 +1274,7 @@ def transcribe_media_to_cues(
                     lambda: _run_whisper_cpp(
                         wav_path,
                         cfg,
+                        out_dir=out_dir,
                         data_dir=data_dir,
                         progress_cb=progress_cb,
                         cancel_check=cancel_check,

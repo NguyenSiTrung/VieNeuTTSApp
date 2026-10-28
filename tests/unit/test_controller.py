@@ -2222,6 +2222,18 @@ class TestAiDubbingRuntimeSurface:
         assert present.asrBackends == ["auto", "faster_whisper", "whisper_cpp", "openai_api"]
         assert (present.asrBackend, present.asrBackendNote) == ("faster_whisper", "")
 
+    def test_asr_model_falls_back_to_the_settings_default(self, qcoreapp, tmp_path: Path) -> None:
+        # An unknown stored id and a cleared field both mean the Settings
+        # default (the large-v3-turbo Q5_0 GGUF), never the old "base".
+        write_settings_file(tmp_path, asr_model="whisper-nonexistent")
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert controller.asrModel == "large-v3-turbo"
+        controller.asrModel = "base"
+        assert controller.asrModel == "base"
+        controller.asrModel = "  "
+        stored = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert (controller.asrModel, stored["asr_model"]) == ("large-v3-turbo", "large-v3-turbo")
+
     def test_audio_model_slots_run_off_thread_report_status_and_gate(
         self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

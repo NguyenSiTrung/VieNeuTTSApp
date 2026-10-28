@@ -654,9 +654,9 @@ class TestAiDubbingSettings:
             assert ctrl.asrDevice == "cpu"
             assert ctrl.asrThreads == 12
 
-            # Unknown asrModel ID normalizes to "base"
+            # An unknown asrModel id reads back as the Settings default.
             ctrl.asrModel = "unknown-id"
-            assert ctrl.asrModel == "base"
+            assert ctrl.asrModel == Settings().asr_model
 
             assert ctrl.whisperCppInstalled is False
             assert "cpu" in ctrl.whisperCppAvailableVariants

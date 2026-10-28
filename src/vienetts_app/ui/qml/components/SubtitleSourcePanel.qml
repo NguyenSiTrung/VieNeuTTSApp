@@ -26,6 +26,14 @@ ColumnLayout {
     visible: !root.loaded || root.stageName === "source"
     spacing: Theme.spacingSm
 
+    // A newly attached video re-checks ffmpeg (cheap path lookups), so a copy
+    // installed outside the app since launch clears the missing hint.
+    onHasVideoChanged: {
+        if (root.hasVideo && typeof controller !== "undefined" && controller
+                && typeof controller.refreshFfmpegRuntimeStatus === "function")
+            controller.refreshFfmpegRuntimeStatus();
+    }
+
     function toLocalPath(url) {
         const s = url.toString();
         if (!s.startsWith("file://"))
@@ -256,6 +264,32 @@ ColumnLayout {
                         if (root.available)
                             subtitleController.clearVideo();
                     }
+                }
+            }
+
+            // FR-7.2: ASR and video export both need ffmpeg + ffprobe. When
+            // neither the managed pack nor a system copy is found, say how to
+            // get one (the host's Homebrew/apt/winget note when no pack is
+            // published) and offer Settings, where the install row lives.
+            AppNotice {
+                id: ffmpegHint
+
+                readonly property var status: (typeof controller !== "undefined" && controller
+                    && controller.ffmpegRuntimeStatus) ? controller.ffmpegRuntimeStatus : ({})
+
+                objectName: "subtitleFfmpegMissingHint"
+                Layout.fillWidth: true
+                visible: root.hasVideo && ffmpegHint.status.available === false
+                tone: "warning"
+                title: qsTr("Chưa có ffmpeg")
+                message: ffmpegHint.status.downloadable
+                    ? qsTr("Cần ffmpeg để nhận dạng phụ đề và xuất video. Cài bản do ứng dụng quản lý trong Cài đặt › Mô hình.")
+                    : qsTr("Cần ffmpeg để nhận dạng phụ đề và xuất video. %1")
+                        .arg(ffmpegHint.status.note || qsTr("Cài ffmpeg rồi bấm \"Kiểm tra lại\" trong Cài đặt › Mô hình."))
+                actionText: qsTr("Mở Cài đặt")
+                onActionTriggered: {
+                    if (typeof bridge !== "undefined" && bridge !== null)
+                        bridge.setCurrentTab("settings");
                 }
             }
 

@@ -108,7 +108,7 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
     ),
     "base": DownloadableModelSpec(
         id="base",
-        label="Whisper Base (142 MB — Cân bằng, mặc định)",
+        label="Whisper Base (142 MB — Cân bằng)",
         filename="ggml-base.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         size_mb=142.0,
@@ -135,7 +135,7 @@ WHISPER_GGUF_MODELS: dict[str, DownloadableModelSpec] = {
     ),
     "large-v3-turbo": DownloadableModelSpec(
         id="large-v3-turbo",
-        label="Whisper Large-v3-Turbo Q5_0 (547 MB — Tốt nhất)",
+        label="Whisper Large-v3-Turbo Q5_0 (547 MB — Tốt nhất, mặc định)",
         filename="ggml-large-v3-turbo-q5_0.bin",
         url=(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"

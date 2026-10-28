@@ -284,6 +284,9 @@ DRIVER = textwrap.dedent(
         # Create inspector (Task 3.4): the active profile's recent voices.
         recentVoicesChanged = Signal()
         aiSettingsChanged = Signal()
+        # AI dubbing runtime surface (Task 3.3 → Settings rows, Task 8.1).
+        audioModelsChanged = Signal()
+        ffmpegRuntimeChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -362,6 +365,44 @@ DRIVER = textwrap.dedent(
             self._llm_concurrency = 0
             self._llm_timeout_s = 120
             self._llm_batch_size = 25
+            # ASR/diarization picks (FR-7.1): the real asrBackends offers
+            # faster_whisper only when importable — the frozen-build shape.
+            self._asr_backends = ["auto", "whisper_cpp", "openai_api"]
+            self._asr_backend = "auto"
+            self._asr_backend_note = ""
+            self._asr_cloud_fallback = False
+            self._asr_model = "large-v3-turbo"
+            self._diarization_device = "auto"
+            self._audiocpp_variants = ["cpu", "cuda12.4", "cuda13.3", "vulkan"]
+            # Optional audio models (AppController.audioModels row shape).
+            self._audio_models = [
+                {
+                    "id": model_id, "label": model_id, "filename": model_id + ".bin",
+                    "sizeBytes": size, "license": lic, "source": "https://example.com",
+                    "installed": installed, "path": "", "busy": False,
+                }
+                for model_id, size, lic, installed in (
+                    ("whisper-vad-silero-v6.2.0", 885_098, "MIT", False),
+                    ("silero-vad", 2_327_524, "MIT", True),
+                    ("speaker-embedding", 29_596_978, "Apache-2.0", False),
+                )
+            ]
+            self._audio_model_busy_id = ""
+            self._audio_model_status = ""
+            self.audio_model_calls = []
+            # Managed ffmpeg (ffmpegRuntimeStatus map): a system ffmpeg on an
+            # unpublished cell, so dubbing works and install shows guidance.
+            self._ffmpeg_status = {
+                "cell": "macos-arm64", "downloadable": False, "managed": False,
+                "available": True, "ffmpeg": "/opt/homebrew/bin/ffmpeg",
+                "ffprobe": "/opt/homebrew/bin/ffprobe", "version": "7.1",
+                "note": "Cài bằng Homebrew: brew install ffmpeg",
+                "license": "GPL-3.0-or-later", "source": "https://ffmpeg.org/",
+                "sizeBytes": 0,
+            }
+            self._ffmpeg_busy = False
+            self._ffmpeg_message = ""
+            self.ffmpeg_calls = []
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
             # and binds text/icon to replayActive.
             self._replay_active = False
@@ -1865,6 +1906,119 @@ DRIVER = textwrap.dedent(
         def llmBatchSize(self, value):
             self._llm_batch_size = int(value)
             self.aiSettingsChanged.emit()
+
+        # NOTIFY (not constant like the real one) so a scenario can flip
+        # faster-whisper availability and watch the combo rebuild.
+        @Property("QVariantList", notify=aiSettingsChanged)
+        def asrBackends(self):
+            return list(self._asr_backends)
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrBackend(self):
+            return self._asr_backend
+
+        @asrBackend.setter
+        def asrBackend(self, value):
+            self._asr_backend = str(value)
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrBackendNote(self):
+            return self._asr_backend_note
+
+        @Property(bool, notify=aiSettingsChanged)
+        def asrCloudFallback(self):
+            return self._asr_cloud_fallback
+
+        @asrCloudFallback.setter
+        def asrCloudFallback(self, value):
+            self._asr_cloud_fallback = bool(value)
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrModel(self):
+            return self._asr_model
+
+        @asrModel.setter
+        def asrModel(self, value):
+            self._asr_model = str(value)
+            self.aiSettingsChanged.emit()
+
+        @Property(str, notify=aiSettingsChanged)
+        def diarizationDevice(self):
+            return self._diarization_device
+
+        @diarizationDevice.setter
+        def diarizationDevice(self, value):
+            self._diarization_device = str(value)
+            self.aiSettingsChanged.emit()
+
+        @Property("QVariantList", notify=aiSettingsChanged)
+        def audiocppAvailableVariants(self):
+            return list(self._audiocpp_variants)
+
+        @Property("QVariantList", notify=audioModelsChanged)
+        def audioModels(self):
+            return [
+                dict(row, busy=row["id"] == self._audio_model_busy_id)
+                for row in self._audio_models
+            ]
+
+        @Property(str, notify=audioModelsChanged)
+        def audioModelBusyId(self):
+            return self._audio_model_busy_id
+
+        @Property(str, notify=audioModelsChanged)
+        def audioModelStatus(self):
+            return self._audio_model_status
+
+        @Property(float, notify=audioModelsChanged)
+        def audioModelProgress(self):
+            return 0.5 if self._audio_model_busy_id else 0.0
+
+        @Slot(str, result=bool)
+        def downloadAudioModel(self, model_id):
+            self.audio_model_calls.append("download:" + model_id)
+            return True
+
+        @Slot(str, result=bool)
+        def removeAudioModel(self, model_id):
+            self.audio_model_calls.append("remove:" + model_id)
+            return True
+
+        @Property("QVariantMap", notify=ffmpegRuntimeChanged)
+        def ffmpegRuntimeStatus(self):
+            return dict(self._ffmpeg_status)
+
+        @Property(bool, notify=ffmpegRuntimeChanged)
+        def ffmpegRuntimeBusy(self):
+            return self._ffmpeg_busy
+
+        @Property(float, notify=ffmpegRuntimeChanged)
+        def ffmpegRuntimeProgress(self):
+            return 0.5 if self._ffmpeg_busy else 0.0
+
+        @Property(str, notify=ffmpegRuntimeChanged)
+        def ffmpegRuntimeMessage(self):
+            return self._ffmpeg_message
+
+        def set_ffmpeg_status(self, **changes):
+            self._ffmpeg_status.update(changes)
+            self.ffmpegRuntimeChanged.emit()
+
+        @Slot(result=bool)
+        def installFfmpegRuntime(self):
+            self.ffmpeg_calls.append("install")
+            return True
+
+        @Slot(result=bool)
+        def removeFfmpegRuntime(self):
+            self.ffmpeg_calls.append("remove")
+            return True
+
+        @Slot()
+        def refreshFfmpegRuntimeStatus(self):
+            self.ffmpeg_calls.append("refresh")
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -4688,6 +4842,38 @@ DRIVER = textwrap.dedent(
                 "popup_within_window": popup_within_window,
             }
 
+            # FR-7.2 (Task 8.1): attaching a video re-checks ffmpeg; while it
+            # is missing the source stage shows the install hint. The hint's
+            # Settings action runs at the scenario's end (it loads Settings).
+            def ffmpeg_hint():
+                hint = ifind("subtitleFfmpegMissingHint")
+                return (
+                    bool(hint and hint[0].property("visible")),
+                    str(hint[0].property("message")) if hint else "",
+                )
+
+            ffmpeg_hint_states = {"available": ffmpeg_hint()[0]}
+            controller.ffmpeg_calls.clear()
+            fake_subtitle._has_video = False
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            controller.set_ffmpeg_status(available=False, ffmpeg="", ffprobe="")
+            app.processEvents()
+            ffmpeg_hint_states["no_video"] = ffmpeg_hint()[0]
+            fake_subtitle._has_video = True
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            ffmpeg_hint_states["refresh_calls"] = list(controller.ffmpeg_calls)
+            ffmpeg_hint_states["missing"] = ffmpeg_hint()
+            ffmpeg_hint_item = ifind("subtitleFfmpegMissingHint")[0]
+            controller.set_ffmpeg_status(
+                available=True, ffmpeg="/opt/homebrew/bin/ffmpeg",
+                ffprobe="/opt/homebrew/bin/ffprobe",
+            )
+            app.processEvents()
+            ffmpeg_hint_states["installed"] = ffmpeg_hint()[0]
+            out["ffmpeg_hint"] = ffmpeg_hint_states
+
             # FR-2.1: the action dock is pinned OUTSIDE the PageShell, and its
             # primary action stays inside the window at the 640×420 minimum.
             def inside_page_scroll(item):
@@ -4938,6 +5124,11 @@ DRIVER = textwrap.dedent(
             out["action_calls"] = dict(fake_subtitle.action_calls)
             out["opened_project"] = getattr(fake_subtitle, "opened_project", "")
             out["removed_project"] = getattr(fake_subtitle, "removed_project", "")
+
+            # Last (it loads the Settings page): the ffmpeg hint's action.
+            QMetaObject.invokeMethod(ffmpeg_hint_item, "actionTriggered")
+            app.processEvents()
+            out["ffmpeg_hint"]["action_tab"] = str(bridge.property("currentTab"))
 
             results["srt_surface"] = out
 
@@ -6395,6 +6586,150 @@ DRIVER = textwrap.dedent(
                     "llmBatchSize": controller.llmBatchSize,
                 },
             }
+
+            # ── FR-7.1/FR-7.3 (Task 8.1): runtime + optional-model rows ──
+            def mobj(name):
+                found = settings_tab.findChildren(QObject, name)
+                return found[0] if found else None
+
+            def mvisible(name):
+                obj = mobj(name)
+                return bool(obj is not None and obj.isVisible())
+
+            def mtext(name):
+                return str(mobj(name).property("text"))
+
+            def combo_rows(name):
+                return [
+                    (str(row["value"]), str(row["label"]))
+                    for row in qjs_to_py(mobj(name).property("model"))
+                ]
+
+            row_names = (
+                "settingsFfmpegRuntimeRow",
+                "settingsWhisperVadRow",
+                "settingsSileroVadRow",
+                "settingsSpeakerEmbeddingRow",
+                "asrCloudFallbackToggle",
+            )
+            dub = {"rows_visible": {n: mvisible(n) for n in row_names}}
+            # The backend combo mirrors asrBackends (and its note) live.
+            backends = [[v for v, _ in combo_rows("asrBackendCombo")]]
+            controller._asr_backends = ["auto", "faster_whisper", "whisper_cpp", "openai_api"]
+            controller._asr_backend_note = "faster-whisper vắng mặt"
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            backends.append([v for v, _ in combo_rows("asrBackendCombo")])
+            dub["backends"] = backends
+            dub["backend_note"] = mtext("asrBackendDescription")
+            controller._asr_backends = ["auto", "whisper_cpp", "openai_api"]
+            controller._asr_backend_note = ""
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            # Recommended + default badges sit on the large-v3-turbo entry.
+            model_labels = dict(combo_rows("asrModelField"))
+            dub["badges"] = {
+                "turbo": [b in model_labels["large-v3-turbo"] for b in ("Khuyên dùng", "Mặc định")],
+                "base": [b in model_labels["base"] for b in ("Khuyên dùng", "Mặc định")],
+                "current": str(mobj("asrModelField").property("currentText"))
+                == model_labels["large-v3-turbo"],
+            }
+            dub["auto_help"] = mtext("asrApiBaseUrlDescription")
+            # cuda12.4/cuda13.3 builds offer the "cuda" diarization device.
+            dub["diar_devices"] = [v for v, _ in combo_rows("diarizationDeviceCombo")]
+            toggle = mobj("asrCloudFallbackToggle")
+            fallback = [bool(toggle.property("checked"))]
+            click_item(toggle)
+            app.processEvents()
+            fallback += [controller.asrCloudFallback, bool(toggle.property("checked"))]
+            dub["cloud_fallback"] = fallback
+            dub["cloud_toggle_label"] = str(toggle.property("text"))
+
+            # ffmpeg: system copy found → status names it; licence link shown.
+            ffmpeg_states = {}
+
+            def ffmpeg_state():
+                install = mobj("settingsFfmpegInstallButton")
+                return {
+                    "status": mtext("settingsFfmpegStatusLabel"),
+                    "install_enabled": bool(install.property("enabled")),
+                    "install_reason": str(install.property("disabledReason")),
+                    "remove_visible": mvisible("settingsFfmpegRemoveButton"),
+                    "guidance": mtext("settingsFfmpegGuidanceLabel")
+                    if mvisible("settingsFfmpegGuidanceLabel") else "",
+                }
+
+            ffmpeg_states["system"] = ffmpeg_state()
+            dub["ffmpeg_license"] = (
+                mvisible("settingsFfmpegLicenseLink"),
+                "GPL-3.0-or-later" in mtext("settingsFfmpegLicenseLink"),
+            )
+            # Missing on an unpublished cell: install guidance, install off.
+            controller.set_ffmpeg_status(available=False, ffmpeg="", ffprobe="")
+            app.processEvents()
+            ffmpeg_states["unpublished"] = ffmpeg_state()
+            click_item(mobj("settingsFfmpegRefreshButton"))
+            # Missing on a published cell: install runs.
+            controller.set_ffmpeg_status(downloadable=True, note="")
+            app.processEvents()
+            ffmpeg_states["published"] = ffmpeg_state()
+            click_item(mobj("settingsFfmpegInstallButton"))
+            controller._ffmpeg_busy = True
+            controller.ffmpegRuntimeChanged.emit()
+            app.processEvents()
+            ffmpeg_states["busy"] = {
+                "install_enabled": bool(mobj("settingsFfmpegInstallButton").property("enabled")),
+                "progress_visible": mvisible("settingsFfmpegProgressBar"),
+            }
+            controller._ffmpeg_busy = False
+            controller._ffmpeg_message = "Đã cài đặt ffmpeg 7.1."
+            controller.set_ffmpeg_status(
+                available=True, managed=True, ffmpeg="/data/ffmpeg/bin/ffmpeg",
+                ffprobe="/data/ffmpeg/bin/ffprobe",
+            )
+            app.processEvents()
+            ffmpeg_states["managed"] = ffmpeg_state()
+            ffmpeg_states["managed"]["message"] = mtext("settingsFfmpegMessageLabel")
+            click_item(mobj("settingsFfmpegRemoveButton"))
+            app.processEvents()
+            dub["ffmpeg"] = ffmpeg_states
+            dub["ffmpeg_calls"] = list(controller.ffmpeg_calls)
+
+            # Optional audio models: download / remove by catalog id.
+            def model_buttons():
+                return {
+                    prefix: (
+                        bool(mobj(prefix + "Download").property("enabled")),
+                        mvisible(prefix + "Remove"),
+                    )
+                    for prefix in (
+                        "settingsWhisperVadRow",
+                        "settingsSileroVadRow",
+                        "settingsSpeakerEmbeddingRow",
+                    )
+                }
+
+            dub["model_buttons_idle"] = model_buttons()
+            click_item(mobj("settingsWhisperVadRowDownload"))
+            click_item(mobj("settingsSileroVadRowRemove"))
+            click_item(mobj("settingsSpeakerEmbeddingRowDownload"))
+            app.processEvents()
+            dub["model_calls"] = list(controller.audio_model_calls)
+            dub["speaker_description"] = mtext("settingsSpeakerEmbeddingRowDescription")
+            controller._audio_model_busy_id = "speaker-embedding"
+            controller._audio_model_status = "Đang tải CAM++…"
+            controller.audioModelsChanged.emit()
+            app.processEvents()
+            dub["model_buttons_busy"] = model_buttons()
+            dub["model_busy_status"] = (
+                mtext("settingsAudioModelStatusLabel"),
+                mvisible("settingsAudioModelProgressBar"),
+            )
+            controller._audio_model_busy_id = ""
+            controller._audio_model_status = ""
+            controller.audioModelsChanged.emit()
+            app.processEvents()
+            out["ai_dubbing_rows"] = dub
 
             results["settings_sections"] = out
             out = {"scenario": "waveform_repaint"}
@@ -8992,6 +9327,16 @@ class TestTextParagraphTabSmoke:
             "cue_edit_icon": "edit",
             "popup_within_window": True,
         }
+        # FR-7.2: a video with ffmpeg missing shows the install hint (with the
+        # host's guidance) and its action opens Settings; attaching re-checks.
+        hint = result["ffmpeg_hint"]
+        assert hint["available"] is False
+        assert hint["no_video"] is False
+        assert hint["refresh_calls"] == ["refresh"]
+        assert hint["missing"][0] is True
+        assert "brew install ffmpeg" in hint["missing"][1]
+        assert hint["installed"] is False
+        assert hint["action_tab"] == "settings"
         # FR-2.1: pinned dock outside the scroll area, primary reachable at the
         # documented 640×420 minimum, with progress + cancel affordances.
         assert result["dock_in_scroll"] is False
@@ -10375,6 +10720,61 @@ class TestSettingsTabSmoke:
                 "llmBatchSize": 15,
             },
         }
+        # FR-7.1/FR-7.3: AI dubbing runtime + optional-model rows (Task 8.1).
+        dub = result["ai_dubbing_rows"]
+        assert all(dub["rows_visible"].values()), dub["rows_visible"]
+        assert dub["backends"] == [
+            ["auto", "whisper_cpp", "openai_api"],
+            ["auto", "faster_whisper", "whisper_cpp", "openai_api"],
+        ]
+        assert dub["backend_note"] == "faster-whisper vắng mặt"
+        assert dub["badges"] == {
+            "turbo": [True, True],
+            "base": [False, False],
+            "current": True,
+        }
+        # Auto mode uploads only behind the opt-in, and only without local ASR.
+        assert dub["cloud_toggle_label"] in dub["auto_help"]
+        assert "chưa có ASR cục bộ" in dub["auto_help"]
+        assert dub["diar_devices"] == ["auto", "cpu", "cuda", "vulkan"]
+        assert dub["cloud_fallback"] == [False, True, True]
+        assert dub["ffmpeg_license"] == [True, True]
+        ff = dub["ffmpeg"]
+        note = "Cài bằng Homebrew: brew install ffmpeg"
+        assert "/opt/homebrew/bin/ffmpeg" in ff["system"]["status"]
+        assert ff["system"]["install_enabled"] is False
+        assert ff["system"]["guidance"] == ""
+        assert ff["unpublished"]["install_enabled"] is False
+        assert ff["unpublished"]["install_reason"] == note
+        assert ff["unpublished"]["guidance"] == note
+        assert ff["unpublished"]["status"] != ff["system"]["status"]
+        assert ff["published"]["install_enabled"] is True
+        assert ff["published"]["guidance"] == ""
+        assert ff["busy"] == {"install_enabled": False, "progress_visible": True}
+        managed = ff["managed"]
+        assert "/data/ffmpeg/bin/ffmpeg" in managed["status"] and "7.1" in managed["status"]
+        assert managed["remove_visible"] is True
+        assert managed["message"] == "Đã cài đặt ffmpeg 7.1."
+        assert ff["system"]["remove_visible"] is False
+        assert dub["ffmpeg_calls"] == ["refresh", "install", "remove"]
+        assert dub["model_buttons_idle"] == {
+            "settingsWhisperVadRow": [True, False],
+            "settingsSileroVadRow": [True, True],
+            "settingsSpeakerEmbeddingRow": [True, False],
+        }
+        assert dub["model_calls"] == [
+            "download:whisper-vad-silero-v6.2.0",
+            "remove:silero-vad",
+            "download:speaker-embedding",
+        ]
+        assert "phân biệt người nói" in dub["speaker_description"]
+        # One download at a time: a running op disables every download button.
+        assert dub["model_buttons_busy"] == {
+            "settingsWhisperVadRow": [False, False],
+            "settingsSileroVadRow": [False, True],
+            "settingsSpeakerEmbeddingRow": [False, False],
+        }
+        assert dub["model_busy_status"] == ["Đang tải CAM++…", True]
 
         # Waveform paint discipline (6.2): hidden waveforms never paint and a
         # replay moves only the playhead (waveform_repaint).

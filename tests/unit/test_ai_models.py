@@ -116,6 +116,11 @@ def test_catalog_contains_nemotron_3_gguf_and_whisper_models() -> None:
         spec = WHISPER_GGUF_MODELS[key]
         assert spec.size_bytes > 0
         assert len(spec.sha256) == 64
+    # The label that says "mặc định" names the model Settings actually defaults to.
+    from vienetts_app.core.models import Settings
+
+    marked = [k for k, s in WHISPER_GGUF_MODELS.items() if "mặc định" in s.label.lower()]
+    assert marked == [Settings.asr_model]
 
 
 def test_download_and_remove_asr_and_diarization_models(

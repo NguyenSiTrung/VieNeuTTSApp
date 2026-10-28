@@ -192,7 +192,13 @@ from vienetts_app.core.jobs import (
     new_synthesis_job,
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
-from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp, push_recent_voice
+from vienetts_app.core.models import (
+    Settings,
+    TTSRequest,
+    VoiceOp,
+    WarmupOp,
+    push_recent_voice,
+)
 from vienetts_app.core.paths import (
     is_empty_path,
     normalize_local_path,
@@ -8451,13 +8457,13 @@ class AppController(QObject):
         model = self._settings.asr_model
         if model in WHISPER_GGUF_MODELS or model.lower().endswith((".gguf", ".bin")):
             return model
-        return "base"
+        return Settings.asr_model
 
     @asrModel.setter
     def asrModel(self, value: str) -> None:
         if not isinstance(value, str):
             return
-        self._set_setting("asr_model", value.strip() or "base")
+        self._set_setting("asr_model", value.strip() or Settings.asr_model)
         self.aiModelsInstallChanged.emit()
 
     @Property(str, notify=aiSettingsChanged)

@@ -19,6 +19,16 @@ import "SettingsFilter.js" as Filter
 // settingsModelDirLabel, settingsModelDirCopyButton,
 // settingsModelDirOpenButton, settingsQwenModelsCard (hosts
 // qwenVariantPicker), and every name QwenInstallCards documents.
+// AI dubbing card (FR-7.1): settingsFfmpegRuntimeRow (settingsFfmpegStatusLabel,
+// settingsFfmpegInstallButton, settingsFfmpegRemoveButton,
+// settingsFfmpegRefreshButton, settingsFfmpegGuidanceLabel,
+// settingsFfmpegMessageLabel, settingsFfmpegProgressBar,
+// settingsFfmpegLicenseLink), asrBackendCombo (asrBackendDescription),
+// asrCloudFallbackToggle, asrApiBaseUrlDescription, and the optional audio
+// model rows settingsWhisperVadRow / settingsSileroVadRow /
+// settingsSpeakerEmbeddingRow (each with <row>Download, <row>Remove,
+// <row>Description) over settingsAudioModelStatusLabel and
+// settingsAudioModelProgressBar.
 SettingsSection {
     id: section
 
@@ -34,6 +44,71 @@ SettingsSection {
     sectionId: "models"
     title: qsTr("Mô hình")
     hasMatch: anyMatch([settingsModelSourceCard, qwenModelsCard, qwenInstall, settingsAiDubbingCard])
+
+    // One optional audio model (FR-7.1): what it adds, its size, licence and
+    // install state, and download/remove buttons keyed by the catalog id
+    // (controller.audioModels). Buttons are named <row objectName>Download /
+    // <row objectName>Remove; one audio-model operation runs at a time.
+    component AudioModelRow: SettingRow {
+        id: modelRow
+
+        property string modelId: ""
+        property string purpose: ""
+        readonly property var info: {
+            const rows = (controller && controller.audioModels) ? controller.audioModels : [];
+            for (let i = 0; i < rows.length; ++i) {
+                if (rows[i].id === modelRow.modelId)
+                    return rows[i];
+            }
+            return null;
+        }
+        readonly property bool installed: Boolean(modelRow.info && modelRow.info.installed)
+        readonly property bool anyBusy: Boolean(controller && controller.audioModelBusyId)
+        readonly property string busyReason: modelRow.anyBusy
+            ? qsTr("Đang tải hoặc gỡ một mô hình âm thanh — chờ xong rồi thử lại.") : ""
+
+        shown: modelRow.info !== null
+        descriptionObjectName: modelRow.objectName + "Description"
+        description: modelRow.info
+            ? qsTr("%1 (%2 MB · %3 · %4)")
+                .arg(modelRow.purpose)
+                .arg((Number(modelRow.info.sizeBytes) / 1000000).toFixed(1))
+                .arg(modelRow.info.license)
+                .arg(modelRow.installed ? qsTr("đã cài") : qsTr("chưa cài"))
+            : modelRow.purpose
+
+        AppButton {
+            objectName: modelRow.objectName + "Download"
+            variant: "secondary"
+            size: "sm"
+            iconKind: "download"
+            text: Boolean(modelRow.info && modelRow.info.busy)
+                ? qsTr("Đang xử lý…")
+                : (modelRow.installed ? qsTr("Tải lại") : qsTr("Tải về"))
+            accessibleLabel: text + " — " + modelRow.label
+            enabled: Boolean(controller && modelRow.info && !modelRow.anyBusy)
+            disabledReason: modelRow.busyReason
+            onClicked: {
+                if (controller && typeof controller.downloadAudioModel === "function")
+                    controller.downloadAudioModel(modelRow.modelId);
+            }
+        }
+
+        AppButton {
+            objectName: modelRow.objectName + "Remove"
+            variant: "secondary"
+            size: "sm"
+            visible: modelRow.installed
+            text: qsTr("Gỡ")
+            accessibleLabel: text + " — " + modelRow.label
+            enabled: Boolean(controller && !modelRow.anyBusy)
+            disabledReason: modelRow.busyReason
+            onClicked: {
+                if (controller && typeof controller.removeAudioModel === "function")
+                    controller.removeAudioModel(modelRow.modelId);
+            }
+        }
+    }
 
     AppCard {
         id: settingsModelSourceCard
@@ -362,7 +437,7 @@ SettingsSection {
         id: settingsAiDubbingCard
 
         readonly property bool matches: Filter.matches(section.filter, [
-            title, "Whisper ASR diarization Nemotron audio.cpp Vulkan LLM Ollama OpenAI subtitle video dubbing"
+            title, "Whisper ASR diarization Nemotron audio.cpp Vulkan CUDA LLM Ollama OpenAI subtitle video dubbing FFmpeg ffprobe VAD Silero CAM++ speaker embedding cloud fallback"
         ])
 
         objectName: "settingsAiDubbingCard"
@@ -379,19 +454,30 @@ SettingsSection {
             ? qsTr("audio.cpp: %1").arg(controller.audiocppRuntimeVariant || "cpu")
             : qsTr("audio.cpp: chưa cài")
 
-        readonly property var asrBackendOptions: [
-            { value: "auto", label: qsTr("Tự động (Local Whisper / API)") },
-            { value: "faster_whisper", label: qsTr("On-device faster-whisper") },
-            { value: "whisper_cpp", label: qsTr("On-device whisper.cpp") },
-            { value: "openai_api", label: qsTr("Máy chủ Whisper API (OpenAI)") }
-        ]
+        // FR-7.1: only the backends this build can run (controller.asrBackends —
+        // faster-whisper is listed only when it is installed).
+        readonly property var asrBackendOptions: {
+            const labels = {
+                "auto": qsTr("Tự động (trên máy; API chỉ khi cho phép)"),
+                "faster_whisper": qsTr("On-device faster-whisper"),
+                "whisper_cpp": qsTr("On-device whisper.cpp"),
+                "openai_api": qsTr("Máy chủ Whisper API (OpenAI)")
+            };
+            const ids = (controller && controller.asrBackends && controller.asrBackends.length > 0)
+                ? controller.asrBackends : ["auto", "whisper_cpp", "openai_api"];
+            const options = [];
+            for (let i = 0; i < ids.length; ++i)
+                options.push({ value: ids[i], label: labels[ids[i]] || ids[i] });
+            return options;
+        }
 
         readonly property var asrModelOptions: [
             { value: "tiny", label: qsTr("Whisper Tiny (75 MB — Siêu nhanh)") },
-            { value: "base", label: qsTr("Whisper Base (142 MB — Mặc định)") },
+            { value: "base", label: qsTr("Whisper Base (142 MB — Cân bằng)") },
             { value: "small", label: qsTr("Whisper Small (466 MB — Chính xác cao)") },
             { value: "medium", label: qsTr("Whisper Medium Q5_0 (514 MB)") },
-            { value: "large-v3-turbo", label: qsTr("Whisper Large-v3-Turbo Q5_0 (547 MB)") }
+            // The Settings default (Settings.asr_model) and the recommended pick.
+            { value: "large-v3-turbo", label: qsTr("Whisper Large-v3-Turbo Q5_0 (547 MB — Khuyên dùng · Mặc định)") }
         ]
 
         readonly property var asrLanguageOptions: [
@@ -432,13 +518,21 @@ SettingsSection {
             const all = [
                 { value: "auto", label: qsTr("Tự động (runtime chọn backend tốt nhất)") },
                 { value: "cpu", label: qsTr("CPU (mọi máy, ổn định nhất)") },
+                { value: "cuda", label: qsTr("CUDA GPU (NVIDIA)") },
                 { value: "vulkan", label: qsTr("Vulkan GPU (nhanh hơn, cần runtime Vulkan)") },
                 { value: "metal", label: qsTr("Metal GPU (macOS Apple Silicon)") }
             ];
             if (!controller || typeof controller.audiocppAvailableVariants === "undefined")
                 return all;
+            // audio.cpp lists its CUDA builds by toolkit (cuda12.4, cuda13.3);
+            // any of them offers the "cuda" device (the installer picks one).
             const available = controller.audiocppAvailableVariants || [];
+            let hasCuda = false;
+            for (let i = 0; i < available.length; ++i)
+                hasCuda = hasCuda || String(available[i]).indexOf("cuda") === 0;
             return all.filter(function (option) {
+                if (option.value === "cuda")
+                    return hasCuda;
                 return option.value === "auto" || option.value === "cpu"
                     || available.indexOf(option.value) >= 0;
             });
@@ -459,11 +553,153 @@ SettingsSection {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
 
+            // FR-7.1/FR-2.3: ffmpeg + ffprobe for ASR audio and video export —
+            // the app-managed pack, else a system copy. An unpublished pack
+            // shows the host's Homebrew/apt/winget guidance instead.
+            ColumnLayout {
+                id: ffmpegBlock
+
+                readonly property var status: (controller && controller.ffmpegRuntimeStatus)
+                    ? controller.ffmpegRuntimeStatus : ({})
+                readonly property bool busy: Boolean(controller && controller.ffmpegRuntimeBusy)
+                readonly property bool missing: ffmpegBlock.status.available === false
+                readonly property string guidance: (ffmpegBlock.missing && !ffmpegBlock.status.downloadable)
+                    ? (ffmpegBlock.status.note || "") : ""
+                readonly property string message: (controller && controller.ffmpegRuntimeMessage)
+                    ? controller.ffmpegRuntimeMessage : ""
+
+                objectName: "settingsFfmpegRuntimeRow"
+                Layout.fillWidth: true
+                spacing: Theme.spacingXs
+                visible: typeof ffmpegBlock.status.available === "boolean"
+
+                SettingRow {
+                    compact: section.compact
+                    label: qsTr("FFmpeg (âm thanh và video)")
+                    descriptionObjectName: "settingsFfmpegStatusLabel"
+                    descriptionColor: ffmpegBlock.missing ? Theme.warningText : Theme.textMuted
+                    description: {
+                        const s = ffmpegBlock.status;
+                        const name = s.version ? "ffmpeg " + s.version : "ffmpeg";
+                        if (ffmpegBlock.missing)
+                            return qsTr("Chưa tìm thấy ffmpeg/ffprobe — cần để nhận dạng phụ đề và xuất video.");
+                        if (s.managed)
+                            return qsTr("Đang dùng %1 do ứng dụng cài: %2").arg(name).arg(s.ffmpeg || "");
+                        return qsTr("Đang dùng %1 của hệ thống: %2").arg(name).arg(s.ffmpeg || "");
+                    }
+
+                    AppButton {
+                        objectName: "settingsFfmpegInstallButton"
+                        variant: ffmpegBlock.missing ? "primary" : "secondary"
+                        size: "sm"
+                        iconKind: "download"
+                        text: ffmpegBlock.busy
+                            ? qsTr("Đang xử lý…")
+                            : (ffmpegBlock.status.managed ? qsTr("Cài lại ffmpeg") : qsTr("Cài ffmpeg"))
+                        enabled: Boolean(controller && ffmpegBlock.status.downloadable && !ffmpegBlock.busy)
+                        disabledReason: ffmpegBlock.busy
+                            ? qsTr("Đang cài hoặc gỡ ffmpeg.")
+                            : (ffmpegBlock.status.downloadable ? ""
+                                : (ffmpegBlock.status.note
+                                    || qsTr("Chưa có gói ffmpeg dựng sẵn cho hệ điều hành này.")))
+                        onClicked: {
+                            if (controller && typeof controller.installFfmpegRuntime === "function")
+                                controller.installFfmpegRuntime();
+                        }
+                    }
+
+                    AppButton {
+                        objectName: "settingsFfmpegRemoveButton"
+                        variant: "secondary"
+                        size: "sm"
+                        visible: ffmpegBlock.status.managed === true
+                        text: qsTr("Gỡ ffmpeg")
+                        accessibleLabel: qsTr("Gỡ ffmpeg do ứng dụng cài")
+                        enabled: Boolean(controller && !ffmpegBlock.busy)
+                        disabledReason: qsTr("Đang cài hoặc gỡ ffmpeg.")
+                        onClicked: {
+                            if (controller && typeof controller.removeFfmpegRuntime === "function")
+                                controller.removeFfmpegRuntime();
+                        }
+                    }
+
+                    AppButton {
+                        objectName: "settingsFfmpegRefreshButton"
+                        variant: "secondary"
+                        size: "sm"
+                        text: qsTr("Kiểm tra lại")
+                        tooltipText: qsTr("Tìm lại ffmpeg sau khi cài bằng Homebrew, apt hoặc winget")
+                        accessibleLabel: qsTr("Kiểm tra lại ffmpeg")
+                        enabled: Boolean(controller && !ffmpegBlock.busy)
+                        disabledReason: qsTr("Đang cài hoặc gỡ ffmpeg.")
+                        onClicked: {
+                            if (controller && typeof controller.refreshFfmpegRuntimeStatus === "function")
+                                controller.refreshFfmpegRuntimeStatus();
+                        }
+                    }
+                }
+
+                ProgressBar {
+                    objectName: "settingsFfmpegProgressBar"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: (controller && typeof controller.ffmpegRuntimeProgress === "number")
+                        ? Math.max(0, controller.ffmpegRuntimeProgress) : 0
+                    visible: ffmpegBlock.busy
+                    Accessible.name: qsTr("Tiến trình cài ffmpeg")
+                }
+
+                Label {
+                    objectName: "settingsFfmpegGuidanceLabel"
+                    Layout.fillWidth: true
+                    visible: ffmpegBlock.guidance !== ""
+                    text: ffmpegBlock.guidance
+                    textFormat: Text.PlainText
+                    color: Theme.warningText
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    objectName: "settingsFfmpegMessageLabel"
+                    Layout.fillWidth: true
+                    visible: ffmpegBlock.message !== "" && ffmpegBlock.message !== ffmpegBlock.guidance
+                    text: ffmpegBlock.message
+                    textFormat: Text.PlainText
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                }
+
+                AppButton {
+                    objectName: "settingsFfmpegLicenseLink"
+                    variant: "quiet"
+                    size: "sm"
+                    iconKind: "externalLink"
+                    visible: Boolean(ffmpegBlock.status.license)
+                    text: qsTr("Giấy phép %1").arg(ffmpegBlock.status.license || "")
+                    tooltipText: ffmpegBlock.status.source || ""
+                    accessibleLabel: qsTr("Mở nguồn và giấy phép ffmpeg (%1)").arg(ffmpegBlock.status.license || "")
+                    enabled: Boolean(ffmpegBlock.status.source)
+                    disabledReason: qsTr("Chưa có nguồn ffmpeg cho hệ điều hành này.")
+                    onClicked: Qt.openUrlExternally(ffmpegBlock.status.source)
+                }
+            }
+
             SettingRow {
                 Layout.fillWidth: true
                 compact: section.compact
                 label: qsTr("Bộ nhận diện giọng nói (ASR)")
-                description: qsTr("Tạo phụ đề tự động khi video chưa có tệp .srt")
+                // A stored backend this build cannot run says what runs instead.
+                description: (controller && controller.asrBackendNote)
+                    ? controller.asrBackendNote
+                    : qsTr("Tạo phụ đề tự động khi video chưa có tệp .srt")
+                descriptionObjectName: "asrBackendDescription"
+                descriptionColor: (controller && controller.asrBackendNote)
+                    ? Theme.warningText : Theme.textMuted
                 control: AppCombo {
                     objectName: "asrBackendCombo"
                     comboWidth: 320
@@ -559,8 +795,9 @@ SettingsSection {
                     currentIndex: section.page
                         ? section.page.valueIndex(
                             settingsAiDubbingCard.asrModelOptions,
-                            (controller && typeof controller.asrModel === "string") ? controller.asrModel : "base")
-                        : 1
+                            (controller && typeof controller.asrModel === "string")
+                                ? controller.asrModel : "large-v3-turbo")
+                        : 4
                     onActivated: function (index) {
                         if (controller && typeof controller.asrModel !== "undefined")
                             controller.asrModel = settingsAiDubbingCard.asrModelOptions[index].value;
@@ -682,12 +919,33 @@ SettingsSection {
                 }
             }
 
+            // FR-3.4: auto mode uploads audio only behind this opt-in, and only
+            // when no local ASR (runtime + model) is available.
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Dự phòng đám mây cho ASR")
+                description: qsTr("Chỉ ở chế độ Tự động: khi máy chưa có ASR cục bộ (whisper.cpp hoặc faster-whisper kèm mô hình), âm thanh được gửi lên Máy chủ Whisper API bên dưới. Tắt thì âm thanh không rời khỏi máy.")
+
+                AppToggle {
+                    objectName: "asrCloudFallbackToggle"
+                    text: qsTr("Cho phép dự phòng đám mây")
+                    accessibleLabel: qsTr("Cho phép gửi âm thanh lên Whisper API khi không có ASR cục bộ")
+                    checked: Boolean(controller && controller.asrCloudFallback === true)
+                    onToggled: {
+                        if (controller && typeof controller.asrCloudFallback !== "undefined")
+                            controller.asrCloudFallback = checked;
+                    }
+                }
+            }
+
             // FR-7.1: Separate Whisper API group (URL / model / API key).
             SettingRow {
                 Layout.fillWidth: true
                 compact: section.compact
                 label: qsTr("Máy chủ Whisper API (URL)")
-                description: qsTr("Để trống để dùng chung máy chủ LLM chỉ khi Bộ nhận diện đặt là Máy chủ Whisper API. Chế độ Tự động chỉ gọi API khi nhập URL tại đây.")
+                description: qsTr("Để trống để dùng chung máy chủ LLM chỉ khi Bộ nhận diện đặt là Máy chủ Whisper API. Chế độ Tự động chỉ gửi âm thanh lên URL này khi bật “Cho phép dự phòng đám mây” và máy chưa có ASR cục bộ.")
+                descriptionObjectName: "asrApiBaseUrlDescription"
                 control: AppTextField {
                     objectName: "asrApiBaseUrlField"
                     implicitWidth: 260
@@ -964,6 +1222,70 @@ SettingsSection {
                         if (controller && typeof controller.diarizationMaxSpeakers !== "undefined")
                             controller.diarizationMaxSpeakers = value;
                     }
+                }
+            }
+
+            // FR-7.1: optional audio models — each improves one step when
+            // installed; without them the built-in fallbacks run.
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+                visible: Boolean(controller && controller.audioModels && controller.audioModels.length > 0)
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Mô hình âm thanh bổ sung (tùy chọn)")
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeBase
+                    font.weight: Theme.fontWeightMedium
+                    wrapMode: Text.Wrap
+                }
+
+                AudioModelRow {
+                    objectName: "settingsWhisperVadRow"
+                    compact: section.compact
+                    modelId: "whisper-vad-silero-v6.2.0"
+                    label: qsTr("Whisper VAD (lọc đoạn không lời)")
+                    purpose: qsTr("Dùng cho whisper.cpp: bỏ qua nhạc và khoảng lặng để giảm câu bịa khi nhận dạng")
+                }
+
+                AudioModelRow {
+                    objectName: "settingsSileroVadRow"
+                    compact: section.compact
+                    modelId: "silero-vad"
+                    label: qsTr("Silero VAD (ranh giới lời nói)")
+                    purpose: qsTr("Căn đầu và cuối phụ đề theo lời nói thật, chọn đoạn mẫu giọng sạch hơn")
+                }
+
+                AudioModelRow {
+                    objectName: "settingsSpeakerEmbeddingRow"
+                    compact: section.compact
+                    modelId: "speaker-embedding"
+                    label: qsTr("Nhận diện giọng người nói (CAM++)")
+                    purpose: qsTr("3D-Speaker CAM++: khi đã cài, giúp phân biệt người nói chính xác hơn khi phân tách người nói")
+                }
+
+                ProgressBar {
+                    objectName: "settingsAudioModelProgressBar"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: (controller && typeof controller.audioModelProgress === "number")
+                        ? controller.audioModelProgress : 0
+                    visible: Boolean(controller && controller.audioModelBusyId)
+                    Accessible.name: qsTr("Tiến trình tải mô hình âm thanh")
+                }
+
+                Label {
+                    objectName: "settingsAudioModelStatusLabel"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: (controller && controller.audioModelStatus) ? controller.audioModelStatus : ""
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
                 }
             }
 

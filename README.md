@@ -416,15 +416,16 @@ without it.
   replaces the current copy. It must offer `libx264`, `libvpx-vp9`, `aac` and
   the libass `subtitles` filter. If it doesn't, the pack is rejected and the
   previous FFmpeg stays.
-- **Availability today:** no pack is published yet. Every cell in
-  [`media_runtime_manifests.json`](src/vienetts_app/core/media_runtime_manifests.json)
-  (Windows x64, Linux x64/arm64, macOS arm64/x64) is `published: false`
-  until a maintainer runs the opt-in publishing workflow. The installer
-  offers a pack only once one is published for your platform. Until then, the
-  row tells you to install FFmpeg with your package manager:
+- **Availability today:** no FFmpeg pack is published yet. Every FFmpeg cell
+  in [`media_runtime_manifests.json`](src/vienetts_app/core/media_runtime_manifests.json)
+  (Windows x64, Linux x64/arm64, macOS arm64/x64) stays `published: false`
+  until its GPL source arrangement is settled and a maintainer runs the
+  opt-in publishing workflow. The installer offers a pack only once one is
+  published for your platform. Until then, the row tells you to install
+  FFmpeg with your package manager:
 
   ```bash
-  brew install ffmpeg whisper-cpp   # macOS: also provides whisper-cli
+  brew install ffmpeg               # macOS
   sudo apt install ffmpeg           # Debian / Ubuntu
   winget install Gyan.FFmpeg        # Windows, then restart the app
   ```
@@ -449,13 +450,15 @@ The **whisper.cpp** runtime row installs `whisper-cli` built from whisper.cpp
 | --- | --- |
 | Windows | Upstream release build: CPU, or NVIDIA CUDA |
 | Linux | Upstream release build: CPU |
-| macOS arm64 | Project pack: static build with Metal (not published yet) |
-| macOS x64 | Project pack: static CPU build (not published yet) |
+| macOS arm64 | Project pack: static build with Metal (2.1 MB) |
+| macOS x64 | Project pack: static CPU build (1.3 MB) |
 
 On Apple Silicon the Metal build is the default (`auto` / `metal`). The same
-binary also serves `cpu`, with the GPU turned off. Until the macOS packs are
-published, run `brew install whisper-cpp`, or the combined command above. The
-app picks up Homebrew's `whisper-cli` on its own.
+binary also serves `cpu`, with the GPU turned off. The macOS packs are built
+from source by the project's opt-in CI, ad-hoc signed, link only system
+libraries and need macOS 14 or later. A Homebrew `whisper-cli`
+(`brew install whisper-cpp`) still works; the app picks it up on its own when
+no managed copy is installed.
 
 The Whisper models download from the same card. **Whisper Large-v3-Turbo
 Q5_0** (547 MB) is the recommended default (`asr_model` = `large-v3-turbo`).

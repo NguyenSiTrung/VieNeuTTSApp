@@ -407,7 +407,7 @@ Test seams and fakes:
     - the cloud-fallback opt-in;
     - the media-cache cap.
 
-- [!] **Task 8.3: USER-GATED — publish the media runtime packs (FR-2.6 follow-through)** [blocked: needs an explicit user request (git push + workflow dispatch) and the GPL corresponding-source decision, bead VieNeuTTSApp-0j8g]
+- [x] **Task 8.3: USER-GATED — publish the media runtime packs (FR-2.6 follow-through)** [whisper-cli macOS cells published on the user's request: run 40788674524, manifest commit 3260c66; FFmpeg cells split to bead VieNeuTTSApp-k47m, blocked by VieNeuTTSApp-0j8g]
   <!-- files: src/vienetts_app/core/media_runtime_manifests.json -->
   <!-- depends: task1, task2 -->
   - Needs an explicit user request, because it requires `git push` and a workflow dispatch, which the git policy forbids without approval. Never run it automatically. Steps once requested:

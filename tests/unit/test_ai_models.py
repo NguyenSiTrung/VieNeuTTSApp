@@ -578,7 +578,27 @@ def test_whisper_cpp_runtime_download_probe_rollback_and_remove(
 def test_whisper_cpp_macos_cells_come_from_the_manifest_and_unpublished_never_downloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The shipped manifest publishes no macOS cell yet: guidance, no download.
+    # An unpublished macOS cell gives guidance and never downloads (whatever
+    # the shipped manifest publishes today).
+    unpublished = {
+        "published": False,
+        "archive": "tar.gz",
+        "version": "b5454",
+        "license": "MIT",
+        "source": "https://github.com/ggml-org/whisper.cpp/tree/b5454",
+    }
+    monkeypatch.setattr(
+        ai_models,
+        "MEDIA_RUNTIME_MANIFEST_PATH",
+        _write_manifest(
+            tmp_path / "unpublished.json",
+            {
+                "whisper_cpp": {
+                    "cells": {"macos-arm64-metal": unpublished, "macos-x64-cpu": unpublished}
+                }
+            },
+        ),
+    )
     _no_download(monkeypatch)
     _host(monkeypatch, "darwin", "arm64")
     variants = available_whisper_cpp_variants()

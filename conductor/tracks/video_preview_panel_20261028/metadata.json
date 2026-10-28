@@ -1,0 +1,29 @@
+{
+  "track_id": "video_preview_panel_20261028",
+  "type": "feature",
+  "status": "new",
+  "priority": "medium",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-10-28T09:00:00Z",
+  "updated_at": "2026-10-28T09:00:00Z",
+  "description": "Subtitles tab video preview panel (VieNeuTTSApp-t80a): dual-mode QtMultimedia VideoOutput + MediaPlayer preview (source video audio playback/scrubbing + muted dub-sync follower), live subtitle caption overlay, unrendered & rendered cue-click/arrow-key video seeking, all-stage adaptive 2-column & collapsible compact layout, and Windows file-handle release before disk operations.",
+  "execution_mode": "parallel",
+  "manual_phase_verification": false,
+  "audit_document": "docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md",
+  "decisions": {
+    "preview_engine": "dual-mode QML VideoOutput + MediaPlayer",
+    "stage_placement": "all-3-stages (Source, Prepare, Produce) with adaptive 2-column & compact layout",
+    "features": "live caption overlay, mini transport with source/dub exclusivity, unrendered cue seeking, collapsible viewport + codec fallback"
+  },
+  "beads_epic": "VieNeuTTSApp-t80a",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-t80a.1",
+    "phase1_task1": "VieNeuTTSApp-t80a.1.1",
+    "phase2": "VieNeuTTSApp-t80a.2",
+    "phase2_task1": "VieNeuTTSApp-t80a.2.1",
+    "phase3": "VieNeuTTSApp-t80a.3",
+    "phase3_task1": "VieNeuTTSApp-t80a.3.1",
+    "phase3_task2": "VieNeuTTSApp-t80a.3.2"
+  }
+}

@@ -1694,8 +1694,8 @@ def _run_asr_backends(
     ) from missing
 
 
-def transcribe_media_to_cues(
-    media_path: str | Path,
+def transcribe_segments(
+    wav_path: Path,
     config: AsrConfig | None = None,
     *,
     work_dir: Path | None = None,
@@ -1703,26 +1703,27 @@ def transcribe_media_to_cues(
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     notes: list[str] | None = None,
-) -> list[Cue]:
-    """Extract 16 kHz audio from ``media_path``, run Whisper ASR, and return normalized ``Cue``s."""
+) -> list[RawSegment]:
+    """Run Whisper ASR on a prepared 16 kHz mono WAV and return the filtered raw segments.
+
+    The segments keep their word timings, so a caller can split them at speaker turns
+    (``diarization.split_segments_at_turns``) before ``segments_to_cues``. Segments are
+    cached in ``work_dir`` (the media cache) like ``transcribe_media_to_cues`` does.
+    """
     release_idle_asr_models()
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
     cfg = config or AsrConfig()
-    src = Path(media_path)
-    if not src.is_file():
-        raise AsrError(f"Không tìm thấy tệp phương tiện: {src.name}")
-
+    wav_path = Path(wav_path)
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
     try:
-        wav_path, temp_dir_obj = _ensure_16k_wav(
-            src, work_dir, data_dir, None, progress_cb=progress_cb, cancel_check=cancel_check
-        )
-        if cancel_check is not None and cancel_check():
-            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
         # whisper-cli output goes to the media cache (or this run's temp dir): a 16 kHz
         # mono WAV is used in place, and nothing may be written beside the user's file.
-        out_dir = work_dir if work_dir is not None else Path(temp_dir_obj.name)
+        if work_dir is not None:
+            out_dir = work_dir
+        else:
+            temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
+            out_dir = Path(temp_dir_obj.name)
 
         cache_key = _asr_cache_key(wav_path, cfg, data_dir=data_dir)
         # A legacy input_16k.wav adopted as source_16k.wav keeps its size and
@@ -1757,16 +1758,66 @@ def transcribe_media_to_cues(
 
         # The cache keeps the raw segments with their scores; filtering runs on every
         # load, so a better filter needs no re-transcription.
-        raw = filter_hallucinations(
+        return filter_hallucinations(
             raw,
             duration_ms=int(round(_wav_duration_s(wav_path) * 1000)),
             notes=notes,
             has_speech=_energy_speech_check(wav_path),
         )
-        cues = normalize_asr_segments_to_cues(raw)
-        if not cues:
-            raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")
-        return refine_cues_speech_bounds(cues, wav_path)
+    finally:
+        if temp_dir_obj is not None:
+            with contextlib.suppress(OSError):
+                temp_dir_obj.cleanup()
+
+
+def segments_to_cues(
+    segments: Sequence[RawSegment], wav_path: Path, *, data_dir: Path | None = None
+) -> list[Cue]:
+    """Normalize raw ASR segments into ``Cue``s with refined speech bounds.
+
+    With a ``data_dir`` the speech bounds come from Silero VAD when it is installed.
+    """
+    cues = normalize_asr_segments_to_cues(list(segments))
+    if not cues:
+        raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")
+    return refine_cues_speech_bounds(cues, wav_path, data_dir=data_dir)
+
+
+def transcribe_media_to_cues(
+    media_path: str | Path,
+    config: AsrConfig | None = None,
+    *,
+    work_dir: Path | None = None,
+    data_dir: Path | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
+) -> list[Cue]:
+    """Extract 16 kHz audio from ``media_path``, run Whisper ASR, and return normalized ``Cue``s."""
+    release_idle_asr_models()
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+    src = Path(media_path)
+    if not src.is_file():
+        raise AsrError(f"Không tìm thấy tệp phương tiện: {src.name}")
+
+    temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        wav_path, temp_dir_obj = _ensure_16k_wav(
+            src, work_dir, data_dir, None, progress_cb=progress_cb, cancel_check=cancel_check
+        )
+        if cancel_check is not None and cancel_check():
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        raw = transcribe_segments(
+            wav_path,
+            config,
+            work_dir=work_dir,
+            data_dir=data_dir,
+            progress_cb=progress_cb,
+            cancel_check=cancel_check,
+            notes=notes,
+        )
+        return segments_to_cues(raw, wav_path, data_dir=data_dir)
     finally:
         if temp_dir_obj is not None:
             with contextlib.suppress(OSError):

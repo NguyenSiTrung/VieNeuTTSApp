@@ -681,6 +681,15 @@ def test_whisper_cpp_falls_back_to_largest_installed_model(
     def models_run() -> list[str]:
         return models_log.read_text(encoding="utf-8").splitlines()
 
+    # The speech-bound refinement gets the data dir, so Silero VAD applies when installed.
+    refined_with: list[object] = []
+    refine = asr.refine_cues_speech_bounds
+
+    def spy_refine(cues, wav_path, **kwargs):
+        refined_with.append(kwargs.get("data_dir"))
+        return refine(cues, wav_path, **kwargs)
+
+    monkeypatch.setattr(asr, "refine_cues_speech_bounds", spy_refine)
     cfg = AsrConfig(backend="whisper_cpp", model="base", language="vi")
     # Nothing installed: a typed AsrBackendMissing naming the Settings download.
     with pytest.raises(asr.AsrBackendMissing, match="Cài đặt"):
@@ -692,6 +701,7 @@ def test_whisper_cpp_falls_back_to_largest_installed_model(
     work_dir = tmp_path / "cache"
     cues = transcribe_media_to_cues(wav, cfg, work_dir=work_dir, data_dir=tmp_path, notes=notes)
     assert [c.text for c in cues] == ["Xin chào."]
+    assert refined_with == [tmp_path]
     assert models_run() == [str(small)]
     assert notes == ["Chưa tải mô hình Whisper base, đã dùng mô hình small có sẵn."]
 

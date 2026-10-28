@@ -2234,6 +2234,95 @@ class TestAiDubbingRuntimeSurface:
         stored = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert (controller.asrModel, stored["asr_model"]) == ("large-v3-turbo", "large-v3-turbo")
 
+    def test_whisper_cpp_runtime_note_guides_only_without_a_pack_or_cli(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unpublished macOS cell's Homebrew guidance shows before any
+        # install attempt; a found whisper-cli or a published pack clears it.
+        unpublished = ai_models.WhisperCppRuntimeVariant(
+            "cpu",
+            "CPU",
+            "",
+            cell="macos-x64-cpu",
+            unavailable_reason=ai_models.WHISPER_CPP_HOMEBREW_HINT,
+        )
+        variants = {"cpu": unpublished}
+        cli: dict[str, Path | None] = {"path": None}
+        monkeypatch.setattr(ai_models, "available_whisper_cpp_variants", lambda: dict(variants))
+        monkeypatch.setattr(ai_models, "default_whisper_cpp_variant", lambda: "cpu")
+        monkeypatch.setattr(ai_models, "resolve_whisper_cpp_cli", lambda data_dir=None: cli["path"])
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert controller.whisperCppRuntimeNote == ai_models.WHISPER_CPP_HOMEBREW_HINT
+        cli["path"] = tmp_path / "whisper-cli"
+        assert controller.whisperCppRuntimeNote == ""
+        cli["path"] = None
+        variants["cpu"] = replace(
+            unpublished, url="https://example.com/whisper.tar.xz", unavailable_reason=""
+        )
+        assert controller.whisperCppRuntimeNote == ""
+
+    def test_asr_setup_hint_says_what_transcription_lacks(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state: dict[str, Any] = {"cli": False, "models": set(), "faster_whisper": False}
+        monkeypatch.setattr(
+            ai_models,
+            "resolve_whisper_cpp_cli",
+            lambda data_dir=None: tmp_path / "whisper-cli" if state["cli"] else None,
+        )
+        monkeypatch.setattr(
+            ai_models,
+            "resolve_asr_model_path",
+            lambda model_id, data_dir: tmp_path / "m.bin" if model_id in state["models"] else None,
+        )
+        real_find_spec = importlib.util.find_spec
+
+        def find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "faster_whisper":
+                present = state["faster_whisper"]
+                return importlib.machinery.ModuleSpec(name, None) if present else None
+            return real_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        changes: list[str] = []
+        controller.asrReadinessChanged.connect(lambda: changes.append(controller.asrSetupHint))
+
+        # Nothing local and no opt-in: both missing pieces + where to fix them.
+        hint = controller.asrSetupHint
+        assert "whisper.cpp" in hint and "mô hình Whisper" in hint
+        assert "Cài đặt › Mô hình" in hint and "Cho phép dự phòng đám mây" in hint
+        # The opt-in needs a Whisper API URL; with both, auto mode uploads.
+        controller.asrCloudFallback = True
+        assert "URL Whisper API" in controller.asrSetupHint
+        controller.asrApiBaseUrl = "https://asr.example.com/v1"
+        assert controller.asrSetupHint == ""
+        controller.asrCloudFallback = False
+        # whisper-cli found: only the model is missing; ANY installed catalog
+        # model runs (auto falls back to it), not just the configured one.
+        state["cli"] = True
+        controller.refreshAsrRuntimeStatus()
+        hint = controller.asrSetupHint
+        assert "whisper.cpp" not in hint and "mô hình Whisper" in hint
+        state["models"] = {"tiny"}
+        controller.aiModelsInstallChanged.emit()
+        assert controller.asrSetupHint == ""
+        # An explicit whisper.cpp backend never falls back to the cloud.
+        state["cli"] = False
+        controller.asrBackend = "whisper_cpp"
+        controller.asrCloudFallback = True
+        hint = controller.asrSetupHint
+        assert "whisper.cpp" in hint and "dự phòng" not in hint
+        controller.asrBackend = "openai_api"
+        assert controller.asrSetupHint == ""
+        assert changes and changes[-1] == ""
+
+        # faster-whisper importable: auto mode can run it.
+        state.update(cli=False, models=set(), faster_whisper=True)
+        write_settings_file(tmp_path)
+        fw = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert fw.asrSetupHint == ""
+
     def test_audio_model_slots_run_off_thread_report_status_and_gate(
         self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

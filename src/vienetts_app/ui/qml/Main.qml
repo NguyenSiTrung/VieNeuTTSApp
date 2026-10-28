@@ -187,12 +187,24 @@ ApplicationWindow {
         }
     }
 
-    // Settings › Cập nhật: the status bar's update link lands on the update
-    // card (the nav dot only selects the Settings row).
-    function openUpdates() {
+    // In-app links into Cài đặt land on one section (the nav row alone only
+    // opens the page): the status bar's update link, Subtitles' runtime hints
+    // (Mô hình). A first visit loads the page asynchronously, so the section
+    // waits in pendingSettingsSection until the Loader is ready.
+    property string pendingSettingsSection: ""
+
+    function openSettingsSection(sectionId) {
         bridge.setCurrentTab("settings");
-        if (settingsLoader.item)
-            Qt.callLater(() => settingsLoader.item.jumpToSection("updates"));
+        const page = settingsLoader.item;
+        if (page)
+            Qt.callLater(() => page.jumpToSection(sectionId));
+        else
+            window.pendingSettingsSection = sectionId;
+    }
+
+    // Settings › Cập nhật: the status bar's update link.
+    function openUpdates() {
+        window.openSettingsSection("updates");
     }
 
     RowLayout {
@@ -516,6 +528,12 @@ ApplicationWindow {
                 asynchronous: true
                 active: window.prebuildTabs || bridge.currentTab === "settings" || visited
                 onActiveChanged: if (active) visited = true
+                onLoaded: {
+                    const sectionId = window.pendingSettingsSection;
+                    window.pendingSettingsSection = "";
+                    if (sectionId !== "")
+                        item.jumpToSection(sectionId);
+                }
                 sourceComponent: Component { SettingsTab {} }
             }
         }

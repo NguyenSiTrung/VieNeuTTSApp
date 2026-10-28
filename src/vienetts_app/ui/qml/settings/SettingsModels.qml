@@ -24,6 +24,7 @@ import "SettingsFilter.js" as Filter
 // settingsFfmpegRefreshButton, settingsFfmpegGuidanceLabel,
 // settingsFfmpegMessageLabel, settingsFfmpegProgressBar,
 // settingsFfmpegLicenseLink), asrBackendCombo (asrBackendDescription),
+// asrRuntimeGuidanceLabel + asrRuntimeRefreshButton (whisper.cpp guidance),
 // asrCloudFallbackToggle, asrApiBaseUrlDescription, and the optional audio
 // model rows settingsWhisperVadRow / settingsSileroVadRow /
 // settingsSpeakerEmbeddingRow (each with <row>Download, <row>Remove,
@@ -450,6 +451,11 @@ SettingsSection {
             ? qsTr("whisper.cpp: %1").arg(controller.whisperCppRuntimeVariant || "cpu")
             : qsTr("whisper.cpp: chưa cài")
 
+        // Install guidance while no whisper-cli is found and no pack is
+        // published for this host ("" otherwise).
+        readonly property string whisperCppRuntimeNote: (controller
+            && typeof controller.whisperCppRuntimeNote === "string") ? controller.whisperCppRuntimeNote : ""
+
         readonly property string diarRuntimeLabel: (controller && controller.audiocppInstalled)
             ? qsTr("audio.cpp: %1").arg(controller.audiocppRuntimeVariant || "cpu")
             : qsTr("audio.cpp: chưa cài")
@@ -840,7 +846,11 @@ SettingsSection {
                             : ((controller && controller.whisperCppInstalled)
                                 ? qsTr("Tải lại runtime")
                                 : qsTr("Cài runtime whisper.cpp"))
-                        enabled: Boolean(controller && !controller.asrDownloadBusy)
+                        // No pack for this host (macOS until published): the
+                        // guidance below says how to install it instead.
+                        enabled: Boolean(controller && !controller.asrDownloadBusy
+                            && !settingsAiDubbingCard.whisperCppRuntimeNote)
+                        disabledReason: settingsAiDubbingCard.whisperCppRuntimeNote
                         onClicked: {
                             if (controller && typeof controller.downloadWhisperCppRuntime === "function")
                                 controller.downloadWhisperCppRuntime();
@@ -883,6 +893,38 @@ SettingsSection {
                         ? controller.asrDownloadProgress : 0
                     visible: Boolean(controller && controller.asrDownloadBusy)
                     Accessible.name: qsTr("Tiến trình tải mô hình và runtime ASR")
+                }
+
+                // Shown up front, not only after a failed install: no
+                // whisper-cli was found and this host has no published pack.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+                    visible: settingsAiDubbingCard.whisperCppRuntimeNote !== ""
+
+                    Label {
+                        objectName: "asrRuntimeGuidanceLabel"
+                        Layout.fillWidth: true
+                        text: settingsAiDubbingCard.whisperCppRuntimeNote
+                        textFormat: Text.PlainText
+                        color: Theme.warningText
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        wrapMode: Text.Wrap
+                    }
+
+                    AppButton {
+                        objectName: "asrRuntimeRefreshButton"
+                        variant: "secondary"
+                        size: "sm"
+                        text: qsTr("Kiểm tra lại")
+                        tooltipText: qsTr("Tìm lại whisper-cli sau khi cài bằng Homebrew")
+                        accessibleLabel: qsTr("Kiểm tra lại whisper-cli")
+                        onClicked: {
+                            if (controller && typeof controller.refreshAsrRuntimeStatus === "function")
+                                controller.refreshAsrRuntimeStatus();
+                        }
+                    }
                 }
 
                 Label {

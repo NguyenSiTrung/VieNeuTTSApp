@@ -403,6 +403,11 @@ DRIVER = textwrap.dedent(
             self._ffmpeg_busy = False
             self._ffmpeg_message = ""
             self.ffmpeg_calls = []
+            # FR-7.2 readiness: what transcription lacks ("" = ASR can run)
+            # and the macOS whisper.cpp install guidance.
+            self._asr_setup_hint = ""
+            self._whisper_cpp_runtime_note = ""
+            self.asr_refresh_calls = 0
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
             # and binds text/icon to replayActive.
             self._replay_active = False
@@ -2019,6 +2024,18 @@ DRIVER = textwrap.dedent(
         @Slot()
         def refreshFfmpegRuntimeStatus(self):
             self.ffmpeg_calls.append("refresh")
+
+        @Property(str, notify=aiSettingsChanged)
+        def asrSetupHint(self):
+            return self._asr_setup_hint
+
+        @Property(str, notify=aiSettingsChanged)
+        def whisperCppRuntimeNote(self):
+            return self._whisper_cpp_runtime_note
+
+        @Slot()
+        def refreshAsrRuntimeStatus(self):
+            self.asr_refresh_calls += 1
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -4874,6 +4891,34 @@ DRIVER = textwrap.dedent(
             ffmpeg_hint_states["installed"] = ffmpeg_hint()[0]
             out["ffmpeg_hint"] = ffmpeg_hint_states
 
+            # FR-7.2: no ASR backend can run → the controller's setup hint.
+            def asr_hint():
+                hint = ifind("subtitleAsrMissingHint")
+                return (
+                    bool(hint and hint[0].property("visible")),
+                    str(hint[0].property("message")) if hint else "",
+                )
+
+            asr_hint_states = {"ready": asr_hint()[0]}
+            controller._asr_setup_hint = "Chưa cài runtime whisper.cpp."
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            asr_hint_states["missing"] = asr_hint()
+            asr_hint_item = ifind("subtitleAsrMissingHint")[0]
+            refresh_before = controller.asr_refresh_calls
+            fake_subtitle._has_video = False
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            asr_hint_states["no_video"] = asr_hint()[0]
+            fake_subtitle._has_video = True
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            asr_hint_states["rechecks_on_attach"] = controller.asr_refresh_calls - refresh_before
+            controller._asr_setup_hint = ""
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            out["asr_hint"] = asr_hint_states
+
             # FR-2.1: the action dock is pinned OUTSIDE the PageShell, and its
             # primary action stays inside the window at the 640×420 minimum.
             def inside_page_scroll(item):
@@ -5125,10 +5170,40 @@ DRIVER = textwrap.dedent(
             out["opened_project"] = getattr(fake_subtitle, "opened_project", "")
             out["removed_project"] = getattr(fake_subtitle, "removed_project", "")
 
-            # Last (it loads the Settings page): the ffmpeg hint's action.
-            QMetaObject.invokeMethod(ffmpeg_hint_item, "actionTriggered")
-            app.processEvents()
-            out["ffmpeg_hint"]["action_tab"] = str(bridge.property("currentTab"))
+            # Last (it loads the Settings page): every Subtitles link to
+            # Settings lands on Mô hình — the first while the page is still
+            # loading (the section waits for the Loader), then once loaded.
+            def settings_tab_now():
+                found = window.findChildren(QObject, "settingsTab")
+                return found[0] if found else None
+
+            def open_settings_from(trigger):
+                bridge.setCurrentTab("subtitles")
+                app.processEvents()
+                if settings_tab_now() is not None:
+                    settings_tab_now().setProperty("currentSection", "general")
+                trigger()
+                wait_for(
+                    lambda: settings_tab_now() is not None
+                    and settings_tab_now().property("currentSection") == "models"
+                )
+                page = settings_tab_now()
+                return [
+                    str(bridge.property("currentTab")),
+                    str(page.property("currentSection")) if page is not None else "",
+                ]
+
+            out["settings_links"] = {
+                "asr_hint": open_settings_from(
+                    lambda: QMetaObject.invokeMethod(asr_hint_item, "actionTriggered")
+                ),
+                "ai_settings_button": open_settings_from(
+                    lambda: click_item(sfind("subtitleAiSettingsButton"))
+                ),
+                "ffmpeg_hint": open_settings_from(
+                    lambda: QMetaObject.invokeMethod(ffmpeg_hint_item, "actionTriggered")
+                ),
+            }
 
             results["srt_surface"] = out
 
@@ -6446,6 +6521,18 @@ DRIVER = textwrap.dedent(
                 "text": field.property("text"),
                 "sections": visible_sections(),
             }
+            # Main.qml's in-app links: openUpdates() (the status-bar update
+            # link) is openSettingsSection("updates"); Subtitles opens "models".
+            field.setProperty("text", "CUDA")
+            settings_tab.setProperty("currentSection", "general")
+            app.processEvents()
+            QMetaObject.invokeMethod(window, "openUpdates")
+            settle()
+            open_links = [settings_tab.property("currentSection"), field.property("text")]
+            QMetaObject.invokeMethod(window, "openSettingsSection", Q_ARG("QVariant", "models"))
+            settle()
+            open_links.append(settings_tab.property("currentSection"))
+            out["filter"]["open_links"] = open_links
 
             # ── Engine summary card: state, backend/precision, reason ──
             settings_section("engine")
@@ -6644,6 +6731,28 @@ DRIVER = textwrap.dedent(
             fallback += [controller.asrCloudFallback, bool(toggle.property("checked"))]
             dub["cloud_fallback"] = fallback
             dub["cloud_toggle_label"] = str(toggle.property("text"))
+            # No whisper-cli and no published pack (macOS today): the Homebrew
+            # guidance shows up front, install is off, and a re-check runs.
+            runtime_btn = mobj("downloadWhisperCppRuntimeButton")
+            whisper_guidance = [mvisible("asrRuntimeGuidanceLabel")]
+            controller._whisper_cpp_runtime_note = "brew install whisper-cpp"
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            whisper_guidance += [
+                mtext("asrRuntimeGuidanceLabel") if mvisible("asrRuntimeGuidanceLabel") else "",
+                bool(runtime_btn.property("enabled")),
+                str(runtime_btn.property("disabledReason")),
+            ]
+            click_item(mobj("asrRuntimeRefreshButton"))
+            controller._whisper_cpp_runtime_note = ""
+            controller.aiSettingsChanged.emit()
+            app.processEvents()
+            whisper_guidance += [
+                mvisible("asrRuntimeGuidanceLabel"),
+                bool(runtime_btn.property("enabled")),
+                controller.asr_refresh_calls,
+            ]
+            dub["whisper_guidance"] = whisper_guidance
 
             # ffmpeg: system copy found → status names it; licence link shown.
             ffmpeg_states = {}
@@ -9336,7 +9445,18 @@ class TestTextParagraphTabSmoke:
         assert hint["missing"][0] is True
         assert "brew install ffmpeg" in hint["missing"][1]
         assert hint["installed"] is False
-        assert hint["action_tab"] == "settings"
+        assert result["asr_hint"] == {
+            "ready": False,
+            "missing": [True, "Chưa cài runtime whisper.cpp."],
+            "no_video": False,
+            "rechecks_on_attach": 1,
+        }
+        # Every Subtitles → Settings link lands on Mô hình (first visit too).
+        assert result["settings_links"] == {
+            "asr_hint": ["settings", "models"],
+            "ai_settings_button": ["settings", "models"],
+            "ffmpeg_hint": ["settings", "models"],
+        }
         # FR-2.1: pinned dock outside the scroll area, primary reachable at the
         # documented 640×420 minimum, with progress + cancel affordances.
         assert result["dock_in_scroll"] is False
@@ -10659,6 +10779,7 @@ class TestSettingsTabSmoke:
         assert filt["none"] == {"sections": [], "visible": ["settingsFilterEmpty"], "checked": []}
         assert filt["cleared"] == {"text": "", "sections": ["export"], "empty_visible": False}
         assert filt["jump"] == {"text": "", "sections": ["updates"]}
+        assert filt["open_links"] == ["updates", "", "models"]
         # Engine summary card: the status bar's readiness word, the active
         # device · backend · precision, why (the detector note), and the
         # Tự động/CPU/GPU segmented backend.
@@ -10738,6 +10859,15 @@ class TestSettingsTabSmoke:
         assert "chưa có ASR cục bộ" in dub["auto_help"]
         assert dub["diar_devices"] == ["auto", "cpu", "cuda", "vulkan"]
         assert dub["cloud_fallback"] == [False, True, True]
+        assert dub["whisper_guidance"] == [
+            False,
+            "brew install whisper-cpp",
+            False,
+            "brew install whisper-cpp",
+            False,
+            True,
+            1,
+        ]
         assert dub["ffmpeg_license"] == [True, True]
         ff = dub["ffmpeg"]
         note = "Cài bằng Homebrew: brew install ffmpeg"

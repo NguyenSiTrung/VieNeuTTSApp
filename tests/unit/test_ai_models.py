@@ -10,6 +10,7 @@ import platform
 import sys
 import tarfile
 import threading
+import urllib.request
 import zipfile
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -84,6 +85,12 @@ def _local_download(monkeypatch: pytest.MonkeyPatch, files: dict[str, Path]) -> 
         assert url in files, f"unexpected download: {url}"
         return _stream_download(files[url].as_uri(), target, **kwargs)
 
+    # urlopen's default opener builds an SSL context on first use, and with
+    # sys.platform patched to "win32" that loads Windows-only certificate
+    # APIs. A file-only opener never builds one, whatever ran before.
+    file_opener = urllib.request.OpenerDirector()
+    file_opener.add_handler(urllib.request.FileHandler())
+    monkeypatch.setattr(urllib.request, "_opener", file_opener)
     monkeypatch.setattr(ai_models, "_stream_download", fake)
     return calls
 

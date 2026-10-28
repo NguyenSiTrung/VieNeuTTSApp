@@ -22,6 +22,8 @@ ColumnLayout {
     property bool glossaryExpanded: false
 
     signal languageSelected(string code)
+    // Cài đặt › <section> (the host routes it through Main.qml).
+    signal settingsRequested(string sectionId)
 
     objectName: "subtitleAiBar"
     visible: root.shown
@@ -184,10 +186,7 @@ ColumnLayout {
                 size: "sm"
                 text: qsTr("Mở Cài đặt › Mô hình")
                 tooltipText: qsTr("Mở phần cài đặt mô hình AI và nhận dạng giọng nói")
-                onClicked: {
-                    if (typeof bridge !== "undefined" && bridge !== null)
-                        bridge.setCurrentTab("settings");
-                }
+                onClicked: root.settingsRequested("models")
             }
         }
 

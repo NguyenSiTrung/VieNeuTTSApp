@@ -118,6 +118,16 @@ AppCard {
         return "";
     }
 
+    // In-app links to Cài đặt › <section>: Main.qml's openSettingsSection
+    // when hosted in the app window, else just the Settings tab.
+    function openSettingsSection(sectionId) {
+        const appWindow = root.Window.window;
+        if (appWindow && typeof appWindow.openSettingsSection === "function")
+            appWindow.openSettingsSection(sectionId);
+        else if (typeof bridge !== "undefined" && bridge !== null)
+            bridge.setCurrentTab("settings");
+    }
+
     function setStage(value) {
         if (value === root.stage)
             return;
@@ -320,6 +330,9 @@ AppCard {
             videoName: root.available ? subtitleController.videoName : ""
             busyReason: root.busyReason()
             asrReason: root.aiActionReason("asr")
+            asrSetupHint: (typeof controller !== "undefined" && controller
+                && typeof controller.asrSetupHint === "string") ? controller.asrSetupHint : ""
+            onSettingsRequested: (sectionId) => root.openSettingsSection(sectionId)
             Layout.fillWidth: true
         }
 
@@ -332,6 +345,7 @@ AppCard {
             llmReason: root.aiActionReason("llm")
             targetLanguage: root.translateTargetLanguage
             onLanguageSelected: (code) => { root.translateTargetLanguage = code; }
+            onSettingsRequested: (sectionId) => root.openSettingsSection(sectionId)
             Layout.fillWidth: true
         }
 

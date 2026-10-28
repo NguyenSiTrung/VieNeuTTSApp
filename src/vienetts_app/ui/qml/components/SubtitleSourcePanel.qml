@@ -20,18 +20,27 @@ ColumnLayout {
     property string videoName: ""
     property string busyReason: ""
     property string asrReason: ""
+    // FR-7.2: what transcription lacks ("" = an ASR backend can run).
+    property string asrSetupHint: ""
+
+    // Cài đặt › <section> (the host routes it through Main.qml).
+    signal settingsRequested(string sectionId)
 
     // Nothing in this panel exists outside the source stage, so the whole
     // column leaves the parent layout instead of holding on to a stale height.
     visible: !root.loaded || root.stageName === "source"
     spacing: Theme.spacingSm
 
-    // A newly attached video re-checks ffmpeg (cheap path lookups), so a copy
-    // installed outside the app since launch clears the missing hint.
+    // A newly attached video re-checks ffmpeg and the ASR runtime/models
+    // (cheap path lookups), so a copy installed outside the app since launch
+    // (Homebrew, apt, winget) clears its hint.
     onHasVideoChanged: {
-        if (root.hasVideo && typeof controller !== "undefined" && controller
-                && typeof controller.refreshFfmpegRuntimeStatus === "function")
+        if (!root.hasVideo || typeof controller === "undefined" || !controller)
+            return;
+        if (typeof controller.refreshFfmpegRuntimeStatus === "function")
             controller.refreshFfmpegRuntimeStatus();
+        if (typeof controller.refreshAsrRuntimeStatus === "function")
+            controller.refreshAsrRuntimeStatus();
     }
 
     function toLocalPath(url) {
@@ -287,10 +296,20 @@ ColumnLayout {
                     : qsTr("Cần ffmpeg để nhận dạng phụ đề và xuất video. %1")
                         .arg(ffmpegHint.status.note || qsTr("Cài ffmpeg rồi bấm \"Kiểm tra lại\" trong Cài đặt › Mô hình."))
                 actionText: qsTr("Mở Cài đặt")
-                onActionTriggered: {
-                    if (typeof bridge !== "undefined" && bridge !== null)
-                        bridge.setCurrentTab("settings");
-                }
+                onActionTriggered: root.settingsRequested("models")
+            }
+
+            // FR-7.2: no ASR backend can run (no whisper.cpp runtime/model,
+            // no faster-whisper, and no cloud opt-in with a Whisper API URL).
+            AppNotice {
+                objectName: "subtitleAsrMissingHint"
+                Layout.fillWidth: true
+                visible: root.hasVideo && root.asrSetupHint !== ""
+                tone: "warning"
+                title: qsTr("Chưa thể nhận dạng phụ đề")
+                message: root.asrSetupHint
+                actionText: qsTr("Mở Cài đặt › Mô hình")
+                onActionTriggered: root.settingsRequested("models")
             }
 
             Flow {

@@ -745,6 +745,9 @@ class AppController(QObject):
     # so they never rebuild the Settings rows.
     audioModelsChanged = Signal()
     ffmpegRuntimeChanged = Signal()
+    # asrSetupHint reads both the ASR settings and the installs, so it
+    # re-evaluates on either (both signals are forwarded here).
+    asrReadinessChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -968,6 +971,8 @@ class AppController(QObject):
         # so the bounded pool drain is not left waiting on an 80 MB pack.
         self._media_download_cancel = threading.Event()
         self._faster_whisper_available: bool | None = None
+        self.aiSettingsChanged.connect(self.asrReadinessChanged)
+        self.aiModelsInstallChanged.connect(self.asrReadinessChanged)
         # Download progress hops to the GUI thread through one generation-
         # checked relay per lane (FR-1.2): workers never write controller
         # state. The getter reads -1 while the lane is idle, so ticks still
@@ -8767,6 +8772,89 @@ class AppController(QObject):
 
         device = self.asrDevice
         return device if device in available_whisper_cpp_variants() else ""
+
+    @Property(str, notify=aiModelsInstallChanged)
+    def whisperCppRuntimeNote(self) -> str:
+        """Install guidance while no whisper-cli is found and this host has no pack ("" otherwise).
+
+        On macOS an unpublished pack carries the Homebrew hint, shown before an
+        install attempt rather than only as the failed install's error.
+        """
+        from vienetts_app.core.ai_models import (
+            AiModelInstallError,
+            is_whisper_cpp_installed,
+            resolve_whisper_cpp_variant,
+        )
+
+        if is_whisper_cpp_installed(self._data_dir):
+            return ""
+        try:
+            variant = resolve_whisper_cpp_variant(self._whisper_cpp_runtime_variant())
+        except AiModelInstallError:
+            return ""
+        return variant.unavailable_reason
+
+    @Slot()
+    def refreshAsrRuntimeStatus(self) -> None:
+        """Re-check whisper-cli and the Whisper models (e.g. after a Homebrew install)."""
+        self.aiModelsInstallChanged.emit()
+
+    def _whisper_model_available(self) -> bool:
+        """Whether whisper.cpp has a model: the configured one or any catalog model.
+
+        Mirrors ``asr._whisper_model_choice`` — auto mode falls back to the
+        largest installed catalog model.
+        """
+        from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS, is_asr_model_installed
+
+        return any(
+            is_asr_model_installed(model, self._data_dir)
+            for model in (self.asrModel, *WHISPER_GGUF_MODELS)
+        )
+
+    @Property(str, notify=asrReadinessChanged)
+    def asrSetupHint(self) -> str:
+        """What transcription lacks, with where to fix it ("" = an ASR backend can run).
+
+        Follows ``asr``'s dispatcher (FR-7.2): auto runs whisper.cpp (runtime +
+        any model) or an importable faster-whisper, and uploads only with the
+        cloud opt-in AND a Whisper API URL; an explicit whisper.cpp never falls
+        back; the API backend always has a URL (the LLM server's, else a local
+        default).
+        """
+        from vienetts_app.core.ai_models import is_whisper_cpp_installed
+
+        backend = self.asrBackend
+        if backend in {"openai_api", "faster_whisper"}:
+            return ""
+        has_cli = is_whisper_cpp_installed(self._data_dir)
+        has_model = self._whisper_model_available()
+        if has_cli and has_model:
+            return ""
+        if backend == "auto":
+            if "faster_whisper" in self.asrBackends:
+                return ""
+            if self._settings.asr_cloud_fallback and self._settings.asr_api_base_url.strip():
+                return ""
+        if not has_cli and not has_model:
+            missing = self.tr("Chưa cài runtime whisper.cpp và chưa tải mô hình Whisper.")
+        elif not has_cli:
+            missing = self.tr("Chưa cài runtime whisper.cpp.")
+        else:
+            missing = self.tr("Chưa tải mô hình Whisper.")
+        if backend != "auto":
+            fix = self.tr("Hãy cài trong Cài đặt › Mô hình.")
+        elif self._settings.asr_cloud_fallback:
+            fix = self.tr(
+                "Hãy cài trong Cài đặt › Mô hình, hoặc nhập URL Whisper API "
+                "để dùng dự phòng đám mây."
+            )
+        else:
+            fix = self.tr(
+                "Hãy cài trong Cài đặt › Mô hình, hoặc bật “Cho phép dự phòng đám mây” "
+                "và nhập URL Whisper API."
+            )
+        return f"{missing} {fix}"
 
     @Property(bool, notify=aiModelsInstallChanged)
     def asrDownloadBusy(self) -> bool:

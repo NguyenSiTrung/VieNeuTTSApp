@@ -16,7 +16,9 @@ import math
 import os
 import re
 import tempfile
+import unicodedata
 import uuid
+import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -94,7 +96,20 @@ class RawSegment:
     words: tuple[tuple[int, int, str], ...] = ()
     speech_start_ms: int | None = None
     speech_end_ms: int | None = None
+    # Decoder scores for :func:`filter_hallucinations`; None when the backend has none.
     avg_logprob: float | None = None
+    no_speech_prob: float | None = None
+    compression_ratio: float | None = None
+
+
+_SCORE_FIELDS = ("avg_logprob", "no_speech_prob", "compression_ratio")
+
+
+def _opt_float(value: Any) -> float | None:
+    """A backend's numeric score as float; None when absent or not a number."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
 
 
 def _strip_non_speech(text: str) -> str:
@@ -484,6 +499,166 @@ def normalize_asr_segments_to_cues(
     return cues
 
 
+# Whisper's own decode-failure gates (openai-whisper / faster-whisper defaults).
+NO_SPEECH_PROB_THRESHOLD = 0.6
+LOGPROB_THRESHOLD = -1.0
+COMPRESSION_RATIO_THRESHOLD = 2.4
+# Below this a suspicious line (outro phrase, 2× repeat) counts as unconfident.
+LOW_CONFIDENCE_LOGPROB = -0.7
+OUTRO_TAIL_MS = 30_000
+# Outro/credit lines Whisper is known to invent over silence or music. Matched as whole
+# words after normalization; removed only when unconfident or in a speechless tail.
+HALLUCINATION_PHRASES: tuple[str, ...] = (
+    "subscribe cho kênh",
+    "Ghiền Mì Gõ",
+    "La La School",
+    "hãy đăng ký kênh",
+    "để không bỏ lỡ những video hấp dẫn",
+    "Cảm ơn các bạn đã theo dõi",
+    "Cảm ơn các bạn đã xem video",
+    "Hẹn gặp lại các bạn trong những video tiếp theo",
+    "Phụ đề được thực hiện bởi",
+    "cộng đồng Amara.org",
+    "Subtitles by the Amara.org community",
+    "Thanks for watching",
+    "Thank you for watching",
+    "Please subscribe",
+    "like and subscribe",
+)
+
+
+def _normalized_line(text: str) -> str:
+    """Casefolded speech words of ``text``, punctuation dropped, for line comparison."""
+    folded = unicodedata.normalize("NFC", _strip_non_speech(text)).casefold()
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in folded).split())
+
+
+_HALLUCINATION_LINES = tuple(_normalized_line(p) for p in HALLUCINATION_PHRASES)
+
+
+def _compression_ratio(text: str) -> float:
+    """openai-whisper's measure: UTF-8 length over its zlib-compressed length."""
+    data = text.encode("utf-8")
+    return len(data) / len(zlib.compress(data)) if data else 0.0
+
+
+def _low_confidence(seg: RawSegment) -> bool:
+    return (seg.avg_logprob is not None and seg.avg_logprob < LOW_CONFIDENCE_LOGPROB) or (
+        seg.no_speech_prob is not None and seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD
+    )
+
+
+def filter_hallucinations(
+    segments: Sequence[RawSegment],
+    *,
+    duration_ms: int,
+    notes: list[str] | None = None,
+    has_speech: Callable[[int, int], bool] | None = None,
+) -> list[RawSegment]:
+    """Drop the segments Whisper is known to invent; counts go to ``notes``.
+
+    In order:
+
+    1. ``no_speech_prob > 0.6`` with ``avg_logprob < -1.0``. Only when the backend
+       supplies both: faster-whisper and API ``verbose_json`` do, whisper.cpp's
+       JSON has no ``no_speech_prob``, so this rule never fires for it.
+    2. ``compression_ratio > 2.4`` — the backend's own (faster-whisper, API) or
+       else the segment text's (whisper.cpp, SRT).
+    3. A run of ≥ 3 consecutive identical normalized lines keeps its first; a
+       2× repeat is collapsed only when one of the two is unconfident.
+    4. A known outro/credit line (:data:`HALLUCINATION_PHRASES`) is removed when
+       unconfident, or when it starts in the final 30 s of ``duration_ms`` and
+       ``has_speech(start_ms, end_ms)`` (a VAD over the audio) finds no speech.
+       Without ``has_speech`` only the confidence test applies.
+    """
+    silent = repetitive = repeated = outros = 0
+    scored: list[RawSegment] = []
+    for seg in segments:
+        if (
+            seg.no_speech_prob is not None
+            and seg.avg_logprob is not None
+            and seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD
+            and seg.avg_logprob < LOGPROB_THRESHOLD
+        ):
+            silent += 1
+            continue
+        ratio = seg.compression_ratio
+        if ratio is None:
+            ratio = _compression_ratio(seg.text)
+        if ratio > COMPRESSION_RATIO_THRESHOLD:
+            repetitive += 1
+            continue
+        scored.append(seg)
+
+    lines = [_normalized_line(seg.text) for seg in scored]
+    collapsed: list[RawSegment] = []
+    i = 0
+    while i < len(scored):
+        j = i + 1
+        while lines[i] and j < len(scored) and lines[j] == lines[i]:
+            j += 1
+        run = scored[i:j]
+        if len(run) >= 3 or (len(run) == 2 and any(_low_confidence(s) for s in run)):
+            collapsed.append(run[0])
+            repeated += len(run) - 1
+        else:
+            collapsed.extend(run)
+        i = j
+
+    total_ms = duration_ms if duration_ms > 0 else max((s.end_ms for s in segments), default=0)
+    tail_start_ms = total_ms - OUTRO_TAIL_MS
+    kept: list[RawSegment] = []
+    for seg in collapsed:
+        padded = f" {_normalized_line(seg.text)} "
+        if any(f" {phrase} " in padded for phrase in _HALLUCINATION_LINES) and (
+            _low_confidence(seg)
+            or (
+                seg.start_ms >= tail_start_ms
+                and has_speech is not None
+                and not has_speech(seg.start_ms, seg.end_ms)
+            )
+        ):
+            outros += 1
+            continue
+        kept.append(seg)
+
+    counts = (
+        (silent, "không có lời nói"),
+        (repetitive, "lặp chữ"),
+        (repeated, "dòng lặp lại"),
+        (outros, "câu kết/quảng bá kênh"),
+    )
+    dropped = len(segments) - len(kept)
+    if notes is not None and dropped:
+        detail = ", ".join(f"{n} {label}" for n, label in counts if n)
+        notes.append(f"Đã lọc {dropped} đoạn nghi là ảo giác của Whisper: {detail}.")
+    return kept
+
+
+def _energy_speech_check(wav_path: Path, threshold_db: float = -42.0) -> Callable[[int, int], bool]:
+    """``has_speech`` for :func:`filter_hallucinations`: any 10 ms frame above the gate.
+
+    The same −42 dBFS energy gate as ``refine_cues_speech_bounds``; an unreadable
+    slice counts as speech, so the segment is kept.
+    """
+    gate = 10.0 ** (threshold_db / 20.0)
+    win = MODEL_SAMPLE_RATE // 100
+
+    def has_speech(start_ms: int, end_ms: int) -> bool:
+        try:
+            samples, _ = read_wav_range(
+                wav_path, start_ms * MODEL_SAMPLE_RATE // 1000, end_ms * MODEL_SAMPLE_RATE // 1000
+            )
+        except Exception:  # noqa: BLE001 - unknown audio keeps the segment
+            return True
+        frames = samples[: samples.size // win * win].reshape(-1, win)
+        if frames.size == 0:
+            return bool(samples.size) and float(np.sqrt(np.mean(samples * samples))) > gate
+        return bool(np.any(np.sqrt(np.mean(frames * frames, axis=1)) > gate))
+
+    return has_speech
+
+
 def _resolve_threads(config: AsrConfig) -> int:
     if int(config.threads) > 0:
         return max(1, min(64, int(config.threads)))
@@ -569,6 +744,7 @@ def _run_faster_whisper(
                         words=seg_words,
                         speech_start_ms=sp_start,
                         speech_end_ms=sp_end,
+                        **{name: _opt_float(getattr(seg, name, None)) for name in _SCORE_FIELDS},
                     )
                 )
             if progress_cb is not None and total_s > 0:
@@ -928,6 +1104,7 @@ def _upload_whisper_api(
                     words=seg_words,
                     speech_start_ms=sp_start,
                     speech_end_ms=sp_end,
+                    **{name: _opt_float(item.get(name)) for name in _SCORE_FIELDS},
                 )
             )
     elif (
@@ -1096,8 +1273,19 @@ def _ensure_16k_wav(
     return wav, temp_dir
 
 
-def _asr_cache_key(wav_path: Path, config: AsrConfig, *, key_path: Path | None = None) -> str:
-    """Segments-cache key for ``wav_path``; ``key_path`` names it as a legacy alias."""
+def _asr_cache_key(
+    wav_path: Path,
+    config: AsrConfig,
+    *,
+    data_dir: Path | None = None,
+    key_path: Path | None = None,
+) -> str:
+    """Segments-cache key for ``wav_path``; ``key_path`` names it as a legacy alias.
+
+    ``:vad`` marks a backend that may run whisper.cpp while its Silero VAD model is
+    installed, so installing or removing the model re-runs; keys without it are
+    unchanged, so caches (and legacy aliases) from before still hit.
+    """
     try:
         st = wav_path.stat()
     except OSError:
@@ -1109,6 +1297,9 @@ def _asr_cache_key(wav_path: Path, config: AsrConfig, *, key_path: Path | None =
     key = f"{named}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
     if config.api_base_url.strip():
         key += f":{config.api_base_url.strip()}:{config.api_model.strip()}"
+    vad_model = audio_model_path(WHISPER_VAD_MODEL_ID, data_dir)
+    if backend in ("auto", "whisper_cpp") and vad_model is not None:
+        key += ":vad"
     return key
 
 
@@ -1155,9 +1346,6 @@ def _load_cached_segments(
             with contextlib.suppress(TypeError, ValueError):
                 sp_end = int(item["speech_end_ms"])
         sp_start, sp_end = _clamp_speech_bounds(s_ms, e_ms, sp_start, sp_end, words)
-        avg_logprob: float | None = None
-        with contextlib.suppress(TypeError, ValueError):
-            avg_logprob = float(item["avg_logprob"]) if "avg_logprob" in item else None
         out.append(
             RawSegment(
                 s_ms,
@@ -1167,7 +1355,7 @@ def _load_cached_segments(
                 words=words,
                 speech_start_ms=sp_start,
                 speech_end_ms=sp_end,
-                avg_logprob=avg_logprob,
+                **{name: _opt_float(item.get(name)) for name in _SCORE_FIELDS},
             )
         )
     return out or None
@@ -1190,8 +1378,10 @@ def _store_cached_segments(work_dir: Path | None, key: str, segments: Sequence[R
             item["speech_start_ms"] = int(s.speech_start_ms)
         if s.speech_end_ms is not None:
             item["speech_end_ms"] = int(s.speech_end_ms)
-        if s.avg_logprob is not None:
-            item["avg_logprob"] = float(s.avg_logprob)
+        for name in _SCORE_FIELDS:
+            score = getattr(s, name)
+            if score is not None:
+                item[name] = float(score)
         raw.append(item)
     payload = {"asr_version": ASR_VERSION, "key": key, "segments": raw}
     with contextlib.suppress(OSError):
@@ -1230,10 +1420,13 @@ def transcribe_media_to_cues(
         # mono WAV is used in place, and nothing may be written beside the user's file.
         out_dir = work_dir if work_dir is not None else Path(temp_dir_obj.name)
 
-        cache_key = _asr_cache_key(wav_path, cfg)
+        cache_key = _asr_cache_key(wav_path, cfg, data_dir=data_dir)
         # A legacy input_16k.wav adopted as source_16k.wav keeps its size and
         # mtime, so segments cached against the old name still apply.
-        aliases = [_asr_cache_key(wav_path, cfg, key_path=p) for p in cache_key_paths(wav_path)[1:]]
+        aliases = [
+            _asr_cache_key(wav_path, cfg, data_dir=data_dir, key_path=p)
+            for p in cache_key_paths(wav_path)[1:]
+        ]
         cached = _load_cached_segments(work_dir, cache_key, aliases=aliases)
         if cached is not None:
             if progress_cb is not None:
@@ -1330,6 +1523,14 @@ def transcribe_media_to_cues(
             if raw:
                 _store_cached_segments(work_dir, cache_key, raw)
 
+        # The cache keeps the raw segments with their scores; filtering runs on every
+        # load, so a better filter needs no re-transcription.
+        raw = filter_hallucinations(
+            raw,
+            duration_ms=int(round(_wav_duration_s(wav_path) * 1000)),
+            notes=notes,
+            has_speech=_energy_speech_check(wav_path),
+        )
         cues = normalize_asr_segments_to_cues(raw)
         if not cues:
             raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")

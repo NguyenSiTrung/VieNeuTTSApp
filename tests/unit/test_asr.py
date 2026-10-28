@@ -86,16 +86,87 @@ def test_non_speech_filtering_duration_split_and_backward_micro_merge() -> None:
     assert cues[2].duration_ms <= 7000
 
 
+def test_filter_hallucinations_rules_confidence_tail_and_notes() -> None:
+    outro = "Hãy subscribe cho kênh Ghiền Mì Gõ để không bỏ lỡ những video hấp dẫn"
+    thanks = "Cảm ơn các bạn đã theo dõi."
+
+    def seg(start: int, text: str, **scores: float) -> RawSegment:
+        return RawSegment(start, start + 1000, text, **scores)  # type: ignore[arg-type]
+
+    segments = [
+        seg(0, "Xin chào các bạn.", avg_logprob=-0.2, no_speech_prob=0.1),
+        seg(2000, "Ừm.", avg_logprob=-1.4, no_speech_prob=0.9),  # dropped: no speech
+        seg(4000, "Ừm à.", avg_logprob=-0.5, no_speech_prob=0.9),  # one signal only: kept
+        seg(6000, "Hôm nay trời đẹp.", avg_logprob=-1.5),  # whisper.cpp: no no_speech_prob
+        seg(8000, "Rất vui.", compression_ratio=2.6),  # dropped: native ratio
+        seg(10_000, "la " * 40),  # dropped: ratio of the text itself
+        seg(20_000, "Cảm ơn."),  # 4× the same normalized line → one
+        seg(22_000, "cảm ơn"),
+        seg(24_000, "Cảm ơn!"),
+        seg(26_000, "CẢM ƠN"),
+        seg(28_000, "Đúng rồi.", avg_logprob=-0.2),  # confident 2× repeat: kept
+        seg(30_000, "Đúng rồi.", avg_logprob=-0.2),
+        seg(32_000, "Vâng.", avg_logprob=-0.2),  # low-confidence 2× repeat → one
+        seg(34_000, "Vâng.", avg_logprob=-0.9),
+        seg(50_000, outro, avg_logprob=-0.2),  # confident, mid-video: kept
+        seg(60_000, "Một câu khác.", avg_logprob=-0.2),
+        seg(100_000, outro, avg_logprob=-0.9),  # low confidence, trailing: removed
+        seg(110_000, thanks, avg_logprob=-0.2),  # confident, final 30 s: VAD decides
+    ]
+    speech_calls: list[tuple[int, int]] = []
+
+    def run(speech: bool, notes: list[str]) -> list[str]:
+        def has_speech(start_ms: int, end_ms: int) -> bool:
+            speech_calls.append((start_ms, end_ms))
+            return speech
+
+        kept = asr.filter_hallucinations(
+            segments, duration_ms=120_000, notes=notes, has_speech=has_speech
+        )
+        return [s.text for s in kept]
+
+    notes: list[str] = []
+    assert run(True, notes) == [
+        "Xin chào các bạn.",
+        "Ừm à.",
+        "Hôm nay trời đẹp.",
+        "Cảm ơn.",
+        "Đúng rồi.",
+        "Đúng rồi.",
+        "Vâng.",
+        outro,
+        "Một câu khác.",
+        thanks,
+    ]
+    assert notes == [
+        "Đã lọc 8 đoạn nghi là ảo giác của Whisper: 1 không có lời nói, 2 lặp chữ, "
+        "4 dòng lặp lại, 1 câu kết/quảng bá kênh."
+    ]
+    # The VAD is consulted only for a confident outro phrase inside the final 30 s.
+    assert speech_calls == [(110_000, 111_000)]
+    notes.clear()
+    assert thanks not in run(False, notes)
+    assert notes[0].endswith("2 câu kết/quảng bá kênh.")
+    assert asr.filter_hallucinations(segments[:1], duration_ms=0, notes=notes) == segments[:1]
+    assert len(notes) == 1
+
+
 def test_transcribe_with_faster_whisper_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "speech.wav", 16_000)
+    # Speech energy only in 4.0..4.9 s: the energy VAD keeps the outro said there.
+    samples = np.zeros(16_000 * 6, dtype=np.float32)
+    samples[64_000:78_400] = 0.3 * np.sin(np.arange(14_400, dtype=np.float32) * 0.2)
+    wav = write_wav_file(samples, tmp_path / "speech.wav", 16_000)
 
     class _FakeSeg:
-        def __init__(self, start: float, end: float, text: str) -> None:
+        def __init__(self, start: float, end: float, text: str, **scores: float) -> None:
             self.start = start
             self.end = end
             self.text = text
+            self.avg_logprob = scores.get("avg_logprob", -0.2)
+            self.no_speech_prob = scores.get("no_speech_prob", 0.05)
+            self.compression_ratio = scores.get("compression_ratio", 1.1)
 
     class _FakeInfo:
         duration = 4.0
@@ -111,6 +182,9 @@ def test_transcribe_with_faster_whisper_adapter(
                     [
                         _FakeSeg(0.0, 1.8, " Câu thứ nhất. "),
                         _FakeSeg(2.0, 3.8, " Câu thứ hai. "),
+                        _FakeSeg(3.8, 4.0, " Ừm. ", avg_logprob=-1.3, no_speech_prob=0.95),
+                        _FakeSeg(4.0, 4.9, " Cảm ơn các bạn đã theo dõi. "),
+                        _FakeSeg(5.0, 6.0, " Hẹn gặp lại các bạn trong những video tiếp theo. "),
                     ]
                 ),
                 _FakeInfo(),
@@ -121,14 +195,31 @@ def test_transcribe_with_faster_whisper_adapter(
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
 
     progress_steps: list[float] = []
+    notes: list[str] = []
+    cfg = AsrConfig(backend="faster_whisper", model="base", language="vi")
+    work_dir = tmp_path / "work"
     cues = transcribe_media_to_cues(
         wav,
-        AsrConfig(backend="faster_whisper", model="base", language="vi"),
+        cfg,
+        work_dir=work_dir,
         progress_cb=lambda p, _msg: progress_steps.append(p),
+        notes=notes,
     )
-    assert [c.text for c in cues] == ["Câu thứ nhất.", "Câu thứ hai."]
+    # faster-whisper's native no_speech_prob/avg_logprob feed the hallucination filter, and
+    # a confident outro line is removed only over silence in the final 30 s.
+    assert [c.text for c in cues] == [
+        "Câu thứ nhất.",
+        "Câu thứ hai.",
+        "Cảm ơn các bạn đã theo dõi.",
+    ]
+    assert notes == [
+        "Đã lọc 2 đoạn nghi là ảo giác của Whisper: 1 không có lời nói, 1 câu kết/quảng bá kênh."
+    ]
     assert cues[0].start_ms == 0 and cues[0].end_ms == 1800
     assert progress_steps and progress_steps[-1] == pytest.approx(1.0)
+    # The cache keeps the raw segments with their scores, so a cache hit filters the same.
+    fake_mod.WhisperModel = None  # type: ignore[attr-defined]
+    assert transcribe_media_to_cues(wav, cfg, work_dir=work_dir) == cues
 
 
 def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
@@ -145,6 +236,15 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
                 "segments": [
                     {"start": 0.1, "end": 1.4, "text": "Xin chào từ máy chủ ASR."},
                     {"start": 1.6, "end": 2.9, "text": "Phụ đề thứ hai."},
+                    # verbose_json scores feed the hallucination filter.
+                    {
+                        "start": 2.9,
+                        "end": 3.0,
+                        "text": "Ừm.",
+                        "avg_logprob": -1.2,
+                        "no_speech_prob": 0.8,
+                        "compression_ratio": 0.9,
+                    },
                 ]
             }
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -171,8 +271,7 @@ def test_transcribe_with_openai_compatible_api_endpoint(tmp_path: Path) -> None:
                 api_base_url=f"http://127.0.0.1:{port}/v1",
             ),
         )
-        assert len(cues) == 2
-        assert cues[0].text == "Xin chào từ máy chủ ASR."
+        assert [c.text for c in cues] == ["Xin chào từ máy chủ ASR.", "Phụ đề thứ hai."]
         assert cues[0].start_ms == 100 and cues[0].end_ms == 1400
         assert b'name="model"\r\n\r\nwhisper-1\r\n' in bodies[-1]
         transcribe_media_to_cues(
@@ -301,12 +400,27 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
     assert json.loads(segments_cache.read_text(encoding="utf-8"))["asr_version"] == asr.ASR_VERSION
 
+    # 2d. Installing or removing the whisper.cpp VAD model re-runs; an unchanged state hits.
+    from vienetts_app.core.ai_models import AUDIO_MODELS, WHISPER_VAD_MODEL_ID
+
+    vad_spec = AUDIO_MODELS[WHISPER_VAD_MODEL_ID]
+    vad_path = model_dir / vad_spec.filename
+    with vad_path.open("wb") as fh:
+        fh.truncate(vad_spec.size_bytes)
+    for _ in range(2):
+        transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 3
+    vad_path.unlink()
+    for _ in range(2):
+        transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 4
+
     # 3. Modifying the source WAV invalidates both the shared WAV sidecar and segment cache
     stereo_48k_2 = np.zeros((96_000, 2), dtype=np.float32)
     sf.write(str(src_wav), stereo_48k_2, 48_000, subtype="PCM_16")
     cues3 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
     assert [c.text for c in cues3] == ["Xin chào từ whisper-cli."]
-    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 3
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 5
     assert sf.info(str(shared)).frames == 32_000
 
 
@@ -611,6 +725,15 @@ def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
                         (b" bi\xe1\xbb\x87t", 2600, 3900, 0.6),  # overruns the segment end
                     ],
                 ),
+                (  # a low-confidence echo: its token probabilities collapse it into the line above
+                    3500,
+                    4000,
+                    b" T\xe1\xba\xa1m bi\xe1\xbb\x87t",
+                    [
+                        (b" T\xe1\xba\xa1m", 3500, 3700, 0.2),
+                        (b" bi\xe1\xbb\x87t", 3700, 4000, 0.2),
+                    ],
+                ),
             ]
         )
     )
@@ -648,6 +771,7 @@ def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
         return [json.loads(line) for line in args_log.read_text(encoding="utf-8").splitlines()]
 
     progress: list[float] = []
+    notes: list[str] = []
     work_dir = tmp_path / "cache"
     cfg = AsrConfig(backend="whisper_cpp", model="base", device="cpu", threads=6)
     cues = transcribe_media_to_cues(
@@ -656,9 +780,11 @@ def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
         work_dir=work_dir,
         data_dir=tmp_path,
         progress_cb=lambda p, _m: progress.append(p),
+        notes=notes,
     )
     # Segments come from the JSON-full output; the SRT written beside it is never read.
     assert [c.text for c in cues] == ["Xin chào các bạn.", "Tạm biệt"]
+    assert notes == ["Đã lọc 1 đoạn nghi là ảo giác của Whisper: 1 dòng lặp lại."]
     assert (cues[1].start_ms, cues[1].end_ms) == (2000, 3500)
     assert (cues[1].speech_start_ms, cues[1].speech_end_ms) == (2100, 3500)
     (args,) = logged_args()
@@ -684,7 +810,7 @@ def test_whisper_cpp_flags_json_full_words_cache_dir_progress_and_timeout(
     assert not list(out_dir.iterdir())
     # Tokens merge into words (special tokens skipped, split UTF-8 rejoined), clamped to
     # their segment; text-token probabilities give avg_logprob.
-    assert [s.words for s in segments] == [
+    assert [s.words for s in segments[:2]] == [
         ((0, 400, "Xin"), (400, 900, "chào"), (900, 1300, "các"), (1300, 1800, "bạn.")),
         ((2100, 2600, "Tạm"), (2600, 3500, "biệt")),
     ]

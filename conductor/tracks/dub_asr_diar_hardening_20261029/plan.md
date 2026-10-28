@@ -206,7 +206,7 @@ Test seams and fakes:
     - A cache without the current `asr_version` re-runs.
   - Green implementation: build the argv; add the JSON-full parser; move the output prefix; version the cache key.
 
-- [~] **Task 4.2: Hallucination filter for every backend (FR-3.2)**
+- [x] **Task 4.2: Hallucination filter for every backend (FR-3.2)**
   <!-- files: src/vienetts_app/core/asr.py, tests/unit/test_asr.py -->
   - Red tests:
     - Drops a segment when `no_speech_prob > 0.6` and `avg_logprob < -1.0`, and when `compression_ratio > 2.4`.
@@ -216,7 +216,7 @@ Test seams and fakes:
     - faster-whisper, whisper.cpp JSON (token probabilities → `avg_logprob`) and API `verbose_json` all feed the filter.
   - Green implementation: add `filter_hallucinations(segments, *, duration_ms, notes)` and a phrase list (vi/en); call it before `normalize_asr_segments_to_cues`.
 
-- [ ] **Task 4.3: Defaults, installed-model fallback, cloud-fallback gating, typed backend errors, detected language (FR-3.3, FR-3.4)**
+- [~] **Task 4.3: Defaults, installed-model fallback, cloud-fallback gating, typed backend errors, detected language (FR-3.3, FR-3.4)**
   <!-- files: src/vienetts_app/core/asr.py, src/vienetts_app/core/models.py, tests/unit/test_asr.py, tests/unit/test_settings.py -->
   - Red tests:
     - **Defaults:** `Settings().asr_model == "large-v3-turbo-q5_0"`, while a stored `"base"` loads as `"base"`.

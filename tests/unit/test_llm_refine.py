@@ -10,6 +10,7 @@ import pytest
 
 from vienetts_app.core.llm_refine import (
     LANGUAGE_CHARS_PER_SEC,
+    ChatResult,
     LlmConfig,
     LlmRefineError,
     max_chars_for_window,
@@ -166,12 +167,19 @@ def test_refine_cues_with_llm_uses_speech_duration_and_post_cue_slack(
         messages: list[dict[str, str]],
         *,
         temperature: float = 0.2,
-    ) -> str:
+        json_mode: bool = False,
+        cancel_check=None,
+    ) -> ChatResult:
         captured_messages.append(messages)
         items = json.loads(messages[-1]["content"])
-        return json.dumps(
-            [{"index": it["index"], "speaker": it["speaker"], "text": it["text"]} for it in items],
-            ensure_ascii=False,
+        return ChatResult(
+            json.dumps(
+                [
+                    {"index": it["index"], "speaker": it["speaker"], "text": it["text"]}
+                    for it in items
+                ],
+                ensure_ascii=False,
+            )
         )
 
     monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)

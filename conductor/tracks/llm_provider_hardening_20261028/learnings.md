@@ -32,3 +32,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## 2026-10-28 - Phase 1 Task 1.1: Shared LLM transport
+- Provider errors must redact the configured API key even when the provider echoes it in its response body.
+- Beads on this host does not support `bd ready --epic`; use `bd ready` and inspect the tracked issue IDs.
+- Full gate on linux-aarch64: 1590 passed, 5 skipped, 6 Qwen/GGUF manifest failures matching the documented unsupported x64 host baseline.

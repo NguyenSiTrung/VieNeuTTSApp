@@ -10,26 +10,13 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+from vienetts_app.core.llm_client import ChatResult, LlmConfig, LlmRefineError, post_chat_completion
 from vienetts_app.core.subtitles import Cue, clean_cue_text
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
-
-
-class LlmRefineError(RuntimeError):
-    """An LLM refinement request failed; message is user-actionable."""
-
-
-@dataclass(frozen=True)
-class LlmConfig:
-    base_url: str = "http://localhost:11434/v1"
-    api_key: str = ""
-    model: str = "qwen2.5:7b"
-    timeout_s: float = 60.0
 
 
 LANGUAGE_CHARS_PER_SEC: dict[str, float] = {
@@ -92,55 +79,27 @@ def _post_chat_completion(
     config: LlmConfig,
     messages: list[dict[str, str]],
     *,
-    temperature: float = 0.2,
-) -> str:
-    base_url = (config.base_url or "").strip().rstrip("/")
-    if not base_url:
-        raise LlmRefineError("Chưa cấu hình địa chỉ máy chủ LLM (Base URL) trong Cài đặt.")
-    model = (config.model or "").strip() or "qwen2.5:7b"
-    url = f"{base_url}/chat/completions"
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": float(temperature),
-    }
-    data = json.dumps(payload, ensure_ascii=False).encode()
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    if config.api_key.strip():
-        headers["Authorization"] = f"Bearer {config.api_key.strip()}"
-
-    req = Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urlopen(req, timeout=max(1.0, float(config.timeout_s))) as resp:  # noqa: S310
-            raw = resp.read().decode("utf-8", errors="replace")
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        raise LlmRefineError(f"Không thể kết nối tới LLM ({url}): {exc}") from exc
-
-    try:
-        parsed = json.loads(raw)
-        choices = parsed.get("choices") or []
-        content = choices[0]["message"]["content"]
-        return str(content or "").strip()
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise LlmRefineError(f"Phản hồi từ LLM không đúng định dạng OpenAI: {exc}") from exc
+    temperature: float | None = 0.2,
+    json_mode: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
+) -> ChatResult:
+    return post_chat_completion(
+        config, messages, temperature=temperature, json_mode=json_mode, cancel_check=cancel_check
+    )
 
 
 def probe_llm_connection(config: LlmConfig) -> tuple[bool, str]:
     """Send a lightweight ping completion to verify ``config``."""
     try:
         reply = _post_chat_completion(
-            config,
+            replace(config, max_retries=0),
             [
                 {"role": "system", "content": "Reply with OK."},
                 {"role": "user", "content": "TEST_PING"},
             ],
             temperature=0.0,
         )
-        return True, f"Kết nối thành công ({config.model}): {reply[:40]}"
+        return True, f"Kết nối thành công ({config.model}): {reply.content[:40]}"
     except LlmRefineError as exc:
         return False, str(exc)
 
@@ -275,7 +234,7 @@ def refine_cues_with_llm(
                 {"role": "user", "content": user_prompt},
             ],
         )
-        out.extend(_parse_refined_batch(reply, batch))
+        out.extend(_parse_refined_batch(reply.content, batch))
         if progress_cb is not None:
             progress_cb(min(1.0, len(out) / len(cue_list)))
 

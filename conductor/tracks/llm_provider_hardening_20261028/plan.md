@@ -12,7 +12,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
 <!-- execution: parallel -->
 <!-- depends: -->
 
-- [ ] **Task 1.1: `core/llm_client.py` — OpenAI-compatible transport with error taxonomy, retries and capability downgrade**
+- [x] **Task 1.1: `core/llm_client.py` — OpenAI-compatible transport with error taxonomy, retries and capability downgrade**
   <!-- files: src/vienetts_app/core/llm_client.py, src/vienetts_app/core/llm_refine.py, tests/unit/test_llm_client.py, tests/unit/test_llm_refine.py -->
   - Red tests (`tests/unit/test_llm_client.py`, mock `HTTPServer`):
     - `LlmRefineError` kind/status/transient for 401, 403, 404, 400, 422, 429, 500, 503, connection refused, timeout; message contains the provider's `error.message` from a JSON body and a trimmed raw body for non-JSON; the API key never appears in any message.

@@ -16,7 +16,7 @@ from typing import Any
 from vienetts_app.core.llm_client import ChatResult, LlmConfig, LlmRefineError, post_chat_completion
 from vienetts_app.core.subtitles import Cue, clean_cue_text
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
+_REASONING_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 
 
 LANGUAGE_CHARS_PER_SEC: dict[str, float] = {
@@ -43,6 +43,20 @@ LANGUAGE_CHARS_PER_SEC: dict[str, float] = {
     "japanese": 6.0,
     "ko": 5.5,
     "korean": 5.5,
+}
+
+LANGUAGE_NAMES = {
+    "vi": "Vietnamese",
+    "en": "English",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
 }
 
 
@@ -109,64 +123,91 @@ test_llm_connection.__test__ = False  # type: ignore[attr-defined]
 
 
 def _system_prompt_for_task(task: str, target_language: str) -> str:
+    contract = (
+        "Context is read-only; never return or change context cues. "
+        'Return only a JSON object {"cues": [{"index": ..., "text": ..., "speaker": ...}]}.'
+    )
     if task == "fit_timing":
         return (
             "You are a professional video dubbing script editor. "
-            "For each subtitle cue in the JSON array, if its text is longer than `maxChars`, "
+            "For each subtitle cue, if its text is longer than `maxChars`, "
             "condense/rephrase it naturally in the same language so its character length is "
-            "at most `maxChars` while preserving the core meaning and spoken tone. "
-            "Return ONLY a valid JSON array of objects with `index`, `speaker`, and `text`."
+            "at most `maxChars` while preserving the core meaning and spoken tone. " + contract
         )
     if task == "translate_dub":
         clean_lang = (target_language or "").strip()
-        lang = (
-            "Vietnamese" if not clean_lang or clean_lang.lower() in ("auto", "vi") else clean_lang
-        )
+        lang = LANGUAGE_NAMES.get(clean_lang.lower(), clean_lang) if clean_lang else "Vietnamese"
+        if clean_lang.lower() == "auto":
+            lang = "Vietnamese"
         return (
             f"You are a professional video dubbing translator. "
             f"Translate each cue's `text` into natural spoken {lang} for voiceover dubbing. "
             f"Keep each translated cue concise (ideally <= `maxChars` characters) so it fits the "
-            f"speaker's timing window without rushing. "
-            f"Return ONLY a valid JSON array of objects with `index`, `speaker`, and `text`."
+            f"speaker's timing window without rushing. " + contract
         )
     # Default: refine_asr
     return (
         "You are an expert ASR & speaker diarization post-editor for video dubbing. "
         "Fix speech recognition typos, homophones, capitalization, and punctuation in each cue's "
         "`text`, and fix obvious `speaker` label inconsistencies across conversational turns. "
-        "Keep the same language and preserve every cue's `index`. "
-        "Return ONLY a valid JSON array of objects with `index`, `speaker`, and `text`."
+        "Use only labels in `allowedSpeakers`. "
+        "Keep the same language and preserve every cue's `index`. " + contract
     )
 
 
-def _parse_refined_batch(raw_reply: str, batch: Sequence[Cue]) -> list[Cue]:
-    match = _JSON_ARRAY_RE.search(raw_reply)
-    json_str = match.group(0) if match is not None else raw_reply
-    try:
-        items = json.loads(json_str)
-    except json.JSONDecodeError as exc:
-        raise LlmRefineError(f"LLM không trả về mảng JSON hợp lệ: {exc}") from exc
-    if not isinstance(items, list):
-        raise LlmRefineError("Phản hồi LLM không phải danh sách phụ đề JSON.")
+def _strip_reasoning(raw: str) -> str:
+    return _REASONING_RE.sub("", raw)
+
+
+def _parse_reply(
+    raw_reply: str,
+    batch: Sequence[Cue],
+    *,
+    task: str,
+    allowed_speakers: set[str],
+) -> tuple[list[Cue], list[int]]:
+    text = _strip_reasoning(raw_reply)
+    decoder = json.JSONDecoder()
+    items = None
+    for pos, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            continue
+        candidate = value.get("cues") if isinstance(value, dict) else value
+        if isinstance(candidate, list) and all(isinstance(item, dict) for item in candidate):
+            items = candidate
+            break
+    if items is None:
+        raise LlmRefineError("LLM không trả về danh sách phụ đề JSON hợp lệ.", kind="format")
 
     by_index: dict[int, dict[str, Any]] = {}
     for entry in items:
-        if isinstance(entry, dict) and "index" in entry:
+        if "index" in entry:
             try:
-                by_index[int(entry["index"])] = entry
+                index = entry["index"]
+                if isinstance(index, bool) or not isinstance(index, int | str):
+                    continue
+                by_index[int(index)] = entry
             except (TypeError, ValueError):
                 continue
 
     updated: list[Cue] = []
+    missing: list[int] = []
+    positional = len(items) == len(batch) and not any("index" in item for item in items)
     for pos, orig in enumerate(batch):
-        item = by_index.get(orig.index)
-        if item is None and pos < len(items) and isinstance(items[pos], dict):
-            item = items[pos]
+        item = items[pos] if positional else by_index.get(orig.index)
         if item is None:
             updated.append(orig)
+            missing.append(orig.index)
             continue
         new_text = clean_cue_text(str(item.get("text") or ""))
-        new_spk = str(item.get("speaker") if "speaker" in item else orig.speaker or "").strip()
+        speaker = item.get("speaker")
+        new_spk = speaker.strip() if isinstance(speaker, str) else ""
+        if task != "refine_asr" or not new_spk or new_spk not in allowed_speakers:
+            new_spk = orig.speaker
         updated.append(
             replace(
                 orig,
@@ -174,7 +215,49 @@ def _parse_refined_batch(raw_reply: str, batch: Sequence[Cue]) -> list[Cue]:
                 speaker=new_spk,
             )
         )
-    return updated
+    return updated, missing
+
+
+def _build_request(
+    batch: Sequence[Cue],
+    all_cues: Sequence[Cue],
+    start: int,
+    *,
+    task: str,
+    target_language: str,
+    rate_cap: float,
+    glossary: str,
+    allowed_speakers: set[str],
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for offset, cue in enumerate(batch):
+        index = start + offset
+        item: dict[str, Any] = {"index": cue.index, "speaker": cue.speaker, "text": cue.text}
+        if task in ("translate_dub", "fit_timing"):
+            gap = (
+                max(0, all_cues[index + 1].effective_speech_start_ms - cue.end_ms)
+                if index + 1 < len(all_cues)
+                else 800
+            )
+            item["maxChars"] = max_chars_for_window(
+                cue.speech_duration_ms,
+                max_rate=min(float(rate_cap), 1.20),
+                language=target_language,
+                slack_ms=max(0, min(gap - 120, 800)),
+            )
+        items.append(item)
+    envelope: dict[str, Any] = {"cues": items}
+    if glossary:
+        envelope["glossary"] = glossary[:2000]
+    if task == "refine_asr" and allowed_speakers:
+        envelope["allowedSpeakers"] = sorted(allowed_speakers)
+    before = all_cues[max(0, start - 3) : start]
+    after = all_cues[start + len(batch) : start + len(batch) + 2]
+    if before:
+        envelope["contextBefore"] = [{"speaker": c.speaker, "text": c.text} for c in before]
+    if after:
+        envelope["contextAfter"] = [{"speaker": c.speaker, "text": c.text} for c in after]
+    return envelope
 
 
 def refine_cues_with_llm(
@@ -185,8 +268,10 @@ def refine_cues_with_llm(
     target_language: str = "vi",
     rate_cap: float = 1.35,
     batch_size: int = 25,
+    glossary: str = "",
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    notes: list[str] | None = None,
 ) -> list[Cue]:
     """Refine ``cues`` in batches through an OpenAI-compatible LLM endpoint."""
     cue_list = list(cues)
@@ -194,47 +279,39 @@ def refine_cues_with_llm(
         return []
     step = max(1, int(batch_size))
     sys_prompt = _system_prompt_for_task(task, target_language)
+    allowed_speakers = {c.speaker for c in cue_list if c.speaker}
+    if len(glossary) > 2000 and notes is not None:
+        notes.append("Thuật ngữ đã được rút gọn còn 2000 ký tự.")
     out: list[Cue] = []
 
     for start in range(0, len(cue_list), step):
         if cancel_check is not None and cancel_check():
             raise LlmRefineError("Đã hủy tác vụ tinh chỉnh AI.")
         batch = cue_list[start : start + step]
-        req_items: list[dict[str, Any]] = []
-        for offset, c in enumerate(batch):
-            idx = start + offset
-            if idx + 1 < len(cue_list):
-                gap_after_ms = max(0, cue_list[idx + 1].effective_speech_start_ms - c.end_ms)
-            else:
-                gap_after_ms = 800
-            borrowable_slack_ms = max(0, min(gap_after_ms - 120, 800))
-            req_items.append(
-                {
-                    "index": c.index,
-                    "startMs": c.start_ms,
-                    "endMs": c.end_ms,
-                    "durationMs": c.duration_ms,
-                    "speechDurationMs": c.speech_duration_ms,
-                    "gapAfterMs": gap_after_ms,
-                    "maxChars": max_chars_for_window(
-                        c.speech_duration_ms,
-                        max_rate=min(float(rate_cap), 1.20),
-                        language=target_language,
-                        slack_ms=borrowable_slack_ms,
-                    ),
-                    "speaker": c.speaker,
-                    "text": c.text,
-                }
-            )
-        user_prompt = json.dumps(req_items, ensure_ascii=False)
+        envelope = _build_request(
+            batch,
+            cue_list,
+            start,
+            task=task,
+            target_language=target_language,
+            rate_cap=rate_cap,
+            glossary=glossary,
+            allowed_speakers=allowed_speakers,
+        )
+        user_prompt = json.dumps(envelope, ensure_ascii=False)
         reply = _post_chat_completion(
             config,
             [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            json_mode=True,
+            cancel_check=cancel_check,
         )
-        out.extend(_parse_refined_batch(reply.content, batch))
+        updated, _ = _parse_reply(
+            reply.content, batch, task=task, allowed_speakers=allowed_speakers
+        )
+        out.extend(updated)
         if progress_cb is not None:
             progress_cb(min(1.0, len(out) / len(cue_list)))
 

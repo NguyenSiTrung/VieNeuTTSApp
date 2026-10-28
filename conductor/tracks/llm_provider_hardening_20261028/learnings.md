@@ -42,3 +42,8 @@ External facts relied on: GPT-5 / o-series reject non-default `temperature` (HTT
 - Settings files are created exclusively with POSIX mode 0600 even under a permissive umask; existing files are tightened on load.
 - Validate each new field independently on load and never include credential values in validation warnings.
 - Full gate: 1591 passed, 5 skipped and the same 6 documented ARM64 baseline failures.
+
+## 2026-10-28 - Phase 2 Task 2.1: Reply and prompt contract
+- Reply matching must not fall back to positions when any item has an index; speaker edits are limited to existing labels and only ASR refinement may change them.
+- Budget computation still uses the original cue's speech window and subsequent cue's timing, even though only the resulting `maxChars` is sent.
+- Full gate: 1593 passed, 5 skipped and the same 6 documented ARM64 baseline failures.

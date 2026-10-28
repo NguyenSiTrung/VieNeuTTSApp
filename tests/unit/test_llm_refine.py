@@ -13,6 +13,8 @@ from vienetts_app.core.llm_refine import (
     ChatResult,
     LlmConfig,
     LlmRefineError,
+    _parse_reply,
+    _system_prompt_for_task,
     max_chars_for_window,
     probe_llm_connection,
     refine_cues_with_llm,
@@ -137,7 +139,7 @@ def test_llm_refine_modes_and_connection_probe() -> None:
             assert len(refined) == 2
             assert refined[0].text == "Xin chào mọi người."
             assert refined[1].text == "Hôm nay trời đẹp quá."
-            assert refined[1].speaker == "SPEAKER_02"
+            assert refined[1].speaker == "SPEAKER_01"
             assert refined[0].start_ms == 0 and refined[0].end_ms == 1500
         translate_sys = received_requests[-1]["messages"][0]["content"]
         assert "Vietnamese" in translate_sys
@@ -171,7 +173,8 @@ def test_refine_cues_with_llm_uses_speech_duration_and_post_cue_slack(
         cancel_check=None,
     ) -> ChatResult:
         captured_messages.append(messages)
-        items = json.loads(messages[-1]["content"])
+        assert json_mode is True
+        items = json.loads(messages[-1]["content"])["cues"]
         return ChatResult(
             json.dumps(
                 [
@@ -218,12 +221,13 @@ def test_refine_cues_with_llm_uses_speech_duration_and_post_cue_slack(
         batch_size=1,
     )
     assert len(captured_messages) == 2
-    item1 = json.loads(captured_messages[0][-1]["content"])[0]
-    item2 = json.loads(captured_messages[1][-1]["content"])[0]
+    envelope1 = json.loads(captured_messages[0][-1]["content"])
+    envelope2 = json.loads(captured_messages[1][-1]["content"])
+    item1 = envelope1["cues"][0]
+    item2 = envelope2["cues"][0]
 
-    assert item1["durationMs"] == 2500
-    assert item1["speechDurationMs"] == 1000
-    assert item1["gapAfterMs"] == 600
+    assert set(item1) == {"index", "speaker", "text", "maxChars"}
+    assert envelope1["contextAfter"] == [{"speaker": "SPEAKER_02", "text": "Second line"}]
     assert item1["maxChars"] == max_chars_for_window(
         1000,
         max_rate=1.20,
@@ -231,12 +235,81 @@ def test_refine_cues_with_llm_uses_speech_duration_and_post_cue_slack(
         slack_ms=480,
     )
 
-    assert item2["durationMs"] == 1600
-    assert item2["speechDurationMs"] == 1200
-    assert item2["gapAfterMs"] == 800
+    assert set(item2) == {"index", "speaker", "text", "maxChars"}
+    assert envelope2["contextBefore"] == [{"speaker": "SPEAKER_01", "text": "Hello world"}]
     assert item2["maxChars"] == max_chars_for_window(
         1200,
         max_rate=1.20,
         language="zh",
         slack_ms=680,
     )
+
+
+def test_parse_reply_matches_indices_and_preserves_speakers() -> None:
+    cues = [
+        Cue(1, 0, 1000, "A", speaker="SPEAKER_01"),
+        Cue(2, 1000, 2000, "B", speaker="SPEAKER_02"),
+        Cue(3, 2000, 3000, "C", speaker="SPEAKER_01"),
+    ]
+    items = [
+        {"index": 1, "text": "first", "speaker": None},
+        {"index": 3, "text": "third", "speaker": "SPEAKER_99"},
+    ]
+    encoded = json.dumps({"cues": items})
+    for raw in (
+        encoded,
+        json.dumps(items),
+        f"```json\n{encoded}\n```",
+        f"<think>The array has [3] items</think>{encoded}",
+        f"{encoded}\nNote: I kept [names] unchanged.",
+    ):
+        result, missing = _parse_reply(
+            raw, cues, task="refine_asr", allowed_speakers={"SPEAKER_01", "SPEAKER_02"}
+        )
+        assert [c.text for c in result] == ["first", "B", "third"]
+        assert [c.speaker for c in result] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01"]
+        assert missing == [2]
+    positional = [{"text": "X", "speaker": ""}, {"text": "Y"}, {"text": "Z"}]
+    result, missing = _parse_reply(
+        json.dumps(positional), cues, task="refine_asr", allowed_speakers={"SPEAKER_01"}
+    )
+    assert [c.text for c in result] == ["X", "Y", "Z"] and not missing
+    _, missing = _parse_reply(
+        json.dumps(positional[:2]), cues, task="refine_asr", allowed_speakers={"SPEAKER_01"}
+    )
+    assert missing == [1, 2, 3]
+    swapped = json.dumps([{"index": 1, "text": "", "speaker": "SPEAKER_02"}])
+    for task in ("refine_asr", "translate_dub", "fit_timing"):
+        result, _ = _parse_reply(
+            swapped, cues, task=task, allowed_speakers={"SPEAKER_01", "SPEAKER_02"}
+        )
+        assert result[0].text == "A"
+        assert result[0].speaker == ("SPEAKER_02" if task == "refine_asr" else "SPEAKER_01")
+
+
+def test_request_envelope_glossary_context_and_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[dict] = []
+
+    def fake_post(config, messages, *, temperature=0.2, json_mode=False, cancel_check=None):
+        assert json_mode is True
+        envelope = json.loads(messages[-1]["content"])
+        requests.append(envelope)
+        return ChatResult(json.dumps({"cues": envelope["cues"]}))
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", fake_post)
+    cues = [Cue(i, i * 1000, i * 1000 + 900, f"line {i}", speaker=f"S{i % 2}") for i in range(1, 7)]
+    notes: list[str] = []
+    refine_cues_with_llm(cues, LlmConfig(), batch_size=2, glossary="g" * 2100, notes=notes)
+    assert all(set(c) == {"index", "speaker", "text"} for c in requests[1]["cues"])
+    assert requests[1]["allowedSpeakers"] == ["S0", "S1"]
+    assert len(requests[1]["contextBefore"]) == 2 and len(requests[1]["contextAfter"]) == 2
+    assert requests[1]["glossary"] == "g" * 2000
+    assert notes
+    for code, name in (
+        ("en", "English"),
+        ("ja", "Japanese"),
+        ("", "Vietnamese"),
+        ("auto", "Vietnamese"),
+        ("xx", "xx"),
+    ):
+        assert f"spoken {name}" in _system_prompt_for_task("translate_dub", code)

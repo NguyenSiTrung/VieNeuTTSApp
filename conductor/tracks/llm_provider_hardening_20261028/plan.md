@@ -39,7 +39,7 @@ Network tests use local `http.server` mocks (pattern: `tests/unit/test_llm_refin
 <!-- execution: sequential -->
 <!-- depends: phase1 -->
 
-- [ ] **Task 2.1: Robust reply parsing, speaker safety, slim payload and the JSON request envelope**
+- [x] **Task 2.1: Robust reply parsing, speaker safety, slim payload and the JSON request envelope**
   <!-- files: src/vienetts_app/core/llm_refine.py, tests/unit/test_llm_refine.py -->
   - Red tests:
     - The parser accepts `{"cues": [...]}`, a bare array, markdown-fenced JSON, `<think>The array has [3] items</think>` + JSON, and JSON followed by `Note: I kept [names] unchanged.`

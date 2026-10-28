@@ -31,6 +31,7 @@ from vienetts_app.core.subtitle_project import (
     render_fingerprint,
 )
 from vienetts_app.core.subtitles import parse_cues
+from vienetts_app.core.transcribe_pipeline import TranscriptionResult
 from vienetts_app.ui.bg_ops import SyncOrderedExecutor, run_sync
 from vienetts_app.ui.subtitle_controller import API_ONLY_PROPERTIES, SubtitleController
 
@@ -158,6 +159,16 @@ def make_controller(
         bg_runner=bg_runner,
         unit_executor=SyncOrderedExecutor() if unit_executor is None else unit_executor,
     )
+
+
+def transcribed(cues: Any, *notes: str, labelled: Any = None) -> Any:
+    """A ``run_transcription`` stand-in: ``labelled`` when speakers are asked for."""
+
+    def run(media: Any, asr_cfg: Any, diar_cfg: Any = None, **kw: Any) -> TranscriptionResult:
+        out = labelled if diar_cfg is not None and labelled is not None else cues
+        return TranscriptionResult(list(out), list(notes))
+
+    return run
 
 
 def make_artifact(job_id: str, text: str, tmp_path: Path) -> tuple[SynthesisArtifact, Path]:
@@ -1557,18 +1568,14 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
     assert controller.loaded is False
 
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [
-            Cue(1, 0, 1500, "Xin chào bạn."),
-            Cue(2, 1700, 3200, "Chào buổi sáng."),
-        ],
-    )
-    monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.diarize_cues",
-        lambda path, cues, cfg=None, **kw: [
-            Cue(1, 0, 1500, "Xin chào bạn.", speaker="SPEAKER_01"),
-            Cue(2, 1700, 3200, "Chào buổi sáng.", speaker="SPEAKER_02"),
-        ],
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed(
+            [Cue(1, 0, 1500, "Xin chào bạn."), Cue(2, 1700, 3200, "Chào buổi sáng.")],
+            labelled=[
+                Cue(1, 0, 1500, "Xin chào bạn.", speaker="SPEAKER_01"),
+                Cue(2, 1700, 3200, "Chào buổi sáng.", speaker="SPEAKER_02"),
+            ],
+        ),
     )
 
     assert controller.transcribeVideo(True) is True
@@ -1675,49 +1682,87 @@ def test_diarization_config_reads_device_and_threads_settings(env):
     assert cfg.threads == 6
 
 
-def test_transcribe_keeps_asr_result_when_diarization_crashes(env, tmp_path, monkeypatch):
+def test_transcription_runs_the_pipeline_and_surfaces_its_notes(qcoreapp, tmp_path, monkeypatch):
+    # FR-4.1/4.2 wiring: ASR, speaker turns and labels come from ONE
+    # run_transcription call (shared 16 kHz prep, turn splitting). Its notes
+    # — a cloud run, a diarization failure kept as a note on the ASR cues —
+    # surface as one warning, after the app's backend note.
     from vienetts_app.core.subtitles import Cue
 
-    controller, _, _ = env
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    fake.asrBackendNote = "faster-whisper không có — đang dùng chế độ Tự động."
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
     video = tmp_path / "talk.mp4"
     video.write_bytes(b"fake_mp4")
     assert controller.importVideo(str(video)) is True
+    calls: list[dict[str, Any]] = []
+    notes = ["Đã dùng Whisper API (đám mây)", "Không phân tách được người nói: model exploded"]
+
+    def run(media, asr_cfg, diar_cfg=None, **kw):
+        calls.append({"media": media, "asr": asr_cfg, "diar": diar_cfg, **kw})
+        return TranscriptionResult(
+            [Cue(1, 0, 1500, "Xin chào."), Cue(2, 1700, 3200, "Hết.")], notes
+        )
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.run_transcription", run)
+    released: list[str] = []
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Xin chào."), Cue(2, 1700, 3200, "Tạm biệt.")],
+        "vienetts_app.ui.subtitle_controller.release_idle_asr_models",
+        lambda: released.append("idle"),
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.release_asr_models",
+        lambda: released.append("all"),
     )
 
-    def _explode(path, cues, cfg=None, **kw):
-        raise RuntimeError("model exploded")
+    def start(with_diarization: bool) -> tuple[Any, Any]:
+        assert controller.transcribeVideo(with_diarization) is True
+        work, done, _ = runner.calls[-1]
+        return work, done
 
-    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", _explode)
-    assert controller.transcribeVideo(True) is True
-    assert controller.loaded is True
-    assert controller.cueCount == 2
-    assert "model exploded" in controller.errorText
-
-
-def test_transcribe_surfaces_acoustic_fallback_warning(env, tmp_path, monkeypatch):
-    from vienetts_app.core.subtitles import Cue
-
-    controller, _, _ = env
-    video = tmp_path / "talk2.mp4"
-    video.write_bytes(b"fake_mp4")
-    assert controller.importVideo(str(video)) is True
-    monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Xin chào.")],
+    work, done = start(True)
+    done(work())
+    call = calls[-1]
+    assert (call["media"], call["asr"], call["diar"]) == (
+        video,
+        controller._asr_config(),  # noqa: SLF001
+        controller._diarization_config(),  # noqa: SLF001
     )
-
-    def _fallback(path, cues, cfg=None, notes=None, **kw):
-        assert notes is not None
-        notes.append("Nhãn người nói được tạo bằng phương pháp dự phòng (âm học).")
-        return [Cue(1, 0, 1500, "Xin chào.", speaker="SPEAKER_01")]
-
-    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", _fallback)
-    assert controller.transcribeVideo(True) is True
-    assert "dự phòng" in controller.errorText
+    assert call["work_dir"] == controller._media_cache_dir(video)  # noqa: SLF001
+    assert (call["data_dir"], call["parallel"]) == (tmp_path, False)
+    assert controller.loaded is True and controller.cueCount == 2
+    assert controller.errorText == "\n".join([fake.asrBackendNote, *notes])
     assert controller.noticeLevel == "warning"
+
+    # A cancel, or a newer op's generation, reaches the running pipeline.
+    fake.asrBackendNote = ""
+    work_a, done_a = start(False)
+    result_a = work_a()
+    check_a = calls[-1]["cancel_check"]
+    assert calls[-1]["diar"] is None and check_a() is False
+    controller.cancelAiTask()
+    assert check_a() is True
+    work_b, done_b = start(False)  # resets the cancel flag: the generation still differs
+    result_b = work_b()
+    assert check_a() is True and calls[-1]["cancel_check"]() is False
+    done_a(result_a)
+    assert controller.aiBusy is True  # dropped: op B owns the state
+    done_b(result_b)
+    assert controller.aiBusy is False and controller.errorText == "\n".join(notes)
+
+    # FR-3.7: an idle Whisper model is released by a periodic tick on a
+    # worker (never the GUI thread), and every model at shutdown.
+    timer = controller._asr_idle_timer  # noqa: SLF001
+    assert timer.isActive() is True
+    queued = len(runner.calls)
+    timer.timeout.emit()
+    assert released == [] and len(runner.calls) == queued + 1
+    tick, tick_done, _ = runner.calls[-1]
+    tick_done(tick())
+    assert released == ["idle"]
+    controller.shutdown()
+    assert timer.isActive() is False and released == ["idle", "all"]
 
 
 def test_rediarization_remaps_labels_to_existing_speaker_voices(env, tmp_path, monkeypatch):
@@ -1728,15 +1773,14 @@ def test_rediarization_remaps_labels_to_existing_speaker_voices(env, tmp_path, m
     video.write_bytes(b"fake_mp4")
     assert controller.importVideo(str(video)) is True
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Một."), Cue(2, 1700, 3200, "Hai.")],
-    )
-    monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.diarize_cues",
-        lambda path, cues, cfg=None, **kw: [
-            Cue(1, 0, 1500, "Một.", speaker="SPEAKER_01"),
-            Cue(2, 1700, 3200, "Hai.", speaker="SPEAKER_02"),
-        ],
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed(
+            [Cue(1, 0, 1500, "Một."), Cue(2, 1700, 3200, "Hai.")],
+            labelled=[
+                Cue(1, 0, 1500, "Một.", speaker="SPEAKER_01"),
+                Cue(2, 1700, 3200, "Hai.", speaker="SPEAKER_02"),
+            ],
+        ),
     )
     assert controller.transcribeVideo(True) is True
     assert controller.setSpeakerVoice("SPEAKER_01", "Binh") is True
@@ -1777,7 +1821,7 @@ def test_export_srt_can_include_speaker_labels(env, tmp_path):
     assert "[SPEAKER_01]" in exported[-1].read_text(encoding="utf-8")
 
 
-def test_asr_config_reads_device_and_threads_settings(env):
+def test_asr_config_reads_device_and_threads_settings(env, monkeypatch):
     controller, fake, _ = env
     fake.asrBackend = "whisper_cpp"
     fake.asrModel = "small"
@@ -1790,6 +1834,14 @@ def test_asr_config_reads_device_and_threads_settings(env):
     assert cfg.language == "vi"
     assert cfg.device == "cuda"
     assert cfg.threads == 10
+    assert cfg.cloud_fallback is False  # FR-3.4: opt-in only
+    # Automatic threads resolve to the host default (FR-3.7); the cloud
+    # fallback follows the user's opt-in.
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller._auto_asr_threads", lambda: 3)
+    fake.asrThreads = 0
+    fake.asrCloudFallback = True
+    cfg = controller._asr_config()  # noqa: SLF001
+    assert (cfg.threads, cfg.cloud_fallback) == (3, True)
     fake.llmBaseUrl = "http://llm/v1"
     fake.llmApiKey = "llm-secret"
     fake.asrApiBaseUrl = "http://asr/v1"
@@ -1841,16 +1893,17 @@ def test_managed_srt_disambiguates_same_stem_videos_and_persists_media_cache_and
 
     seen_work_dirs: list[Path] = []
 
-    def _fake_transcribe(path, cfg, *, work_dir=None, notes=None, **kw):
+    def _fake_transcribe(path, cfg, diar_cfg=None, *, work_dir=None, **kw):
         assert work_dir is not None
         seen_work_dirs.append(Path(work_dir))
         (Path(work_dir) / "source_16k.wav").write_bytes(b"cached_wav")
-        if notes is not None:
-            notes.append("ASR dự phòng đã kích hoạt.")
-        return [Cue(1, 0, 1500, f"Phụ đề từ {Path(path).parent.name}")]
+        return TranscriptionResult(
+            [Cue(1, 0, 1500, f"Phụ đề từ {Path(path).parent.name}")],
+            ["ASR dự phòng đã kích hoạt."],
+        )
 
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        "vienetts_app.ui.subtitle_controller.run_transcription",
         _fake_transcribe,
     )
 
@@ -2247,11 +2300,11 @@ def test_re_asr_is_gated_when_cue_edits_would_be_lost(tmp_path, monkeypatch):
     video.write_bytes(b"fake_mp4")
     calls: list[str] = []
 
-    def _transcribe(path, cfg, **kw):
+    def _transcribe(path, cfg, diar_cfg=None, **kw):
         calls.append(str(path))
-        return [Cue(1, 0, 1500, "Bản gốc từ ASR")]
+        return TranscriptionResult([Cue(1, 0, 1500, "Bản gốc từ ASR")], [])
 
-    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.transcribe_media_to_cues", _transcribe)
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.run_transcription", _transcribe)
     assert controller.importVideo(str(video)) is True
     assert controller.transcribeVideo(False) is True
     assert calls and controller.loaded is True
@@ -2329,8 +2382,8 @@ def test_project_lifecycle_lists_opens_and_removes(tmp_path, monkeypatch):
     video = tmp_path / "talk.mp4"
     video.write_bytes(b"fake_mp4")
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed([Cue(1, 0, 1500, "Từ ASR")]),
     )
     assert controller.importVideo(str(video)) is True
     assert controller.transcribeVideo(False) is True
@@ -2357,8 +2410,8 @@ def test_switching_projects_cancels_ai_and_drops_its_late_results(tmp_path, monk
     runner = _DeferredRunner()
     controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed([Cue(1, 0, 1500, "Từ ASR")]),
     )
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.diarize_cues",
@@ -2416,12 +2469,15 @@ def test_an_enrollment_lands_in_the_project_that_started_it(tmp_path, monkeypatc
         on_enrolled
     )
     controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    checks: list[Any] = []
+
+    def extract(vpath, cues, spk, out, *, cancel_check, **kw):
+        checks.append(cancel_check)
+        write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000)
+        return Path(out), "Xin chào"
+
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav",
-        lambda vpath, cues, spk, out, **kw: (
-            write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000),
-            "Xin chào",
-        ),
+        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav", extract
     )
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
@@ -2444,7 +2500,9 @@ def test_an_enrollment_lands_in_the_project_that_started_it(tmp_path, monkeypatc
 
     # Enrolled after B was opened (and while B runs an AI op).
     on_enrolled = clone()
+    assert checks[-1]() is False  # the clone's extraction stops with its AI op …
     assert controller.importSrt(str(other)) is True
+    assert checks[-1]() is True  # … which the project switch cancelled
     assert controller.refineWithLlm("refine_asr", "vi") is True and controller.aiBusy is True
     on_enrolled("clone-1")
     assert controller._store.require(movie_id).speaker_voices == {"SPEAKER_01": "clone-1"}  # noqa: SLF001
@@ -2538,8 +2596,8 @@ def test_remove_project_stops_owners_first_and_prunes_unreferenced_media(tmp_pat
     video.write_bytes(b"fake_mp4")
     (tmp_path / "talk.srt").write_text(OTHER_SRT, encoding="utf-8")
     monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
-        lambda path, cfg, **kw: [Cue(1, 0, 1500, "Từ ASR")],
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed([Cue(1, 0, 1500, "Từ ASR")]),
     )
     assert controller.importVideo(str(video)) is True
     companion_id = controller.projectId
@@ -2938,16 +2996,12 @@ def test_ai_progress_reaches_the_gui_thread_only_for_the_live_op(qcoreapp, tmp_p
 
     monkeypatch.setattr(controller, "_set_ai_state", spy)
 
-    def transcribe(path, cfg, *, progress_cb, **kw):
-        progress_cb(0.5, "Đang nhận diện…")
-        return [Cue(1, 0, 1500, "Xin chào")]
+    def transcribe(path, cfg, diar_cfg=None, *, progress, **kw):
+        progress(0.35, "Đang nhận diện…")  # the pipeline's combined bar
+        progress(0.85, "Đang phân tách người nói…")
+        return TranscriptionResult([Cue(1, 0, 1500, "Xin chào", speaker="SPEAKER_01")], [])
 
-    def diarize(path, cues, cfg=None, *, progress_cb, **kw):
-        progress_cb(0.5)
-        return [replace(cue, speaker="SPEAKER_01") for cue in cues]
-
-    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.transcribe_media_to_cues", transcribe)
-    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.diarize_cues", diarize)
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.run_transcription", transcribe)
 
     def start_worker(work: Any) -> tuple[threading.Thread, list[Any]]:
         out: list[Any] = []
@@ -2997,6 +3051,8 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     # FR-1.3 / L6: an audition never touches the AI generation, re-extracts its
     # cached clip only when the chosen bounds or the video change, and plays
     # through the same guard as the dub track.
+    from vienetts_app.core.subtitles import Cue
+
     runner = _DeferredRunner()
     player = FakePlayer()
     controller = make_controller(tmp_path, FakeApp(), player, bg_runner=runner)
@@ -3008,8 +3064,13 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     assert controller.updateCue(1, "Tạm biệt", "SPEAKER_01") is True
     extracted: list[tuple[int, int]] = []
     targets: list[Path] = []
+    live: list[bool] = []
 
-    def extract(vpath, cues, spk, out, **kw):
+    def extract(vpath, cues, spk, out, *, work_dir, data_dir, cancel_check, **kw):
+        # FR-4.4 wiring: a video is scored on its cached 16 kHz audio, and the
+        # extraction stops once its audition is superseded.
+        assert (work_dir, data_dir) == (controller._media_cache_dir(video), tmp_path)  # noqa: SLF001
+        live.append(not cancel_check())
         spoken = [cue for cue in cues if cue.speaker == spk]
         extracted.append((spoken[0].start_ms, spoken[0].end_ms))
         targets.append(Path(out))
@@ -3054,6 +3115,18 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     finish(runner.calls[-1])
     assert extracted == [(0, 2000), (3000, 5000), (3000, 5000)]
     assert player.played == [ref] * 4
+    # The audio-scored choice weighs every cue, so another speaker's cue
+    # moving re-keys the clip even though the cue-only bounds stay put.
+    cues = controller._project.cues  # noqa: SLF001
+    keys = {
+        controller._speaker_ref_key(  # noqa: SLF001
+            str(video),
+            (*cues, Cue(3, start, start + 900, "Ừ.", speaker="SPEAKER_02")),
+            "SPEAKER_01",
+        )
+        for start in (6000, 6400)
+    }
+    assert len(keys) == 2
     # Each extraction writes its own temp file, renamed over the clip only
     # when complete: two in flight never write one file.
     assert len(set(targets)) == 3 and Path(ref) not in targets
@@ -3065,6 +3138,7 @@ def test_speaker_sample_has_its_own_generation_cache_key_and_playback_guard(tmp_
     controller.stopPlay()
     finish(runner.calls[-1])
     assert len(player.played) == 4
+    assert live == [True, True, True, False]  # … and its extraction is told to stop
     # … and a player that raises is contained by the guarded playback path.
 
     def broken_play(path: Any, on_released: Any = None) -> bool:

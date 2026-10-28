@@ -69,7 +69,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
-from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    Q_ARG,
+    Property,
+    QCoreApplication,
+    QMetaObject,
+    QObject,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 
 from vienetts_app.core.align import (
     MODE_DUB,
@@ -82,10 +93,15 @@ from vienetts_app.core.align import (
     split_unit_audio,
 )
 from vienetts_app.core.artifacts import SynthesisArtifact
-from vienetts_app.core.asr import AsrCancelled, AsrConfig, transcribe_media_to_cues
+from vienetts_app.core.asr import (
+    AsrCancelled,
+    AsrConfig,
+    default_asr_threads,
+    release_asr_models,
+    release_idle_asr_models,
+)
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, export_audio_file, read_wav
 from vienetts_app.core.diarization import (
-    DiarizationCancelled,
     DiarizationConfig,
     diarize_cues,
     extract_speaker_reference_wav,
@@ -123,6 +139,7 @@ from vienetts_app.core.timeline import (
     locate_segment,
     word_spans,
 )
+from vienetts_app.core.transcribe_pipeline import ASR_TEXT, DIAR_TEXT, run_transcription
 from vienetts_app.core.video_dub import (
     VideoDubCancelled,
     build_duck_spans,
@@ -171,6 +188,21 @@ API_ONLY_PROPERTIES: Final[frozenset[str]] = frozenset(
         "title",
     }
 )
+
+
+#: Concurrent ASR + Nemotron (FR-4.2) stays off until the bench gate measures
+#: a win on a host with real runtimes (unmeasured: bead VieNeuTTSApp-4p0t).
+_TRANSCRIBE_PARALLEL: Final = False
+
+#: How often an idle Whisper model is offered for release (FR-3.7); the model
+#: itself goes after ``asr.FASTER_WHISPER_IDLE_S`` without a run.
+_ASR_IDLE_TICK_MS: Final = 60_000
+
+
+@lru_cache(maxsize=1)
+def _auto_asr_threads() -> int:
+    """The host's automatic ASR thread count, probed (sysctl) once per process."""
+    return default_asr_threads()
 
 
 def _default_player_factory() -> PlaybackController:
@@ -446,6 +478,11 @@ class SubtitleController(QObject):
         player_factory = _default_player_factory if player_factory is None else player_factory
         self._player = player_factory()
         self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
+        # FR-3.7: started by the first transcription (only it loads a Whisper
+        # model); each tick offers an idle model for release on a worker.
+        self._asr_idle_timer = QTimer(self)
+        self._asr_idle_timer.setInterval(_ASR_IDLE_TICK_MS)
+        self._asr_idle_timer.timeout.connect(self._release_idle_asr_models)
         # Dub units are read → split → time-stretched → written on ONE ordered
         # worker (perf_hardening FR-2.4): the track is written cue by cue, so
         # placement must apply in submission order, off the GUI thread. The
@@ -3062,7 +3099,7 @@ class SubtitleController(QObject):
         lang = str(getattr(self._app, "asrLanguage", "auto") or "auto")
         device = str(getattr(self._app, "asrDevice", "auto") or "auto")
         try:
-            threads = int(getattr(self._app, "asrThreads", 0) or 0)
+            threads = max(0, min(64, int(getattr(self._app, "asrThreads", 0) or 0)))
         except (TypeError, ValueError):
             threads = 0
         base_url = str(getattr(self._app, "asrApiBaseUrl", "") or "").strip()
@@ -3081,7 +3118,11 @@ class SubtitleController(QObject):
             api_key=api_key,
             api_model=str(getattr(self._app, "asrApiModel", "") or ""),
             device=device,
-            threads=threads,
+            # 0 = automatic: the host default (FR-3.7), resolved here so the
+            # pipeline's thread split starts from the same budget.
+            threads=threads or _auto_asr_threads(),
+            # FR-3.4: auto mode uploads only on the user's explicit opt-in.
+            cloud_fallback=bool(getattr(self._app, "asrCloudFallback", False)),
         )
 
     def _diarization_config(self) -> DiarizationConfig:
@@ -3220,60 +3261,35 @@ class SubtitleController(QObject):
             return
         vpath = Path(vpath_str)
         asr_cfg = self._asr_config()
-        diar_cfg = self._diarization_config()
+        diar_cfg = self._diarization_config() if with_diarization else None
+        # Why the effective backend differs from the chosen one (3.3), first.
+        backend_note = str(getattr(self._app, "asrBackendNote", "") or "").strip()
         asr_text = self.tr("Đang nhận diện giọng nói (ASR)…")
-        diar_text = self.tr("Đang phân tách người nói…")
+        # The pipeline names its two stages in Vietnamese; show them translated.
+        stage_text = {ASR_TEXT: asr_text, DIAR_TEXT: self.tr("Đang phân tách người nói…")}
         gen = self._begin_ai_op(asr_text, 0.05)
         project_id = self._active_project_id()
         relay = self._ai_progress_relay
-        asr_share = 0.7 if with_diarization else 1.0
-
-        # Worker thread: only hop through the relay (FR-1.2). A report that
-        # lands after cancelAiTask() or the op's end is dropped on delivery.
-        def report_asr(progress: float, msg: str) -> None:
-            relay.report(gen, progress * asr_share, msg or asr_text)
-
-        def report_diar(progress: float) -> None:
-            relay.report(gen, 0.7 + 0.3 * progress, diar_text)
+        if not self._asr_idle_timer.isActive() and QCoreApplication.instance() is not None:
+            self._asr_idle_timer.start()
 
         def work() -> tuple[list[Cue], str]:
-            work_dir = self._media_cache_dir(vpath)
-            asr_notes: list[str] = []
-            cues = transcribe_media_to_cues(
+            # FR-4.1/4.2: one pipeline prepares the 16 kHz audio once for ASR
+            # and speaker turns, splits segments at turn changes and labels
+            # the cues. A labelling failure is a note on the kept ASR cues.
+            # Worker thread: progress only hops through the relay (FR-1.2).
+            res = run_transcription(
                 vpath,
                 asr_cfg,
-                work_dir=work_dir,
+                diar_cfg,
+                work_dir=self._media_cache_dir(vpath),
                 data_dir=self._data_dir,
-                progress_cb=report_asr,
+                parallel=_TRANSCRIBE_PARALLEL,
+                progress=lambda p, t: relay.report(gen, p, stage_text.get(t, t) or asr_text),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
-                notes=asr_notes,
             )
-            diar_warn = ""
-            notes: list[str] = []
-            if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
-                try:
-                    cues = diarize_cues(
-                        vpath,
-                        cues,
-                        diar_cfg,
-                        work_dir=work_dir,
-                        data_dir=self._data_dir,
-                        progress_cb=report_diar,
-                        cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
-                        notes=notes,
-                    )
-                except DiarizationCancelled:
-                    diar_warn = self.tr("Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên.")
-                except Exception as exc:  # noqa: BLE001 - ASR output must survive
-                    # Anything other than a clean success used to propagate
-                    # out of work() and discard a finished transcription.
-                    logger.warning("Diarization failed during transcribe: %s", exc)
-                    diar_warn = self.tr("Không phân tách được người nói: {error}").format(error=exc)
-                else:
-                    if notes:
-                        diar_warn = "\n".join(notes)
-            warnings = [w for w in (*asr_notes, diar_warn) if w]
-            return cues, "\n".join(warnings)
+            notes = [note for note in (backend_note, *res.notes) if note]
+            return list(res.cues), "\n".join(notes)
 
         def done(res: tuple[list[Cue], str]) -> None:
             if not self._ai_delivery_ok(gen, project_id):
@@ -3521,6 +3537,11 @@ class SubtitleController(QObject):
         cue/speaker edit that moves the chosen clip, or a replaced video,
         makes a cached ``ref_<speaker>.wav`` stale. ``""`` when no clip can be
         chosen (the extraction then reports why).
+
+        The extractor scores candidates on audio (FR-4.4), against every
+        speaker's cues, so the cue-only bounds alone can miss a change. A
+        digest of every cue's timing and speaker covers it. It runs on the
+        GUI thread, so it stays audio-free: no file is read but a stat.
         """
         chosen = select_speaker_reference_clip(cues, speaker)
         if chosen is None:
@@ -3530,12 +3551,26 @@ class SubtitleController(QObject):
             stat = source.stat()
         except OSError:
             return ""
-        return f"{chosen[0]}-{chosen[1]}|{source}|{stat.st_size}|{stat.st_mtime_ns}"
+        layout = hashlib.sha256(
+            "\n".join(f"{c.start_ms},{c.end_ms},{c.speaker}" for c in cues).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"{chosen[0]}-{chosen[1]}|{layout}|{source}|{stat.st_size}|{stat.st_mtime_ns}"
 
     def _extract_speaker_ref(
-        self, media: str, cues: Sequence[Cue], speaker: str, ref_out: Path, key: str
+        self,
+        media: str,
+        cues: Sequence[Cue],
+        speaker: str,
+        ref_out: Path,
+        key: str,
+        cancel_check: Callable[[], bool],
     ) -> tuple[Path, str]:
-        """Worker thread: (re-)extract the reference clip, then record its key."""
+        """Worker thread: (re-)extract the reference clip, then record its key.
+
+        FR-4.4: a video's candidates are scored on the media cache's shared
+        ``source_16k.wav`` (ASR's, or converted once here). ``cancel_check``
+        stops that conversion when the op that asked is superseded.
+        """
         key_path = _speaker_ref_key_path(ref_out)
         with contextlib.suppress(OSError):
             key_path.unlink(missing_ok=True)  # a half-written clip is never reused
@@ -3545,7 +3580,13 @@ class SubtitleController(QObject):
         partial = ref_out.with_name(f"{ref_out.stem}.{uuid.uuid4().hex[:8]}.tmp.wav")
         try:
             _, transcript = extract_speaker_reference_wav(
-                media, cues, speaker, partial, data_dir=self._data_dir
+                media,
+                cues,
+                speaker,
+                partial,
+                data_dir=self._data_dir,
+                work_dir=self._media_cache_dir(Path(media)),
+                cancel_check=cancel_check,
             )
             os.replace(partial, ref_out)
         finally:
@@ -3583,7 +3624,9 @@ class SubtitleController(QObject):
 
         def work() -> Path:
             # ffmpeg extraction used to block the GUI thread on first audition.
-            self._extract_speaker_ref(vpath, cues, spk, ref_out, key)
+            self._extract_speaker_ref(
+                vpath, cues, spk, ref_out, key, lambda: gen != self._sample_generation
+            )
             return ref_out
 
         def done(path: Path) -> None:
@@ -3641,7 +3684,14 @@ class SubtitleController(QObject):
         def work() -> tuple[Path, str]:
             # Always re-extracted (the enrollment needs the transcript); the
             # recorded key lets a later audition reuse this clip.
-            return self._extract_speaker_ref(vpath, cues_in, spk, ref_out, key)
+            return self._extract_speaker_ref(
+                vpath,
+                cues_in,
+                spk,
+                ref_out,
+                key,
+                lambda: self._ai_cancel_flag or gen != self._ai_generation,
+            )
 
         def done(res: tuple[Path, str]) -> None:
             if not self._ai_delivery_ok(gen, project_id):
@@ -3880,6 +3930,22 @@ class SubtitleController(QObject):
         self.statsChanged.emit()
 
     @Slot()
+    def _release_idle_asr_models(self) -> None:
+        """Idle tick (FR-3.7): release an unused Whisper model off the GUI thread."""
+
+        def work() -> bool:
+            return release_idle_asr_models()
+
+        def ignore(_released: bool) -> None:
+            return None
+
+        def report(exc: BaseException) -> None:
+            logger.warning("releasing the idle Whisper model failed: %s", exc)
+
+        with contextlib.suppress(Exception):  # a rejected pool skips one tick
+            self._run_bg(work, ignore, self, on_error=report)
+
+    @Slot()
     def shutdown(self) -> None:
         """App quit (FR-1.5 / M4): stop every owner, then reap native children."""
         self.videoReleaseRequested.emit()
@@ -3890,6 +3956,11 @@ class SubtitleController(QObject):
         self._export_generation += 1
         # Queued placements are already no-ops; let the abort run (bounded).
         self._units_exec.flush()
+        # FR-3.7: free the Whisper model now (a run still using it keeps its
+        # own reference), and stop offering idle releases.
+        self._asr_idle_timer.stop()
+        with contextlib.suppress(Exception):
+            release_asr_models()
         # whisper-cli / audiocpp_cli / ffmpeg / ffprobe children used to
         # outlive the app: terminate → bounded wait → kill whatever is left.
         terminate_children()

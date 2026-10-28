@@ -347,7 +347,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase2, phase4, phase5, phase6 -->
 
-- [~] **Task 7.1: `core/transcribe_pipeline.py` — concurrent ASR + Nemotron, speaker-turn splitting, combined progress; controller wiring (FR-4.1 wiring, FR-4.2, FR-3.4 wiring)**
+- [x] **Task 7.1: `core/transcribe_pipeline.py` — concurrent ASR + Nemotron, speaker-turn splitting, combined progress; controller wiring (FR-4.1 wiring, FR-4.2, FR-3.4 wiring)**
   <!-- files: src/vienetts_app/core/transcribe_pipeline.py, src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_transcribe_pipeline.py, tests/unit/test_subtitle_controller.py, scripts/benchmarks/transcribe_parallel.py -->
   - Red tests (event-driven stub runners):
     - **Concurrency:** the Nemotron stub starts before the ASR stub finishes, and thread budgets are split (`threads // 2`, minimum 1).
@@ -369,7 +369,7 @@ Test seams and fakes:
     - **Zero samples:** a 0-sample artifact becomes `add_silent_cue` and the render completes.
   - Green implementation: consult `UnitClipCache` before submitting; feed cached audio to the renderer; replace the samples ≤ 0 failure at `:1953`.
 
-- [ ] **Task 7.3: Off-thread work, `cueIndexAt` bisect, media-cache eviction (FR-6.1, FR-6.2, FR-6.3)**
+- [~] **Task 7.3: Off-thread work, `cueIndexAt` bisect, media-cache eviction (FR-6.1, FR-6.2, FR-6.3)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleVideoPreview.qml, src/vienetts_app/ui/qml/SubtitlesTab.qml, tests/unit/test_subtitle_controller.py, tests/unit/test_subtitle_components.py -->
   - Red tests:
     - **Off-thread work:** `_activate_cues_project`/`importVideo` run `refine_cues_speech_bounds` off the GUI thread (thread-recording spy) and apply by generation.

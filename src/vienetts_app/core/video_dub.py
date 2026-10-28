@@ -12,6 +12,11 @@ resolution-matched style (libass's default size is tuned for 16:9, so portrait
 font shrinking so a long cue cannot cover the picture, and full control over
 escaping — ``{…}`` blocks and ``-->`` inside cue text are otherwise
 reinterpreted by the subtitle parser and silently lose or drop the line.
+
+Duck mode switches the background gain at every speech span through
+``asendcmd`` command files rather than an inline ``enable`` expression, so the
+command line stays a few hundred bytes at any span count. Every mix ends in a
+−1 dBFS ``alimiter``.
 """
 
 from __future__ import annotations
@@ -67,6 +72,8 @@ _BURN_MIN_FONT_SCALE = 0.55
 #: Approximate advance width of Be Vietnam Pro, used to pre-wrap text to
 #: :data:`_BURN_MAX_LINES` before libass ever sees it.
 _BURN_CHAR_WIDTH_RATIO = 0.52
+#: The generated ASS script, named relative to the mux work dir.
+_BURN_ASS_NAME = "sub.ass"
 
 #: Soft (player-toggleable) subtitle codec per output container. AVI has no
 #: text subtitle stream, so it can only show subtitles burned into the picture.
@@ -90,6 +97,35 @@ _BURN_VIDEO_ARGS: dict[str, tuple[str, ...]] = {
 _BURN_VIDEO_DEFAULT: tuple[str, ...] = (
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
 )  # fmt: skip
+
+#: ISO 639-1 → ISO 639-2/B, the form Matroska and MP4 subtitle ``language``
+#: tags carry and players auto-select by. Truncating the code instead
+#: (``"vi"[:3]``) wrote a tag no player recognises.
+_ISO639_2B: dict[str, str] = {
+    "ar": "ara", "cs": "cze", "da": "dan", "de": "ger", "el": "gre", "en": "eng",
+    "es": "spa", "fa": "per", "fi": "fin", "fr": "fre", "he": "heb", "hi": "hin",
+    "hu": "hun", "id": "ind", "it": "ita", "ja": "jpn", "km": "khm", "ko": "kor",
+    "lo": "lao", "ms": "may", "my": "bur", "nl": "dut", "no": "nor", "pl": "pol",
+    "pt": "por", "ro": "rum", "ru": "rus", "sv": "swe", "th": "tha", "tl": "tgl",
+    "tr": "tur", "uk": "ukr", "vi": "vie", "zh": "chi",
+}  # fmt: skip
+#: ISO 639-2/T spellings (and Chinese varieties) whose /B tag differs.
+_ISO639_ALIASES: dict[str, str] = {
+    "ces": "cze", "cmn": "chi", "deu": "ger", "ell": "gre", "fas": "per", "fra": "fre",
+    "msa": "may", "mya": "bur", "nld": "dut", "ron": "rum", "yue": "chi", "zho": "chi",
+}  # fmt: skip
+_ISO639_2B_TAGS = frozenset(_ISO639_2B.values())
+
+#: Progress ceiling while ffmpeg runs: ``+faststart`` rewrites the whole file
+#: after the last frame and the result is then promoted, so 1.0 is reported
+#: only once the output is final.
+_MUX_PROGRESS_CAP = 0.95
+
+#: Last stage of every mix: a −1 dBFS ceiling (10^(-1/20) ≈ 0.891) so a hot
+#: float dub, or dub plus background, never clips in the encoder. ``level=0``
+#: turns off alimiter's auto-level, which would scale the output back up to
+#: 0 dBFS.
+_MIX_LIMITER = "alimiter=limit=0.891:level=0"
 
 REPLACE_LOCK_ATTEMPTS = 5
 REPLACE_LOCK_DELAY_S = 0.2
@@ -408,6 +444,23 @@ def _probe_duration_s(
     return 0.0
 
 
+def _wav_duration_ms(wav_path: Path) -> int:
+    """Length of a WAV from its header (no samples are read); 0 when unreadable.
+
+    The progress yardstick when ffprobe is absent — or when the dub outruns
+    the picture, since the output then lasts as long as the dub.
+    """
+    try:
+        import soundfile as sf  # deferred like core.audio: keeps it off startup
+
+        info = sf.info(str(wav_path))
+    except Exception:  # any unreadable header just means "unknown"
+        return 0
+    if info.samplerate <= 0:
+        return 0
+    return int(info.frames * 1000 // info.samplerate)
+
+
 def _read_srt_cues(srt_path: Path) -> list[tuple[int, int, str]]:
     """Parse ``srt_path`` into ``(start_ms, end_ms, text)`` for burn-in.
 
@@ -465,30 +518,40 @@ def _run_ffmpeg(
     """Run ffmpeg, optionally streaming ``-progress`` into ``progress``.
 
     Burn-in can run for minutes on a long clip, so the caller gets a real
-    fraction rather than a silent wait. With a ``cancel_check`` the process is
-    terminated when it returns True — a hung ffmpeg must never permanently
-    disable the caller — and the stopped run comes back as a non-zero
-    ``CompletedProcess`` for the caller to report.
+    fraction of ``duration_ms`` (the expected output length) rather than a
+    silent wait. ``out_time_us`` and the misnamed ``out_time_ms`` are both
+    MICROseconds. Reports only ever rise and stop at
+    :data:`_MUX_PROGRESS_CAP` — ``progress=end`` included — because the caller
+    still has to finalize the file before it may report 1.0. They arrive on a
+    reader thread. With a ``cancel_check`` the process is terminated when it
+    returns True — a hung ffmpeg must never permanently disable the caller —
+    and the stopped run comes back as a non-zero ``CompletedProcess`` for the
+    caller to report.
     """
+    reported = 0.0
+
+    def report(fraction: float) -> None:
+        nonlocal reported
+        value = min(_MUX_PROGRESS_CAP, fraction)
+        if progress is not None and value > reported:
+            reported = value
+            progress(value)
 
     def on_progress_line(line: str) -> None:
-        if progress is None:
-            return
         key, _, value = line.strip().partition("=")
-        if key == "out_time_ms":
-            with contextlib.suppress(ValueError):
-                done_ms = int(value)
-                if duration_ms > 0:
-                    progress(max(0.0, min(0.99, done_ms / duration_ms)))
+        if key in ("out_time_us", "out_time_ms"):
+            if duration_ms > 0:
+                with contextlib.suppress(ValueError):
+                    report(int(value) / (duration_ms * 1000.0))
         elif key == "progress" and value == "end":
-            progress(1.0)
+            report(_MUX_PROGRESS_CAP)
 
     try:
         return run_cli(
             cli_command(Path(cmd[0]), *cmd[1:]),
             cwd=cwd,
             cancel_check=cancel_check,
-            on_stdout_line=on_progress_line,
+            on_stdout_line=on_progress_line if progress is not None else None,
         )
     except CliCancelled as exc:
         returncode = exc.returncode if exc.returncode is not None else -1
@@ -503,6 +566,16 @@ def is_video_path(path: str | Path) -> bool:
 def supports_soft_subtitles(path: str | Path) -> bool:
     """True when ``path``'s container can carry a player-toggleable subtitle track."""
     return Path(path).suffix.lower() in _SOFT_SUBTITLE_CODECS
+
+
+def _subtitle_language_tag(language: str) -> str:
+    """ISO 639-2/B tag for ``vi``, ``zh-CN``, ``fra`` and the like; ``und`` if unknown."""
+    code = str(language or "").strip().lower().replace("_", "-").partition("-")[0]
+    if code in _ISO639_2B:
+        return _ISO639_2B[code]
+    if code in _ISO639_ALIASES:
+        return _ISO639_ALIASES[code]
+    return code if code in _ISO639_2B_TAGS else "und"
 
 
 def find_companion_srt(video_path: str | Path) -> Path | None:
@@ -689,9 +762,13 @@ def merge_duck_spans(
     pad_before_ms: int = 20,
     pad_after_ms: int = 80,
     merge_gap_ms: int = 150,
-    max_spans: int = 200,
 ) -> list[tuple[int, int]]:
-    """Normalize, pad, and coalesce ``(start_ms, end_ms)`` ducking intervals."""
+    """Normalize, pad, and coalesce ``(start_ms, end_ms)`` ducking intervals.
+
+    One sort and a linear sweep: only spans whose padded gap is at most
+    ``merge_gap_ms`` merge, however many there are. (The spans reach ffmpeg
+    as a command file, so there is no inline-expression budget to fit.)
+    """
     padded: list[tuple[int, int]] = []
     for s_raw, e_raw in spans:
         s = int(s_raw)
@@ -709,13 +786,52 @@ def merge_duck_spans(
             merged[-1] = (prev_s, max(prev_e, e))
         else:
             merged.append((s, e))
-    while len(merged) > max_spans and len(merged) >= 2:
-        best_idx = min(
-            range(len(merged) - 1),
-            key=lambda idx: merged[idx + 1][0] - merged[idx][1],
-        )
-        merged[best_idx : best_idx + 2] = [(merged[best_idx][0], merged[best_idx + 1][1])]
     return merged
+
+
+def _command_seconds(ms: int) -> str:
+    """``ms`` → ``S.mmm``, the plain-seconds form ``asendcmd`` intervals accept."""
+    ms = max(0, int(ms))
+    return f"{ms // 1000}.{ms % 1000:03d}"
+
+
+@dataclass(frozen=True)
+class _DuckSwitch:
+    """A ``volume`` gain that an ``asendcmd`` command file flips at every duck span.
+
+    The ``asendcmd`` sits directly in front of its ``volume`` so each switch
+    lands on the frame that crossed the span edge (frame-quantized, like the
+    ``enable='between(t,…)'`` timeline it replaces), and the
+    ``volume@id`` instance name keeps the command away from every other
+    ``volume`` in the graph. ``eval=frame`` re-reads the commanded value on
+    every frame rather than relying on the command itself to re-evaluate it.
+    """
+
+    filename: str
+    target: str
+    inside: str
+    outside: str
+
+    def chain(self) -> str:
+        """``asendcmd`` plus the switched ``volume``, starting at the outside level."""
+        return f"asendcmd=f={self.filename},{self.target}=volume={self.outside}:eval=frame"
+
+    def commands(self, spans: Sequence[tuple[int, int]]) -> str:
+        """One ``START-END [enter] … [leave] …;`` interval per span."""
+        return "".join(
+            f"{_command_seconds(start)}-{_command_seconds(end)} "
+            f"[enter] {self.target} volume {self.inside}, "
+            f"[leave] {self.target} volume {self.outside};\n"
+            for start, end in spans
+        )
+
+
+#: Sidechain trigger: the source speech counts only inside duck spans.
+_DUCK_GATE = _DuckSwitch("duck_gate.cmd", "volume@duckgate", inside="1", outside="0")
+#: Background: an extra −12 dB inside duck spans, on top of ``bg_gain_db``.
+_DUCK_BG = _DuckSwitch(
+    "duck_bg.cmd", "volume@duckbg", inside=f"{10 ** (-12.0 / 20):.6f}", outside="1"
+)
 
 
 def build_duck_spans(
@@ -770,17 +886,22 @@ def mux_dubbed_video(
     a styled ASS script and re-encodes the video. Otherwise the video is
     stream-copied.
 
-    ``subtitle_language`` tags the soft track so players can auto-select it.
-    ``clamp_to_video`` trims the result to the source picture's duration. It is
-    OFF by default on purpose: a dub that outran the video must never lose its
-    last words, so the caller decides between a frozen tail and truncated
-    speech (see :func:`dub_overrun_ms`). Neither the subtitle exporter nor the
-    Studio splice passes it: both keep every spoken word and surface the
-    overrun as a warning instead. It stays as an API-only opt-in for callers
-    that explicitly prefer a hard cut. ``progress`` is called with 0.0–1.0
-    while ffmpeg runs (burn-in can take minutes). ``cancel_check`` is polled
-    while ffmpeg runs; returning True terminates it and raises
-    :class:`VideoDubError` (the partial file is discarded).
+    ``subtitle_language`` tags the soft track (as ISO 639-2/B, ``und`` when
+    unknown) so players can auto-select it. ``clamp_to_video`` trims the
+    result to the source picture's duration. It is OFF by default on purpose:
+    a dub that outran the video must never lose its last words, so the caller
+    decides between a frozen tail and truncated speech (see
+    :func:`dub_overrun_ms`). Neither the subtitle exporter nor the Studio
+    splice passes it: both keep every spoken word and surface the overrun as a
+    warning instead. It stays as an API-only opt-in for callers that
+    explicitly prefer a hard cut.
+
+    ``progress`` gets a monotonic 0.0–0.95 while ffmpeg runs, measured against
+    the longer of the probed video and the dub WAV (the video alone when
+    clamped), and 1.0 once the finalized output has been promoted. It is
+    called from a reader thread. ``cancel_check`` is polled while ffmpeg runs;
+    returning True terminates it and raises :class:`VideoDubCancelled` (the
+    partial file is discarded).
     """
     vpath = Path(video_path).absolute()
     apath = Path(dub_wav_path).absolute()
@@ -804,21 +925,34 @@ def mux_dubbed_video(
     burn = want_subs and str(subtitle_mode) == "burn"
     soft_codec = _SOFT_SUBTITLE_CODECS.get(ext) if want_subs and not burn else None
 
-    info = probe_video_info(vpath, data_dir=data_dir) if (burn or clamp_to_video) else VideoInfo()
+    # Progress needs the output length: without a probe a plain export (the
+    # common case) used to report nothing until the very end.
+    want_info = burn or clamp_to_video or progress is not None
+    info = probe_video_info(vpath, data_dir=data_dir) if want_info else VideoInfo()
+    expected_ms = 0
+    if progress is not None:
+        if clamp_to_video and info.duration_ms > 0:
+            expected_ms = info.duration_ms
+        else:
+            expected_ms = max(info.duration_ms, _wav_duration_ms(apath))
 
-    # The ass filter takes a filtergraph-escaped path, and Windows drive
-    # colons/backslashes make that fragile: burn from a scratch directory
-    # holding plain-named copies and run ffmpeg inside it (every other path
-    # above is absolute). ``fonts/`` there is what libass reads via fontsdir.
-    burn_dir: Path | None = None
-    burn_ass: Path | None = None
-    if burn:
-        burn_dir = target.with_name(f".{uuid.uuid4().hex}.burn")
-        burn_dir.mkdir(parents=True, exist_ok=True)
-        burn_ass = burn_dir / "sub.ass"
-        if FONTS_DIR.is_dir():
-            with contextlib.suppress(OSError):
-                shutil.copytree(FONTS_DIR, burn_dir / "fonts")
+    duck_windows: list[tuple[int, int]] = []
+    if use_duck:
+        if duck_spans is not None:
+            raw_duck_spans = [(int(s), int(e)) for s, e in duck_spans]
+        elif srt_path is not None and Path(srt_path).is_file():
+            raw_duck_spans = [(s, e) for s, e, _ in _read_srt_cues(Path(srt_path))]
+        else:
+            raw_duck_spans = []
+        duck_windows = merge_duck_spans(raw_duck_spans)
+
+    # Filter arguments name their scratch files (ASS script, fonts, duck
+    # command files) RELATIVE to a work dir that ffmpeg runs in — every other
+    # path is absolute — so no Windows drive colon or backslash ever needs
+    # filtergraph escaping. ``fonts/`` there is what libass reads via fontsdir.
+    work_dir: Path | None = None
+    if burn or duck_windows:
+        work_dir = target.with_name(f".{uuid.uuid4().hex}.mux")
 
     cmd: list[str] = [
         str(ffmpeg),
@@ -830,70 +964,53 @@ def mux_dubbed_video(
         str(apath),
     ]
     if soft_codec is not None and srt_path is not None:
-        cmd += ["-i", str(Path(srt_path))]
+        cmd += ["-i", str(Path(srt_path).absolute())]
 
     filters: list[str] = []
     video_out = "0:v:0"
-    if burn_ass is not None:
+    if burn:
         # fontsdir lets libass find the bundled Be Vietnam Pro even when the
-        # host has no Vietnamese font. Both the script name and fonts dir are
-        # RELATIVE to burn_dir (see below), so no Windows drive colon ever
-        # reaches the filtergraph. Wrapping is controlled by WrapStyle in the
-        # ASS header itself — the filter has no such option.
-        style_opts = [f"filename={burn_ass.name}"]
+        # host has no Vietnamese font. Wrapping is controlled by WrapStyle in
+        # the ASS header itself — the filter has no such option.
+        style_opts = [f"filename={_BURN_ASS_NAME}"]
         if FONTS_DIR.is_dir():
             style_opts.append("fontsdir=fonts")
         filters.append(f"[0:v:0]ass={':'.join(style_opts)}[vout]")
         video_out = "[vout]"
-    audio_out = "1:a:0"
-    if use_duck:
-        if duck_spans is not None:
-            raw_duck_spans = [(int(s), int(e)) for s, e in duck_spans]
-        elif srt_path is not None and Path(srt_path).is_file():
-            raw_duck_spans = [(s, e) for s, e, _ in _read_srt_cues(Path(srt_path))]
-        else:
-            raw_duck_spans = []
-        merged_duck = merge_duck_spans(raw_duck_spans)
-        if merged_duck:
-            enable_expr = "+".join(
-                f"between(t,{s / 1000.0:.3f},{e / 1000.0:.3f})" for s, e in merged_duck
-            )
-            filters.append(
-                "[0:a:0]asplit=3[bg_src][sc_ref][sil_ref];"
-                "[sil_ref]volume=0[sil];"
-                f"[sc_ref]volume=volume=0:enable='not({enable_expr})'[sc_span];"
-                "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
-                "weights=1 0:normalize=0,asplit=2[dub_sc][dub];"
-                "[dub_sc][sc_span]amix=inputs=2:duration=longest:dropout_transition=0:"
-                "weights=1 1:normalize=0[sc];"
-                f"[bg_src]volume={gain_db:.1f}dB,"
-                f"volume=volume=-12.0dB:enable='{enable_expr}'[bg_att];"
-                "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
-                "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
-                "weights=1 1:normalize=0[aout]"
-            )
-        else:
-            filters.append(
-                "[0:a:0]asplit=2[bg_src][sil_ref];"
-                "[sil_ref]volume=0[sil];"
-                "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
-                "weights=1 0:normalize=0,asplit=2[sc][dub];"
-                f"[bg_src]volume={gain_db:.1f}dB[bg_att];"
-                "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
-                "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
-                "weights=1 1:normalize=0[aout]"
-            )
-        audio_out = "[aout]"
-    if filters:
-        cmd += ["-filter_complex", ";".join(filters)]
-    cmd += ["-map", video_out, "-map", audio_out]
+    if not use_duck:
+        filters.append(f"[1:a:0]{_MIX_LIMITER}[aout]")
+    elif duck_windows:
+        filters.append(
+            "[0:a:0]asplit=3[bg_src][sc_ref][sil_ref];"
+            "[sil_ref]volume=0[sil];"
+            f"[sc_ref]{_DUCK_GATE.chain()}[sc_span];"
+            "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
+            "weights=1 0:normalize=0,asplit=2[dub_sc][dub];"
+            "[dub_sc][sc_span]amix=inputs=2:duration=longest:dropout_transition=0:"
+            "weights=1 1:normalize=0[sc];"
+            f"[bg_src]volume={gain_db:.1f}dB,{_DUCK_BG.chain()}[bg_att];"
+            "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
+            "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
+            f"weights=1 1:normalize=0,{_MIX_LIMITER}[aout]"
+        )
+    else:
+        filters.append(
+            "[0:a:0]asplit=2[bg_src][sil_ref];"
+            "[sil_ref]volume=0[sil];"
+            "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
+            "weights=1 0:normalize=0,asplit=2[sc][dub];"
+            f"[bg_src]volume={gain_db:.1f}dB[bg_att];"
+            "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
+            "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
+            f"weights=1 1:normalize=0,{_MIX_LIMITER}[aout]"
+        )
+    cmd += ["-filter_complex", ";".join(filters)]
+    cmd += ["-map", video_out, "-map", "[aout]"]
 
     if soft_codec is not None:
         cmd += ["-map", "2:s:0", "-c:s", soft_codec, "-disposition:s:0", "default"]
-        language = str(subtitle_language or "").strip().lower()
-        if language and language not in ("auto", "und"):
-            cmd += ["-metadata:s:s:0", f"language={language[:3]}"]
-            cmd += ["-metadata:s:s:0", "title=Phụ đề"]
+        cmd += ["-metadata:s:s:0", f"language={_subtitle_language_tag(subtitle_language)}"]
+        cmd += ["-metadata:s:s:0", "title=Phụ đề"]
     if burn:
         cmd += list(_BURN_VIDEO_ARGS.get(ext, _BURN_VIDEO_DEFAULT))
         # Burn-in re-encodes; keep the source's bit depth or an HDR-tagged file
@@ -923,22 +1040,32 @@ def mux_dubbed_video(
     cmd.append(str(part))
 
     try:
-        if burn_ass is not None and srt_path is not None:
-            # The caller hands us an SRT; restyle it into ASS so libass gets an
-            # explicit, resolution-matched style instead of its 16:9 defaults.
-            burn_ass.write_text(
-                build_burn_ass(
-                    _read_srt_cues(Path(srt_path)),
-                    width=info.width,
-                    height=info.height,
-                ),
-                encoding="utf-8",
-            )
+        if work_dir is not None:
+            work_dir.mkdir(parents=True, exist_ok=True)
+            if burn and srt_path is not None:
+                if FONTS_DIR.is_dir():
+                    with contextlib.suppress(OSError):
+                        shutil.copytree(FONTS_DIR, work_dir / "fonts")
+                # The caller hands us an SRT; restyle it into ASS so libass gets
+                # an explicit, resolution-matched style instead of its 16:9
+                # defaults.
+                (work_dir / _BURN_ASS_NAME).write_text(
+                    build_burn_ass(
+                        _read_srt_cues(Path(srt_path)),
+                        width=info.width,
+                        height=info.height,
+                    ),
+                    encoding="utf-8",
+                )
+            for switch in (_DUCK_GATE, _DUCK_BG) if duck_windows else ():
+                (work_dir / switch.filename).write_text(
+                    switch.commands(duck_windows), encoding="ascii"
+                )
         res = _run_ffmpeg(
             cmd,
-            cwd=str(burn_dir) if burn_dir is not None else None,
+            cwd=str(work_dir) if work_dir is not None else None,
             progress=progress,
-            duration_ms=info.duration_ms,
+            duration_ms=expected_ms,
             cancel_check=cancel_check,
         )
         if cancel_check is not None and cancel_check():
@@ -952,15 +1079,17 @@ def mux_dubbed_video(
                 )
             detail = stderr.strip().splitlines()[-1:] or ["ffmpeg mux failed"]
             raise VideoDubError(f"Không thể ghép âm thanh vào video '{vpath.name}': {detail[0]}")
+        promoted = _promote_atomic(part, target)
+        # Finalize stage: +faststart and the promote are done, so the file is
+        # final — only now may progress reach 1.0.
         if progress is not None:
             with contextlib.suppress(Exception):
                 progress(1.0)
-        return _promote_atomic(part, target)
+        return promoted
     except Exception:
         with contextlib.suppress(OSError):
             part.unlink(missing_ok=True)
         raise
     finally:
-        if burn_dir is not None:
-            with contextlib.suppress(OSError):
-                shutil.rmtree(burn_dir, ignore_errors=True)
+        if work_dir is not None:
+            shutil.rmtree(work_dir, ignore_errors=True)

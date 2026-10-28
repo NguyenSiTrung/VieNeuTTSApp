@@ -320,7 +320,7 @@ Test seams and fakes:
     - **Fingerprint:** unused `speakerVoices` entries and whitespace-padded voice names no longer change `render_fingerprint` after a reload. A golden digest for a normalized project is unchanged.
   - Green implementation: add `UnitClipCache` under `<project>/units/`, `render_id` plumbing and the fingerprint normalization.
 
-- [~] **Task 6.3: Mux — progress units/duration, ducking envelope at scale, limiter, ISO 639-2 tags, finalize stage (FR-5.4, FR-5.5, FR-5.6)**
+- [x] **Task 6.3: Mux — progress units/duration, ducking envelope at scale, limiter, ISO 639-2 tags, finalize stage (FR-5.4, FR-5.5, FR-5.6)**
   <!-- files: src/vienetts_app/core/video_dub.py, tests/unit/test_video_dub.py -->
   - Red tests:
     - **Progress units:** fix the stub at `test_video_dub.py:476` to emit real-ffmpeg values. `out_time_us=5000000` / `out_time_ms=5000000` report 5 s.

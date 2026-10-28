@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from vienetts_app.core.video_dub import (
     find_companion_srt,
     find_companion_video,
     is_video_path,
+    merge_duck_spans,
     mux_dubbed_video,
     probe_has_audio_stream,
     resolve_ffmpeg,
@@ -29,6 +33,100 @@ from vienetts_app.core.video_dub import (
 
 #: Tests that build or inspect real media; the stub-driven ones run everywhere.
 requires_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
+
+
+def _install_stub_ffmpeg(data_dir: Path, capture: Path) -> None:
+    """Managed stub ``ffmpeg`` that records each mux call into ``capture/<n>/``.
+
+    It saves its argv and cwd plus every ``*.cmd`` file in its cwd (the mux
+    deletes its scratch dir afterwards), prints real-ffmpeg ``-progress``
+    values when asked, and writes the output file. ``ffmpeg -nostdin -i x``
+    (the audio probe without ffprobe) reports an audio stream.
+    """
+    bin_dir = data_dir / "runtimes" / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    capture.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "ffmpeg"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, shutil, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "if args[-2:-1] == ['-i']:\n"
+        "    sys.stderr.write('Stream #0:1: Audio: aac\\n')\n"
+        "    sys.exit(1)\n"
+        f"capture = Path({str(capture)!r})\n"
+        "call = capture / str(len(os.listdir(capture)))\n"
+        "call.mkdir()\n"
+        "for name in os.listdir('.'):\n"
+        "    if name.endswith('.cmd'):\n"
+        "        shutil.copy(name, call / name)\n"
+        "(call / 'argv.json').write_text(json.dumps({'argv': args, 'cwd': os.getcwd()}))\n"
+        "if '-progress' in args:\n"
+        "    for line in ('out_time_us=N/A', 'out_time_ms=N/A', 'progress=continue',\n"
+        "                 'out_time_us=5000000', 'out_time_ms=5000000',\n"
+        "                 'out_time=00:00:05.000000', 'progress=continue',\n"
+        "                 'out_time_us=60000000', 'out_time_ms=60000000', 'progress=end'):\n"
+        "        print(line, flush=True)\n"
+        "Path(args[-1]).write_bytes(b'muxed')\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+
+def _install_stub_ffprobe(data_dir: Path, *, duration_s: float) -> Path:
+    """Managed stub ``ffprobe``: one audio stream, a 160x90 picture of ``duration_s``."""
+    bin_dir = data_dir / "runtimes" / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "ffprobe"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "if 'stream=index' in args:\n"
+        "    print('1')\n"
+        "elif 'default=nw=1:nk=1' in args:\n"
+        f"    print('{duration_s:.6f}')\n"
+        "else:\n"
+        f"    print('width=160\\nheight=90\\npix_fmt=yuv420p\\nduration={duration_s:.6f}')\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+def _recorded_call(capture: Path, index: int) -> tuple[list[str], Path]:
+    """``(argv, call_dir)`` of the ``index``-th stub ffmpeg mux call."""
+    call_dir = capture / str(index)
+    record = json.loads((call_dir / "argv.json").read_text(encoding="utf-8"))
+    return record["argv"], call_dir
+
+
+_DUCK_COMMAND = re.compile(
+    r"(\d+\.\d{3})-(\d+\.\d{3}) \[enter\] (\S+) volume (\S+), \[leave\] (\S+) volume (\S+);"
+)
+
+
+def _read_duck_commands(
+    path: Path, target: str, outside: str
+) -> tuple[list[tuple[int, int]], float]:
+    """Parse an ``asendcmd`` file → ``([(start_ms, end_ms)], inside_gain)``.
+
+    Every line must switch ``target`` (and only it) to one in-span gain on
+    enter and back to ``outside`` — the level the graph initialises it at —
+    on leave, so the level between spans always equals the untouched level.
+    """
+    intervals: list[tuple[int, int]] = []
+    inside_values: set[str] = set()
+    for line in path.read_text(encoding="ascii").splitlines():
+        match = _DUCK_COMMAND.fullmatch(line)
+        assert match is not None, line
+        start, end, enter_target, inside, leave_target, leave_value = match.groups()
+        assert (enter_target, leave_target, leave_value) == (target, target, outside), line
+        intervals.append((round(float(start) * 1000), round(float(end) * 1000)))
+        inside_values.add(inside)
+    assert len(inside_values) == 1
+    return intervals, float(inside_values.pop())
 
 
 # Source codecs each container accepts (WebM is VP8/VP9 + Opus/Vorbis only).
@@ -262,6 +360,20 @@ def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
     assert out_replace.is_file() and out_replace.stat().st_size > 0
     assert probe_has_audio_stream(out_replace) is True
 
+    # The mix ends in a -1 dBFS limiter: an over-full float dub (peak 1.4)
+    # comes out under full scale instead of clipping in the encoder.
+    loud_dub = write_wav_file(
+        (1.4 * np.sin(2.0 * np.pi * 880.0 * t)).astype(np.float32),
+        tmp_path / "loud_track.wav",
+        sample_rate=sr,
+    )
+    out_loud = mux_dubbed_video(
+        video, loud_dub, tmp_path / "out_loud.mp4", mix_mode="replace", embed_subtitles=False
+    )
+    loud_wav = extract_video_audio(out_loud, tmp_path / "loud_check.wav", sample_rate=48_000)
+    loud_samples, _ = read_wav(loud_wav)
+    assert float(np.max(np.abs(loud_samples))) < 0.97
+
     # 2. Duck mode (mixes ducked source audio + dub audio without truncating short/long dubs)
     short_dub = write_wav_file(
         dub_audio[: int(sr * 0.5)], tmp_path / "short_track.wav", sample_rate=sr
@@ -334,12 +446,12 @@ def test_mux_subtitles_soft_track_per_container_and_burn_in(tmp_path: Path) -> N
     for ext, codec in expected.items():
         assert supports_soft_subtitles(f"clip{ext.upper()}") is (codec is not None)
         src = _make_test_video(tmp_path / f"src{ext}")
-        extra = {"subtitle_language": "vie"} if ext == ".mp4" else {}
+        extra = {"subtitle_language": "vi"} if ext == ".mp4" else {}
         out = mux_dubbed_video(src, dub_wav, tmp_path / f"soft{ext}", srt_path=srt_file, **extra)
         subs = [name for kind, name in _streams(out) if kind == "subtitle"]
         assert subs == ([codec] if codec else []), ext
 
-    # The soft track carries the language tag a player uses to pick a default.
+    # The soft track carries the ISO 639-2/B tag a player uses to pick a default.
     res = subprocess.run(
         [
             str(resolve_ffprobe()),
@@ -486,7 +598,10 @@ def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     long_dub = write_wav_file(
         np.zeros(144_000, dtype=np.float32), tmp_path / "long.wav", sample_rate=48_000
     )
-    default_out = mux_dubbed_video(src, long_dub, tmp_path / "default.mp4")
+    plain_seen: list[float] = []
+    default_out = mux_dubbed_video(
+        src, long_dub, tmp_path / "default.mp4", progress=plain_seen.append
+    )
     seen: list[float] = []
     clamped = mux_dubbed_video(
         src, long_dub, tmp_path / "clamped.mp4", clamp_to_video=True, progress=seen.append
@@ -515,10 +630,13 @@ def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
     # ...but an explicit clamp trims to the picture.
     assert _duration(clamped) <= 1.1
     assert dub_overrun_ms(src, long_dub) > 500
-    # The mux reports monotone progress ending at 1.0.
-    assert seen, "expected progress callbacks"
-    assert seen[-1] == pytest.approx(1.0)
-    assert all(0.0 <= value <= 1.0 for value in seen)
+    # Plain and clamped exports both report monotone progress that holds at
+    # ≤ 0.95 until the +faststart finalize, then ends at 1.0.
+    for values in (plain_seen, seen):
+        assert len(values) >= 2, values
+        assert values == sorted(values)
+        assert values[-1] == pytest.approx(1.0)
+        assert all(0.0 <= value <= 0.95 for value in values[:-1])
 
 
 def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
@@ -528,10 +646,12 @@ def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
 
     from vienetts_app.core.video_dub import _run_ffmpeg
 
+    # Real ffmpeg prints both keys in MICROseconds (out_time_ms is a misnomer).
     script = (
         "import time\n"
         "for i in range(400):\n"
-        "    print(f'out_time_ms={i * 1000}', flush=True)\n"
+        "    print(f'out_time_us={i * 50_000}', flush=True)\n"
+        "    print(f'out_time_ms={i * 50_000}', flush=True)\n"
         "    print('progress=continue', flush=True)\n"
         "    time.sleep(0.05)\n"
     )
@@ -553,6 +673,210 @@ def test_run_ffmpeg_terminates_when_cancelled(tmp_path: Path) -> None:
     elapsed = time.monotonic() - started
     assert result.returncode != 0
     assert elapsed < 10
+
+
+def test_run_ffmpeg_progress_is_microseconds_monotonic_and_capped() -> None:
+    """FR-5.6: ``out_time_us`` and ``out_time_ms`` are both µs.
+
+    Progress never runs backwards and stays ≤ 0.95 while ffmpeg runs —
+    ``progress=end`` included; the mux reports 1.0 once the file is final.
+    """
+    import sys
+
+    from vienetts_app.core.video_dub import _run_ffmpeg
+
+    lines = [
+        "out_time_us=N/A",
+        "out_time_ms=N/A",
+        "progress=continue",
+        "out_time_us=5000000",
+        "out_time_ms=5000000",
+        "out_time=00:00:05.000000",
+        "progress=continue",
+        "out_time_us=3000000",
+        "out_time_ms=3000000",
+        "progress=continue",
+        "out_time_us=60000000",
+        "out_time_ms=60000000",
+        "progress=end",
+    ]
+    # An older ffmpeg prints only the misnamed out_time_ms (still µs).
+    legacy = [line for line in lines if not line.startswith("out_time_us")]
+    for emitted in (lines, legacy):
+        seen: list[float] = []
+        script = "".join(f"print({line!r}, flush=True)\n" for line in emitted)
+        result = _run_ffmpeg(
+            [sys.executable, "-c", script], cwd=None, progress=seen.append, duration_ms=10_000
+        )
+        assert result.returncode == 0
+        # 5 s of 10 s is 0.5; the 3 s regression is dropped; the overshoot and
+        # progress=end hold at the cap.
+        assert seen == [0.5, 0.95]
+
+
+def test_mux_progress_covers_plain_exports_and_holds_until_finalize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-5.6 / AC-16: a non-burn export without clamping reports progress.
+
+    The yardstick is the longer of the probed video and the dub WAV (read from
+    its header when ffprobe is absent); 1.0 comes only after the output is
+    promoted. The same call carries the limiter and the ISO 639-2/B tag.
+    """
+    data_dir = tmp_path / "data"
+    capture = tmp_path / "calls"
+    _install_stub_ffmpeg(data_dir, capture)
+    ffprobe = _install_stub_ffprobe(data_dir, duration_s=20.0)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"not decoded by the stub")
+    dub = write_wav_file(
+        np.zeros(80_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=8_000
+    )  # 10 s
+    srt = tmp_path / "retimed.srt"
+    srt.write_text("1\n00:00:00,100 --> 00:00:01,000\nXin chào\n", encoding="utf-8")
+
+    def export(name: str) -> list[tuple[float, bool]]:
+        target = tmp_path / name
+        seen: list[tuple[float, bool]] = []
+        mux_dubbed_video(
+            video,
+            dub,
+            target,
+            srt_path=srt,
+            subtitle_language="vi",
+            progress=lambda value: seen.append((value, target.is_file())),
+            data_dir=data_dir,
+        )
+        return seen
+
+    # 5 s of the 20 s video, then the cap while ffmpeg finalizes, then 1.0
+    # with the promoted file in place.
+    assert export("probed.mp4") == [(0.25, False), (0.95, False), (1.0, True)]
+    ffprobe.unlink()
+    monkeypatch.setattr(video_dub, "resolve_ffprobe", lambda data_dir=None: None)
+    assert export("fallback.mp4") == [(0.5, False), (0.95, False), (1.0, True)]
+
+    argv, _ = _recorded_call(capture, 1)
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph == "[1:a:0]alimiter=limit=0.891:level=0[aout]"
+    maps = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-map"]
+    assert maps == ["0:v:0", "[aout]", "2:s:0"]
+    assert argv[argv.index("-metadata:s:s:0") + 1] == "language=vie"
+    assert argv[argv.index("-movflags") + 1] == "+faststart"
+
+
+def test_mux_duck_envelope_scales_through_command_files(tmp_path: Path) -> None:
+    """FR-5.4 / AC-16: duck spans ride in ``asendcmd`` files passed by name.
+
+    1,500 spans keep the command line < 8 KB. Every span is ducked, a gap
+    above ``merge_gap_ms`` stays at full level, and nothing collapses spans to
+    a cap. Filtergraph-special characters in the output dir never reach the
+    graph (the files sit in ffmpeg's cwd), and the scratch dir is removed.
+    """
+    data_dir = tmp_path / "data"
+    capture = tmp_path / "calls"
+    _install_stub_ffmpeg(data_dir, capture)
+    _install_stub_ffprobe(data_dir, duration_s=1_500.0)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"not decoded by the stub")
+    dub = write_wav_file(np.zeros(800, dtype=np.float32), tmp_path / "track.wav", sample_rate=8_000)
+    out_dir = tmp_path / "Phụ đề, [x]; it's"
+
+    # Padding adds 20 + 80 ms, so these gaps become 1100, 150 (merges), 151, 800.
+    gaps = (1_200, 250, 251, 900)
+    spans: list[tuple[int, int]] = []
+    start = 500
+    for i in range(1_500):
+        spans.append((start, start + 300))
+        start += 300 + gaps[i % 4]
+    out = mux_dubbed_video(
+        video,
+        dub,
+        out_dir / "out.mp4",
+        mix_mode="duck",
+        embed_subtitles=False,
+        duck_spans=spans[::-1],
+        data_dir=data_dir,
+    )
+    assert out.is_file()
+    assert sorted(p.name for p in out_dir.iterdir()) == ["out.mp4"]
+    # A cancelled duck export removes its command files and partial output too.
+    with pytest.raises(video_dub.VideoDubCancelled):
+        mux_dubbed_video(
+            video,
+            dub,
+            out_dir / "cancelled.mp4",
+            mix_mode="duck",
+            embed_subtitles=False,
+            duck_spans=spans,
+            data_dir=data_dir,
+            cancel_check=lambda: True,
+        )
+    assert sorted(p.name for p in out_dir.iterdir()) == ["out.mp4"]
+
+    argv, call_dir = _recorded_call(capture, 0)
+    assert len(subprocess.list2cmdline(argv)) < 8 * 1024
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert "between(" not in graph
+    assert not any(ch in graph for ch in "/\\'") and "Phụ" not in graph
+    assert graph.endswith(",alimiter=limit=0.891:level=0[aout]")
+    # Each command file feeds the volume instance right behind its own
+    # asendcmd, which starts at the level the file restores between spans.
+    switches = re.findall(r"asendcmd=f=([\w.]+),(volume@\w+)=volume=([\d.]+)", graph)
+    assert len(switches) == 2 and len({target for _, target, _ in switches}) == 2
+    levels: dict[float, tuple[list[tuple[int, int]], float]] = {}
+    for filename, target, outside in switches:
+        intervals, inside = _read_duck_commands(call_dir / filename, target, outside)
+        levels[float(outside)] = (intervals, inside)
+    gate_intervals, gate_inside = levels[0.0]  # sidechain trigger: source only in spans
+    bg_intervals, bg_inside = levels[1.0]  # background: an extra -12 dB in spans
+    assert gate_inside == 1.0 and bg_inside == pytest.approx(10 ** (-12 / 20), abs=1e-5)
+    assert gate_intervals == bg_intervals
+    merged_gaps = sum(1 for i in range(len(spans) - 1) if gaps[i % 4] - 100 <= 150)
+    assert len(gate_intervals) == len(spans) - merged_gaps
+    starts = [s for s, _ in gate_intervals]
+
+    def ducked(t_ms: int) -> bool:
+        i = bisect_right(starts, t_ms) - 1
+        return i >= 0 and t_ms < gate_intervals[i][1]
+
+    for i, (s, e) in enumerate(spans):
+        assert ducked(s) and ducked((s + e) // 2) and ducked(e - 1)
+        if i + 1 < len(spans):
+            gap = spans[i + 1][0] - e
+            assert ducked(e + gap // 2) is (gap - 100 <= 150), (s, e, gap)
+
+    # Scale: 5,000 well-separated spans survive untouched (no collapse cap).
+    far = [(1_000 + i * 2_000, 1_500 + i * 2_000) for i in range(5_000)]
+    assert merge_duck_spans(far) == [(s - 20, e + 80) for s, e in far]
+
+
+def test_subtitle_language_tags_use_iso639_2b() -> None:
+    """FR-5.5: soft tracks carry ISO 639-2/B codes; anything unknown is ``und``."""
+    from vienetts_app.core.video_dub import _subtitle_language_tag
+
+    expected = {
+        "vi": "vie",
+        "VI": "vie",
+        "vie": "vie",
+        "en": "eng",
+        "zh": "chi",
+        "zh-CN": "chi",
+        "zh_TW": "chi",
+        "zho": "chi",
+        "ja": "jpn",
+        "ko": "kor",
+        "fr": "fre",
+        "fra": "fre",
+        "de": "ger",
+        "es": "spa",
+        "pt-BR": "por",
+        "xx": "und",
+        "klingon": "und",
+        "auto": "und",
+        "": "und",
+    }
+    assert {code: _subtitle_language_tag(code) for code in expected} == expected
 
 
 @requires_ffmpeg

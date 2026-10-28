@@ -39,6 +39,6 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Subtitles Tab Video Preview Panel (`VieNeuTTSApp-t80a`)
+## [x] Track: Subtitles Tab Video Preview Panel (`VieNeuTTSApp-t80a`)
 *Link: [./conductor/tracks/video_preview_panel_20261028/](./conductor/tracks/video_preview_panel_20261028/)*
 

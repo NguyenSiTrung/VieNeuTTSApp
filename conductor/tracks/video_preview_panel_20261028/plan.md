@@ -10,7 +10,7 @@
 <!-- execution: sequential -->
 <!-- depends: -->
 
-- [ ] **Task 1.1: Expose `videoUrl`, `videoSeekRequested`, `videoReleaseRequested`, unrendered video cue seeking, and audio exclusivity in `SubtitleController`**
+- [x] **Task 1.1: Expose `videoUrl`, `videoSeekRequested`, `videoReleaseRequested`, unrendered video cue seeking, and audio exclusivity in `SubtitleController`** (e2d9492)
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py -->
   - Red tests:
     - `videoUrl` returns `QUrl.fromLocalFile(videoPath).toString()` when `hasVideo` is `True` and `""` when `hasVideo` is `False`; `clearVideo()`, `clear()`, `openProject()`, `removeProject()`, and `exportVideo()` emit `videoReleaseRequested` before touching disk.
@@ -29,7 +29,7 @@
 <!-- execution: sequential -->
 <!-- depends: -->
 
-- [ ] **Task 2.1: Create `SubtitleVideoPreview.qml` with dual-mode `MediaPlayer`/`VideoOutput`, live caption overlay, mini transport, collapse toggle, and codec fallback**
+- [x] **Task 2.1: Create `SubtitleVideoPreview.qml` with dual-mode `MediaPlayer`/`VideoOutput`, live caption overlay, mini transport, collapse toggle, and codec fallback** (e210942)
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleVideoPreview.qml, src/vienetts_app/ui/qml/qmldir, src/vienetts_app/ui/qml/components/qmldir, tests/unit/test_subtitle_components.py -->
   - Red tests:
     - Add `"SubtitleVideoPreview.qml"` to `COMPONENTS` in `tests/unit/test_subtitle_components.py` and verify standalone instantiation under `QT_QPA_PLATFORM=offscreen` with `StubController`.
@@ -46,17 +46,17 @@
 <!-- execution: sequential -->
 <!-- depends: phase1, phase2 -->
 
-- [ ] **Task 3.1: Integrate `SubtitleVideoPreview` into `SubtitleCard.qml` across `Source`, `Prepare`, and `Produce` stages and update `API_ONLY_PROPERTIES`**
+- [x] **Task 3.1: Integrate `SubtitleVideoPreview` into `SubtitleCard.qml` across `Source`, `Prepare`, and `Produce` stages and update `API_ONLY_PROPERTIES`** (99ec44c)
   <!-- files: src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_subtitle_controller.py, tests/smoke/test_ui_tabs.py -->
   - Red tests:
-    - `test_every_property_is_consumed_or_api_only` in `tests/unit/test_subtitle_controller.py` passes with QML-consumed properties (`positionMs`, `videoPath` / `videoUrl`) reconciled in `API_ONLY_PROPERTIES`.
+    - `test_every_property_is_consumed_or_api_only` in `tests/unit/test_subtitle_controller.py` passes with QML-consumed properties (`positionMs`, `durationMs`, `videoPath`, `videoUrl`) reconciled in `API_ONLY_PROPERTIES`.
     - Smoke test in `tests/smoke/test_ui_tabs.py` asserts `subtitleVideoPreview` visibility across `source`, `prepare`, and `produce` when `hasVideo` is `True`, 2-column layout in `prepare` and `produce` at wide widths (`>= 900 px`), compact auto-collapse at `640×420` with `subtitleActionDock` remaining visible, and unrendered cue-row click seeking the video preview.
   - Green implementation:
     - Mount `SubtitleVideoPreview` in `SubtitleCard.qml` (in `source` below `SubtitleSourcePanel`, and in the right-hand column of the `Prepare`/`Produce` workspace `GridLayout` stacked above `subtitleTimingPanel`).
-    - Reconcile `API_ONLY_PROPERTIES` in `src/vienetts_app/ui/subtitle_controller.py`.
+    - Reconcile `API_ONLY_PROPERTIES` and `CUE_ROLES` in `src/vienetts_app/ui/subtitle_controller.py`.
     - Update `FakeSubtitleController` and subtitle smoke scenarios in `tests/smoke/test_ui_tabs.py`.
 
-- [ ] **Task 3.2: Update English translations (`vienetts_en.ts`), audit table (`SUBTITLES_TAB_UX_AUDIT.md`), and verify full gates**
+- [x] **Task 3.2: Update English translations (`vienetts_en.ts`), audit table (`SUBTITLES_TAB_UX_AUDIT.md`), and verify full gates** (52e4f25)
   <!-- files: src/vienetts_app/ui/i18n/vienetts_en.ts, docs/ui-audit/SUBTITLES_TAB_UX_AUDIT.md, tests/unit/test_i18n.py -->
   <!-- depends: task1 -->
   - Red tests:

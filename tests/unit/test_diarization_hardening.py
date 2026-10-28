@@ -9,7 +9,6 @@ timestamps, and every re-run re-shelling out to the CLI.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -139,12 +138,13 @@ def test_hung_child_is_killed_at_timeout(tmp_path: Path) -> None:
         )
 
 
-def test_48k_wav_is_downmixed_to_16k_before_the_model(tmp_path: Path) -> None:
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
+def test_48k_wav_is_downmixed_to_16k_and_a_legacy_cache_is_adopted(tmp_path: Path) -> None:
+    counter = tmp_path / "calls.txt"
     cli_py = (
         "#!/usr/bin/env python3\n"
         "import json, sys, wave\n"
+        f"with open({str(counter.as_posix())!r}, 'a', encoding='utf-8') as _fh:\n"
+        "    _fh.write('x\\n')\n"
         "args = sys.argv[1:]\n"
         "out = args[args.index('--turns-out') + 1]\n"
         "audio = args[args.index('--audio') + 1]\n"
@@ -162,15 +162,31 @@ def test_48k_wav_is_downmixed_to_16k_before_the_model(tmp_path: Path) -> None:
         np.zeros(sr * 3, dtype=np.float32), tmp_path / "movie48.wav", sample_rate=sr
     )
     work_dir = tmp_path / "work"
-    tagged = diarize_cues(
-        wav,
-        _cues(),
-        DiarizationConfig(backend="nemotron_gguf", device="cpu"),
-        data_dir=tmp_path,
-        work_dir=work_dir,
-    )
+    cfg = DiarizationConfig(backend="nemotron_gguf", device="cpu")
+    tagged = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
     assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_01"]
-    assert (work_dir / "source_wav_16k.wav").is_file()
+    shared = work_dir / "source_16k.wav"
+    assert shared.is_file() and not (work_dir / "source_wav_16k.wav").exists()
+
+    # A pre-upgrade cache dir (diarization's own source_wav_16k.wav, its unversioned
+    # sidecar and turns keyed on that path) is adopted without reconversion and still
+    # serves the cached turns.
+    stamp = shared.stat().st_mtime_ns
+    sidecar = work_dir / "source_16k.wav.json"
+    legacy_sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
+    legacy_sidecar.pop("format")
+    (work_dir / "source_wav_16k.wav.json").write_text(json.dumps(legacy_sidecar), encoding="utf-8")
+    sidecar.unlink()
+    shared.rename(work_dir / "source_wav_16k.wav")
+    turns_cache = work_dir / "diar_turns_cache.json"
+    turns_cache.write_text(
+        turns_cache.read_text(encoding="utf-8").replace("source_16k.wav", "source_wav_16k.wav"),
+        encoding="utf-8",
+    )
+    again = diarize_cues(wav, _cues(), cfg, data_dir=tmp_path, work_dir=work_dir)
+    assert [c.speaker for c in again] == ["SPEAKER_01", "SPEAKER_01"]
+    assert counter.read_text(encoding="utf-8").count("x") == 1
+    assert shared.stat().st_mtime_ns == stamp
 
 
 def test_turns_are_cached_across_runs(tmp_path: Path) -> None:

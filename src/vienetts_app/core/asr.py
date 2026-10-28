@@ -29,12 +29,17 @@ from vienetts_app.core.ai_models import (
     resolve_asr_model_path,
     resolve_whisper_cpp_cli,
 )
-from vienetts_app.core.audio import StreamingWavWriter, read_wav_range, write_wav_file
+from vienetts_app.core.audio import StreamingWavWriter, read_wav_range
+from vienetts_app.core.audio_prep import (
+    AudioPrepCancelled,
+    AudioPrepError,
+    cache_key_paths,
+    ensure_source_16k,
+)
 from vienetts_app.core.diarization import refine_cues_speech_bounds
 from vienetts_app.core.llm_client import http_error_detail
 from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
-from vienetts_app.core.video_dub import VideoDubCancelled, VideoDubError, extract_video_audio
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
 _WHISPER_PP_RE = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
@@ -46,8 +51,6 @@ _NON_SPEECH_TOKEN_RE = re.compile(
 )
 MODEL_SAMPLE_RATE = 16_000
 API_CHUNK_SECONDS = 600
-SHARED_WAV_FILENAME = "source_16k.wav"
-WAV_INPUT_16K_FILENAME = "input_16k.wav"
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
 _FASTER_WHISPER_CACHE: dict[tuple[Any, str, str, str, int], Any] = {}
 
@@ -930,33 +933,6 @@ def _run_openai_whisper_api(
     return result
 
 
-def _is_16k_mono_wav(path: Path) -> bool:
-    try:
-        import soundfile as sf
-
-        info = sf.info(str(path))
-    except Exception:  # noqa: BLE001
-        return False
-    return int(info.samplerate) == MODEL_SAMPLE_RATE and int(info.channels) == 1
-
-
-def _convert_wav_to_16k_mono(src: Path, target: Path) -> bool:
-    try:
-        import soundfile as sf
-
-        data, sr = sf.read(str(src), dtype="float32", always_2d=True)
-        mono = np.mean(data, axis=1, dtype=np.float32) if data.shape[1] > 1 else data[:, 0]
-        if int(sr) != MODEL_SAMPLE_RATE and mono.size > 0:
-            out_len = max(1, int(round(mono.size * MODEL_SAMPLE_RATE / float(sr))))
-            x_old = np.linspace(0.0, 1.0, mono.size, endpoint=False)
-            x_new = np.linspace(0.0, 1.0, out_len, endpoint=False)
-            mono = np.interp(x_new, x_old, mono).astype(np.float32)
-        write_wav_file(mono, target, sample_rate=MODEL_SAMPLE_RATE)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _ensure_16k_wav(
     src: Path,
     work_dir: Path | None,
@@ -966,66 +942,39 @@ def _ensure_16k_wav(
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
-    """Return a 16 kHz mono WAV for ``src``, converting and caching it with a sidecar."""
-    if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
-        return src, temp_dir
+    """Return the shared 16 kHz mono WAV for ``src`` (``audio_prep.ensure_source_16k``).
 
-    filename = SHARED_WAV_FILENAME if src.suffix.lower() != ".wav" else WAV_INPUT_16K_FILENAME
+    With a ``work_dir`` this is the media cache's ``source_16k.wav``, which
+    diarization reuses; without one it lives in a temp dir the caller cleans.
+    """
     if work_dir is not None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        target = work_dir / filename
+        cache_dir = work_dir
     else:
-        temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
-        target = Path(temp_dir.name) / "extracted_16k.wav"
+        if temp_dir is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
+        cache_dir = Path(temp_dir.name)
 
-    sidecar = target.with_name(target.name + ".json")
+    def report(fraction: float) -> None:
+        if progress_cb is not None:
+            progress_cb(0.05 + 0.05 * fraction, "Đang trích xuất âm thanh…")
+
     try:
-        src_stat = src.stat()
-    except OSError:
-        src_stat = None
-    expected = None
-    if src_stat is not None:
-        expected = {
-            "source": str(src.resolve()),
-            "size": src_stat.st_size,
-            "mtime_ns": src_stat.st_mtime_ns,
-        }
-    reusable = False
-    if target.is_file() and target.stat().st_size > 0 and _is_16k_mono_wav(target):
-        try:
-            stored = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            stored = None
-        if isinstance(stored, dict) and expected is not None:
-            reusable = all(stored.get(k) == v for k, v in expected.items())
-        elif src_stat is not None:
-            reusable = target.stat().st_mtime >= src_stat.st_mtime
-    if reusable:
-        return target, temp_dir
-
-    if progress_cb is not None:
-        progress_cb(0.05, "Đang trích xuất âm thanh từ video…")
-    if src.suffix.lower() != ".wav" or not _convert_wav_to_16k_mono(src, target):
-        try:
-            extract_video_audio(
-                src,
-                target,
-                sample_rate=MODEL_SAMPLE_RATE,
-                mono=True,
-                data_dir=data_dir,
-                cancel_check=cancel_check,
-            )
-        except VideoDubCancelled as exc:
-            raise AsrCancelled("Đã hủy nhận diện giọng nói.") from exc
-        except VideoDubError as exc:
-            raise AsrError(str(exc)) from exc
-    if expected is not None:
-        with contextlib.suppress(OSError):
-            sidecar.write_text(json.dumps(expected), encoding="utf-8")
-    return target, temp_dir
+        wav = ensure_source_16k(
+            src,
+            cache_dir,
+            data_dir=data_dir,
+            cancel_check=cancel_check,
+            progress_cb=report if progress_cb is not None else None,
+        )
+    except AudioPrepCancelled as exc:
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.") from exc
+    except AudioPrepError as exc:
+        raise AsrError(str(exc)) from exc
+    return wav, temp_dir
 
 
-def _asr_cache_key(wav_path: Path, config: AsrConfig) -> str:
+def _asr_cache_key(wav_path: Path, config: AsrConfig, *, key_path: Path | None = None) -> str:
+    """Segments-cache key for ``wav_path``; ``key_path`` names it as a legacy alias."""
     try:
         st = wav_path.stat()
     except OSError:
@@ -1033,13 +982,17 @@ def _asr_cache_key(wav_path: Path, config: AsrConfig) -> str:
     lang = (config.language or "auto").strip() or "auto"
     model = (config.model or "base").strip() or "base"
     backend = (config.backend or "auto").strip() or "auto"
-    key = f"{wav_path.resolve()}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
+    named = (key_path or wav_path).resolve()
+    key = f"{named}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
     if config.api_base_url.strip():
         key += f":{config.api_base_url.strip()}:{config.api_model.strip()}"
     return key
 
 
-def _load_cached_segments(work_dir: Path | None, key: str) -> list[RawSegment] | None:
+def _load_cached_segments(
+    work_dir: Path | None, key: str, *, aliases: Sequence[str] = ()
+) -> list[RawSegment] | None:
+    """Cached segments stored under ``key`` (or a legacy ``aliases`` key)."""
     if work_dir is None or not key:
         return None
     path = work_dir / ASR_CACHE_FILENAME
@@ -1047,7 +1000,7 @@ def _load_cached_segments(work_dir: Path | None, key: str) -> list[RawSegment] |
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("key") != key:
+    if not isinstance(data, dict) or data.get("key") not in (key, *aliases):
         return None
     segs = data.get("segments")
     if not isinstance(segs, list) or not segs:
@@ -1140,7 +1093,10 @@ def transcribe_media_to_cues(
             raise AsrCancelled("Đã hủy nhận diện giọng nói.")
 
         cache_key = _asr_cache_key(wav_path, cfg)
-        cached = _load_cached_segments(work_dir, cache_key)
+        # A legacy input_16k.wav adopted as source_16k.wav keeps its size and
+        # mtime, so segments cached against the old name still apply.
+        aliases = [_asr_cache_key(wav_path, cfg, key_path=p) for p in cache_key_paths(wav_path)[1:]]
+        cached = _load_cached_segments(work_dir, cache_key, aliases=aliases)
         if cached is not None:
             if progress_cb is not None:
                 progress_cb(1.0, "Hoàn tất nhận diện giọng nói.")

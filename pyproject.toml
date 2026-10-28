@@ -16,6 +16,7 @@ dependencies = [
     "platformdirs>=4",
     "python-docx>=1.1",
     "pypdf>=6",  # MIT (PDF import) — chosen over AGPL PyMuPDF at Phase 0 (spike-report §7)
+    "soxr>=1.0",  # LGPL-2.1 (dynamic); already pulled in by vieneu — streaming 16 kHz prep
 ]
 
 ## NOTE: bare `torch==2.8.0` resolves the CPU wheel from PyPI. The `gpu` extra

@@ -36,9 +36,15 @@ from vienetts_app.core.ai_models import (
     resolve_diarization_model_path,
 )
 from vienetts_app.core.audio import read_wav_range, write_wav_file
+from vienetts_app.core.audio_prep import (
+    AudioPrepCancelled,
+    AudioPrepError,
+    cache_key_paths,
+    ensure_source_16k,
+)
 from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import Cue
-from vienetts_app.core.video_dub import VideoDubCancelled, VideoDubError, extract_video_audio
+from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
 logger = logging.getLogger(__name__)
 
@@ -637,8 +643,6 @@ def _cluster_embeddings(
 
 
 TURNS_CACHE_FILENAME = "diar_turns_cache.json"
-SHARED_WAV_FILENAME = "source_16k.wav"
-WAV_INPUT_16K_FILENAME = "source_wav_16k.wav"
 #: Model input is 16 kHz mono; a 48 kHz WAV used to be fed to the CLI as-is,
 #: which made every timestamp three times too long.
 MODEL_SAMPLE_RATE = 16_000
@@ -693,15 +697,22 @@ def _wav_duration_s(wav_path: Path) -> float:
     return 0.0
 
 
-def _turns_cache_key(wav_path: Path, config: DiarizationConfig) -> str:
+def _turns_cache_key(
+    wav_path: Path, config: DiarizationConfig, *, key_path: Path | None = None
+) -> str:
+    """Turns-cache key for ``wav_path``; ``key_path`` names it as a legacy alias."""
     try:
         stat = wav_path.stat()
     except OSError:
         return ""
-    return f"{wav_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config.model}"
+    named = (key_path or wav_path).resolve()
+    return f"{named}|{stat.st_size}|{stat.st_mtime_ns}|{config.model}"
 
 
-def _load_cached_turns(work_dir: Path | None, key: str) -> list[RttmTurn] | None:
+def _load_cached_turns(
+    work_dir: Path | None, key: str, *, aliases: Sequence[str] = ()
+) -> list[RttmTurn] | None:
+    """Cached turns stored under ``key`` (or a legacy ``aliases`` key)."""
     if work_dir is None or not key:
         return None
     path = work_dir / TURNS_CACHE_FILENAME
@@ -709,7 +720,7 @@ def _load_cached_turns(work_dir: Path | None, key: str) -> list[RttmTurn] | None
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("key") != key:
+    if not isinstance(data, dict) or data.get("key") not in (key, *aliases):
         return None
     turns = data.get("turns")
     if not isinstance(turns, list) or not turns:
@@ -738,16 +749,6 @@ def _store_cached_turns(work_dir: Path | None, key: str, turns: list[RttmTurn]) 
         )
 
 
-def _is_16k_mono_wav(path: Path) -> bool:
-    try:
-        import soundfile as sf
-
-        info = sf.info(str(path))
-    except Exception:  # noqa: BLE001 - not a readable WAV: treat as needing conversion
-        return False
-    return int(info.samplerate) == MODEL_SAMPLE_RATE and int(info.channels) == 1
-
-
 def _ensure_16k_wav(
     src: Path,
     work_dir: Path | None,
@@ -756,62 +757,24 @@ def _ensure_16k_wav(
     *,
     cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
-    """Return a 16 kHz mono WAV for ``src``, converting and caching it if needed."""
-    if src.suffix.lower() == ".wav" and _is_16k_mono_wav(src):
-        return src, temp_dir
+    """Return the shared 16 kHz mono WAV for ``src`` (``audio_prep.ensure_source_16k``).
 
-    filename = SHARED_WAV_FILENAME if src.suffix.lower() != ".wav" else WAV_INPUT_16K_FILENAME
+    With a ``work_dir`` this is the media cache's ``source_16k.wav`` that ASR
+    already produced, so a WAV transcribed first is never converted again.
+    """
     if work_dir is not None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        target = work_dir / filename
+        cache_dir = work_dir
     else:
-        temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
-        target = Path(temp_dir.name) / "diar_16k.wav"
-
-    sidecar = target.with_name(target.name + ".json")
+        if temp_dir is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
+        cache_dir = Path(temp_dir.name)
     try:
-        src_stat = src.stat()
-    except OSError:
-        src_stat = None
-    expected = None
-    if src_stat is not None:
-        expected = {
-            "source": str(src.resolve()),
-            "size": src_stat.st_size,
-            "mtime_ns": src_stat.st_mtime_ns,
-        }
-    reusable = False
-    if target.is_file() and target.stat().st_size > 0:
-        try:
-            stored = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            stored = None
-        if isinstance(stored, dict) and expected is not None:
-            reusable = all(stored.get(k) == v for k, v in expected.items())
-        elif src_stat is not None:
-            # The ASR step writes this WAV without a sidecar; accept it only
-            # when it is at least as new as the media it was extracted from.
-            reusable = target.stat().st_mtime >= src_stat.st_mtime
-    if reusable:
-        return target, temp_dir
-
-    try:
-        extract_video_audio(
-            src,
-            target,
-            sample_rate=MODEL_SAMPLE_RATE,
-            mono=True,
-            data_dir=data_dir,
-            cancel_check=cancel_check,
-        )
-    except VideoDubCancelled as exc:
+        wav = ensure_source_16k(src, cache_dir, data_dir=data_dir, cancel_check=cancel_check)
+    except AudioPrepCancelled as exc:
         raise DiarizationCancelled("Đã hủy phân tách người nói.") from exc
-    except VideoDubError as exc:
+    except AudioPrepError as exc:
         raise DiarizationError(str(exc)) from exc
-    if expected is not None:
-        with contextlib.suppress(OSError):
-            sidecar.write_text(json.dumps(expected), encoding="utf-8")
-    return target, temp_dir
+    return wav, temp_dir
 
 
 def _run_nemotron_gguf_diarization(
@@ -841,7 +804,12 @@ def _run_nemotron_gguf_diarization(
         )
 
     cache_key = _turns_cache_key(wav_path, config)
-    cached = _load_cached_turns(work_dir, cache_key)
+    # A legacy source_wav_16k.wav adopted as source_16k.wav keeps its size and
+    # mtime, so turns cached against the old name still apply.
+    aliases = [
+        _turns_cache_key(wav_path, config, key_path=p) for p in cache_key_paths(wav_path)[1:]
+    ]
+    cached = _load_cached_turns(work_dir, cache_key, aliases=aliases)
     if cached is not None:
         if progress_cb is not None:
             progress_cb(1.0)

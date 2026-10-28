@@ -68,7 +68,7 @@ Test seams and fakes:
     - `_deliver` clears `_work`/`_on_done`/`_on_error` in `finally` and calls `deleteLater()`.
     - Add `ProgressRelay(QObject)`: a queued `Signal(int, float, str)`, an injectable `current_generation` callable, and the GUI-side callback.
 
-- [~] **Task 1.3: Shared `source_16k.wav` with streaming anti-aliased resampling (FR-3.6)**
+- [x] **Task 1.3: Shared `source_16k.wav` with streaming anti-aliased resampling (FR-3.6)**
   <!-- files: src/vienetts_app/core/audio_prep.py, src/vienetts_app/core/asr.py, src/vienetts_app/core/diarization.py, tests/unit/test_audio_prep.py, tests/unit/test_asr.py, tests/unit/test_diarization_hardening.py, pyproject.toml, uv.lock -->
   <!-- depends: task1 -->
   - Red tests:

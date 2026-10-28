@@ -264,22 +264,42 @@ def test_wav_48k_stereo_normalized_sidecar_invalidated_and_segments_cached(
     info = sf.info(str(passed_wav))
     assert info.samplerate == 16_000
     assert info.channels == 1
-    sidecar = work_dir / "input_16k.wav.json"
+    shared = work_dir / "source_16k.wav"
+    assert passed_wav == shared
+    sidecar = work_dir / "source_16k.wav.json"
     assert sidecar.is_file()
-    assert (work_dir / "asr_segments_cache.json").is_file()
+    segments_cache = work_dir / "asr_segments_cache.json"
+    assert segments_cache.is_file()
 
     # 2. Second call with unchanged input serves from asr_segments_cache.json without invoking CLI
     cues2 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
     assert cues2 == cues1
     assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 1
 
-    # 3. Modifying the source WAV invalidates both input_16k.wav sidecar and segment cache
+    # 2b. A pre-upgrade cache dir (ASR's own input_16k.wav, its unversioned sidecar and
+    # segments keyed on that path) is adopted without reconversion and still hits the cache.
+    stamp = shared.stat().st_mtime_ns
+    legacy_sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
+    legacy_sidecar.pop("format")
+    (work_dir / "input_16k.wav.json").write_text(json.dumps(legacy_sidecar), encoding="utf-8")
+    sidecar.unlink()
+    shared.rename(work_dir / "input_16k.wav")
+    segments_cache.write_text(
+        segments_cache.read_text(encoding="utf-8").replace("source_16k.wav", "input_16k.wav"),
+        encoding="utf-8",
+    )
+    assert transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path) == cues1
+    assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 1
+    assert shared.stat().st_mtime_ns == stamp
+    assert not (work_dir / "input_16k.wav").exists()
+
+    # 3. Modifying the source WAV invalidates both the shared WAV sidecar and segment cache
     stereo_48k_2 = np.zeros((96_000, 2), dtype=np.float32)
     sf.write(str(src_wav), stereo_48k_2, 48_000, subtype="PCM_16")
     cues3 = transcribe_media_to_cues(src_wav, cfg, work_dir=work_dir, data_dir=tmp_path)
     assert [c.text for c in cues3] == ["Xin chào từ whisper-cli."]
     assert len(seen_wav_log.read_text(encoding="utf-8").strip().splitlines()) == 2
-    assert sf.info(str(work_dir / "input_16k.wav")).frames == 32_000
+    assert sf.info(str(shared)).frames == 32_000
 
 
 def test_auto_cancel_is_not_swallowed_and_fallback_notes_recorded(

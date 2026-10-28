@@ -2830,6 +2830,7 @@ dependencies = [
     { name = "pypdf" },
     { name = "pyside6" },
     { name = "python-docx" },
+    { name = "soxr" },
     { name = "vieneu" },
 ]
 
@@ -2856,6 +2857,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "python-docx", specifier = ">=1.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "soxr", specifier = ">=1.0" },
     { name = "torch", marker = "extra == 'gpu'", specifier = "==2.8.0" },
     { name = "torchaudio", marker = "extra == 'gpu'", specifier = "==2.8.0" },
     { name = "transformers", marker = "extra == 'gpu'", specifier = "==4.57.6" },

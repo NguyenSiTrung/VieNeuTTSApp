@@ -1,52 +1,66 @@
 {
-  "timestamp": "2026-10-28T08:15:00+07:00",
+  "timestamp": "2026-10-28T18:40:00+07:00",
   "scope": "all",
-  "drift": "NONE",
-  "beads_drift": "CHECKED: no active tracks in conductor/tracks/ (all 14 tracks archived under conductor/archive/), so zero plan.md/Beads drift is possible. 532 total issues: 1 open (VieNeuTTSApp-t80a P3 video preview panel), 0 in_progress, 1 blocked (VieNeuTTSApp-nqx.2.4 awaiting nqx.2.3), 40 deferred to 2027-01-01, 490 closed — identical to the 2026-10-26 refresh (bd stats).",
+  "drift": "FEATURE ADDED — track `video_preview_panel_20261028` (epic `VieNeuTTSApp-t80a`) implemented, verified, and archived since the previous 2026-10-28 no-drift refresh; no dependency, CI, gate, or policy drift.",
+  "commits_since_last_refresh": "427de07..2e96c3a (9 commits: 4ddf6f8 track spec/plan/learnings, e2d9492 controller video seam, e210942 SubtitleVideoPreview.qml, 99ec44c SubtitleCard integration, 52e4f25 i18n + audit 3.6 resolution, 9e8b188/2faa30a track complete + archive, 3e20977/2e96c3a beads exports)",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "added a 2026-10-28 no-drift refresh marker above the 2026-10-26 marker: 1 commit since last refresh (c0c482d beads export + vienetts_en.ts <location> offsets only), no feature/behavior or dep changes, all 14 tracks still archived, suite 1614/1596, ruff 214 files green, i18n 1175/1175, beads 532/1 open/1 blocked/40 deferred/490 closed"
+        "feature 11 gained an 'In-app video preview panel' bullet (track `video_preview_panel_20261028`, epic `t80a`): `SubtitleVideoPreview.qml` with `MediaPlayer` + `VideoOutput` + `Loader`-wrapped `AudioOutput`, source/dub audio exclusivity (`notifyVideoPreviewPlaying`), unrendered cue seeking (`videoSeekRequested`), scrub highlight (`syncActiveCueFromVideo`), caption overlay, 560 px auto-collapse, codec fallback notice, `videoReleaseRequested` handle release, all-stage placement",
+        "Implementation Status date bumped 2026-10-26 -> 2026-10-28 and the suite history extended with '+1 in track `video_preview_panel_20261028` (`e2d9492..52e4f25`, -> 1615/1597)'",
+        "new 2026-10-28 (2) refresh marker above the 2026-10-28 no-drift marker"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "added a 2026-10-28 no-drift refresh marker: no root pyproject.toml/uv.lock dep drift (vieneu 3.3.0, PySide6 >=6.9, app v0.3.0), no CI/workflow changes, suite re-verified live at 1614 collected / 1596 selected, ruff check + format --check green (214 files)"
+        "Audio section: QtMultimedia line now records `SubtitleVideoPreview` video playback (`MediaPlayer`/`VideoOutput`/`Loader`-wrapped `AudioOutput`) shipped inside the already-declared `PySide6` meta-package (`PySide6-Addons` 6.11.2), and notes the frozen spec has collected the multimedia plugin trees since `e15bfa3`",
+        "new 2026-10-28 (2) refresh marker: no root `pyproject.toml`/`uv.lock` dep drift, no packaging/CI/workflow change, gates re-verified live"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "added a 2026-10-28 no-drift refresh marker at the top: gates re-verified live (suite 1614/1596, -m 'not slow' 1574, -m 'not slow and not benchmark' 1556; ruff 214 files green; i18n 1175/1175 finished, 0 unfinished)"
+        "new 2026-10-28 (2) refresh marker with live gate figures and the +1 item explanation (QML coverage rides inside consolidated component/smoke scenario items)",
+        "suite-history bullet extended: 2026-10-28 `video_preview_panel_20261028` (`t80a`, `e2d9492..52e4f25`, +1 item) -> 1615 collected / 1597 selected"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "Last refreshed footer updated to 2026-10-28 with the no-drift note; bullet count unchanged at 217 across 4 sections, 14 archived tracks"
+        "no change needed — the track itself had already elevated 5 patterns and set the footer (222 bullets, was 217; 15 archived tracks; suite 1615/1597). Verified accurate against the live tree."
+      ]
+    },
+    {
+      "file": "conductor/tracks.md",
+      "updates": [
+        "no change needed — the archived `video_preview_panel_20261028` entry was already recorded by `/conductor-archive` in `2faa30a`"
       ]
     }
   ],
   "verification": {
-    "collect_only": "1596/1614 tests collected (18 deselected) — matches the documented figures",
+    "collect_only": "1615 collected / 1597 selected (18 benchmark deselected) — was 1614/1596",
+    "collect_slow": "-m 'not slow' -> 1575 / 1615 (40 deselected)",
+    "collect_slow_no_bench": "-m 'not slow and not benchmark' -> 1557 / 1615 (58 deselected)",
     "ruff": "ruff check . -> All checks passed!; ruff format --check . -> 214 files already formatted",
-    "i18n": "vienetts_en.ts 1175 messages, 0 type=\"unfinished\"",
-    "deps": "git diff 24b1f71..HEAD -- pyproject.toml uv.lock -> empty",
-    "tracks": "conductor/tracks/ empty; conductor/archive/ holds 14 track dirs; conductor/tracks.md documents all 14 archived entries"
+    "i18n": "vienetts_en.ts 1190 messages, 0 type=\"unfinished\" (was 1175/0; +15 strings for SubtitleVideoPreview)",
+    "deps": "git diff 427de07..HEAD -- pyproject.toml uv.lock requirements.txt -> empty",
+    "packaging": "no packaging/ changes; multimedia Qt plugin trees collected since e15bfa3 (2026-09-07)",
+    "tracks": "conductor/tracks/ empty; conductor/archive/ holds 15 track dirs, all 15 documented in conductor/tracks.md"
   },
   "learnings_consolidation": {
-    "tracks_scanned": 14,
-    "new_tracks_since_last_refresh": [],
+    "tracks_scanned": 15,
+    "new_tracks_since_last_refresh": ["video_preview_panel_20261028"],
     "patterns_before": 217,
     "new_patterns_added": 0,
-    "patterns_after": 217,
-    "source": "No track completed or archived since the 2026-10-26 refresh, and the only intervening commit (c0c482d) is an i18n <location> offset / beads export sync with no code change, so there were no new learnings to consolidate."
+    "patterns_after": 222,
+    "source": "The 5 patterns from `video_preview_panel_20261028` were elevated during the track's own completion (Dual-mode subtitle video preview & stage-spanning layout; lazy `Loader`-wrapped `AudioOutput`; omit `\"index\"` from `DictListModel.roleNames()`; `@Property(\"QVariantList\")` in QML test stubs; `elide: Text.ElideRight` on dynamic-filename `SectionLabel`). No duplicate candidates remained across the 15 archived tracks, so this refresh added none."
   },
+  "beads_drift": "CHECKED via `bd stats --json`: 539 total / 0 open / 0 in_progress / 1 blocked / 40 deferred / 498 closed. Epic `VieNeuTTSApp-t80a` (video preview panel) is closed; the single blocked issue is now `VieNeuTTSApp-nqx.2.3` (P2, 'Task 0.3: Lock the supported dependency and device matrix') — previously `nqx.2.4` was the blocked head of that Qwen Phase-0 chain. Zero plan.md drift possible: `conductor/tracks/` is empty.",
   "known_baseline_failures": {
     "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy)",
-    "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, test_qwen_host.py::TestFrameLoop::test_session_lifecycle, or test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk). The in-process TestTorchPosture delitem(sys.modules, 'torch') trigger for the triton TORCH_LIBRARY race was fixed in 5eb6f85."
+    "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host (test_controller.py::TestBgOpsAsync, test_worker_thread_safety_smoke, test_qwen_host.py::TestFrameLoop::test_session_lifecycle, or test_ui_shell.py null-context-property race VieNeuTTSApp-qjkk)"
   },
-  "commits_since_last_refresh": "24b1f71..c0c482d (1 commit: c0c482d chore: sync beads export and i18n line offsets for dub_pacing_alignment_20261026 — .beads/issues.jsonl + vienetts_en.ts <location> offsets only)"
+  "notes": "Scope defaulted to `all` (the previous refresh scope, and only one track landed since). Drift was real this time — the previous 2026-10-28 entry correctly reported no drift for the 427de07 tree; the video-preview track then landed on top of it."
 }

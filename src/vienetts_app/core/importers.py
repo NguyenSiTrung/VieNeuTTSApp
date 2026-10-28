@@ -13,7 +13,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from vienetts_app.core.paths import normalize_local_path
-from vienetts_app.core.subtitles import SubtitleError, cues_text, parse_cues
+from vienetts_app.core.subtitles import (
+    SubtitleError,
+    cues_text,
+    decode_subtitle_bytes,
+    parse_cues,
+)
 
 # docx/pypdf import lazily inside their readers: both are heavyweight
 # (~170 ms combined on the app's import path) and only a .docx/.pdf import
@@ -154,14 +159,14 @@ def _read_srt(path: Path, *, keep_raw: bool = False) -> str:
     SRT *timeline alignment* uses (``core.align``), so "what a cue says" has one
     definition. Files without any ``-->`` line are refused — importing them as
     prose would read sequence numbers aloud or silently accept a misnamed file.
+    Decoding shares the subtitle fallback chain (BOM → UTF-8 → UTF-16 →
+    Windows-1258 → Windows-1252), and sound-cue/♪-only captions are not
+    read aloud.
     """
     try:
-        raw = path.read_bytes().decode("utf-8-sig")
-    except UnicodeDecodeError as err:
-        raise DocumentImportError(
-            f"Could not decode '{path.name}' as UTF-8 text. "
-            "Re-save the file with UTF-8 encoding and try again."
-        ) from err
+        raw = decode_subtitle_bytes(path.read_bytes(), name=path.name)
+    except SubtitleError as err:
+        raise DocumentImportError(str(err)) from err
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     if keep_raw:
         return text
@@ -181,4 +186,4 @@ def _read_srt(path: Path, *, keep_raw: bool = False) -> str:
             f"Could not read '{path.name}': it has subtitle timecodes but no usable "
             "cue text. Re-save it as SubRip (.srt) and try again."
         )
-    return cues_text(cues)
+    return cues_text(cue for cue in cues if cue.speakable)

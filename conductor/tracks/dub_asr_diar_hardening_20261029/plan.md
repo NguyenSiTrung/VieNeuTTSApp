@@ -68,7 +68,7 @@ Test seams and fakes:
     - `_deliver` clears `_work`/`_on_done`/`_on_error` in `finally` and calls `deleteLater()`.
     - Add `ProgressRelay(QObject)`: a queued `Signal(int, float, str)`, an injectable `current_generation` callable, and the GUI-side callback.
 
-- [ ] **Task 1.3: Shared `source_16k.wav` with streaming anti-aliased resampling (FR-3.6)**
+- [~] **Task 1.3: Shared `source_16k.wav` with streaming anti-aliased resampling (FR-3.6)**
   <!-- files: src/vienetts_app/core/audio_prep.py, src/vienetts_app/core/asr.py, src/vienetts_app/core/diarization.py, tests/unit/test_audio_prep.py, tests/unit/test_asr.py, tests/unit/test_diarization_hardening.py, pyproject.toml, uv.lock -->
   <!-- depends: task1 -->
   - Red tests:
@@ -146,7 +146,7 @@ Test seams and fakes:
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [ ] **Task 3.1: Catalog & installers — macOS whisper-cli cells, managed ffmpeg runtime, audio.cpp variants, optional audio models (FR-2.2, FR-2.3, FR-2.4, FR-3.1 catalog, FR-4.5 catalog)**
+- [~] **Task 3.1: Catalog & installers — macOS whisper-cli cells, managed ffmpeg runtime, audio.cpp variants, optional audio models (FR-2.2, FR-2.3, FR-2.4, FR-3.1 catalog, FR-4.5 catalog)**
   <!-- files: src/vienetts_app/core/ai_models.py, src/vienetts_app/core/media_runtime_manifests.json, packaging/vienetts-app.spec, tests/unit/test_ai_models.py -->
   - Red tests:
     - **macOS whisper cells:** darwin/arm64 → `available_whisper_cpp_variants()` returns `macos-arm64-metal` from the manifest, and darwin/x86_64 → `macos-x64-cpu`; neither offers an `ubuntu` asset. A `published: false` cell reports unavailable with Homebrew guidance and never downloads.
@@ -320,7 +320,7 @@ Test seams and fakes:
     - **Fingerprint:** unused `speakerVoices` entries and whitespace-padded voice names no longer change `render_fingerprint` after a reload. A golden digest for a normalized project is unchanged.
   - Green implementation: add `UnitClipCache` under `<project>/units/`, `render_id` plumbing and the fingerprint normalization.
 
-- [ ] **Task 6.3: Mux — progress units/duration, ducking envelope at scale, limiter, ISO 639-2 tags, finalize stage (FR-5.4, FR-5.5, FR-5.6)**
+- [~] **Task 6.3: Mux — progress units/duration, ducking envelope at scale, limiter, ISO 639-2 tags, finalize stage (FR-5.4, FR-5.5, FR-5.6)**
   <!-- files: src/vienetts_app/core/video_dub.py, tests/unit/test_video_dub.py -->
   - Red tests:
     - **Progress units:** fix the stub at `test_video_dub.py:476` to emit real-ffmpeg values. `out_time_us=5000000` / `out_time_ms=5000000` report 5 s.
@@ -331,7 +331,7 @@ Test seams and fakes:
   - Green implementation: parse `out_time_us`; probe duration whenever there is a progress callback; build the envelope (`asendcmd` or a gain track); add the limiter, the ISO 639-2/B map and the finalize stage.
   - ffmpeg-dependent assertions skip when ffmpeg is absent (existing marker), with stub-level coverage kept.
 
-- [~] **Task 6.4: Subtitle parsing edge cases (FR-6.4)**
+- [x] **Task 6.4: Subtitle parsing edge cases (FR-6.4)**
   <!-- files: src/vienetts_app/core/subtitles.py, tests/unit/test_subtitles.py -->
   - Red tests:
     - **Sound cues:** `[door slams] Get out!` → no speaker, text `Get out!`. `(laughs)` / `[MUSIC PLAYING]` alone → non-speech, kept in transcript output and non-speakable.

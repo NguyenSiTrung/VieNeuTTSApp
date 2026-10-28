@@ -18,6 +18,7 @@ from vienetts_app.core.subtitles import (
     cues_text,
     format_srt,
     format_timestamp,
+    is_speakable,
     parse_cues,
     parse_timestamp,
     read_cues,
@@ -48,6 +49,7 @@ def test_timestamp_contract() -> None:
     assert parse_timestamp("00:00:01.5") == 1_500  # 1-3 fractional digits, '.' decimal
     assert parse_timestamp("  00:00:02,250  ") == 2_250
     assert parse_timestamp("1:00:00,000") == 3_600_000  # unpadded hour
+    assert parse_timestamp("01:02.500") == 62_500  # WebVTT MM:SS.mmm (hours optional)
     # A full cue line is NOT a single stamp (callers use the pair regex for that).
     assert parse_timestamp("00:00:01,000 --> 00:00:02,000") is None
     assert parse_timestamp("nonsense") is None
@@ -126,6 +128,21 @@ def test_parse_cues_recovery() -> None:
         Cue(2, 2_500, 4_000, "Câu hai."),
     ]
 
+    # WebVTT: header, hour-less MM:SS.mmm stamps, cue settings, a cue
+    # identifier line and inline voice/class/timestamp tags.
+    source = (
+        "WEBVTT\n\n"
+        "00:01.000 --> 00:02.500 align:start position:10%\n"
+        "Câu một.\n\n"
+        "intro\n"
+        "01:02.500 --> 01:04.000\n"
+        "<v Lan><c.yellow>Câu</c> <01:03.000>hai.</v>\n"
+    )
+    assert parse_cues(source) == [
+        Cue(1, 1_000, 2_500, "Câu một."),
+        Cue(2, 62_500, 64_000, "Câu hai."),
+    ]
+
     # A line containing "-->" that does not parse as a timecode pair is a
     # corrupt file, not a cue to guess at: the error names the 1-based line.
     source = (
@@ -145,6 +162,10 @@ def test_cue_text_and_spans() -> None:
     assert clean_cue_text("a <i>b</i>\n  c   d  ") == "a b c d"
     assert clean_cue_text("{\\an8}line") == "line"
     assert clean_cue_text("<font color='#fff'>x</font>") == "x"
+    # Only real tags (``<`` directly followed by a tag name or ``/``) are
+    # styling; comparison signs in dialogue are spoken text.
+    assert clean_cue_text("x < y and y > z") == "x < y and y > z"
+    assert clean_cue_text("<b>a</b> <3 b") == "a <3 b"
 
     with pytest.raises(ValueError):
         Cue(0, 0, 1_000, "x")  # index must be >= 1
@@ -181,11 +202,48 @@ def test_srt_io(tmp_path) -> None:
     assert read_cues(path) == parse_cues(SAMPLE)
     assert read_cues(str(path)) == parse_cues(SAMPLE)
 
+    notes: list[str] = []
+    assert read_cues(path, notes=notes) == parse_cues(SAMPLE)
+    assert notes == []  # UTF-8 (BOM or not) is the expected encoding: no note
+
+    # Fallback chain: BOM → UTF-8 → UTF-16 (NUL pattern, no BOM) → cp1258 →
+    # cp1252. Every guessed encoding leaves a user-facing note.
+    for encoding in ("utf-16-le", "utf-16-be"):
+        path = tmp_path / f"{encoding}.srt"
+        path.write_bytes(SAMPLE.encode(encoding))
+        notes = []
+        assert read_cues(path, notes=notes) == parse_cues(SAMPLE)
+        assert len(notes) == 1 and "UTF-16" in notes[0] and path.name in notes[0]
+
+    # Windows-1258 stores Vietnamese tones as combining marks (ờ = ơ + U+0300);
+    # the decoded text is NFC-composed so it equals the precomposed spelling.
+    path = tmp_path / "vn.srt"
+    path.write_bytes(
+        ("1\n00:00:00,000 --> 00:00:01,000\nXin chào. Đ" + "ươ\u0300ng\n").encode("cp1258")
+    )
+    notes = []
+    assert read_cues(path, notes=notes) == [Cue(1, 0, 1_000, "Xin chào. Đường")]
+    assert len(notes) == 1 and "1258" in notes[0]
+
+    # Š (0x8A) is undefined in cp1258, so a Western file falls through to cp1252.
+    path = tmp_path / "cz.srt"
+    path.write_bytes("1\n00:00:00,000 --> 00:00:01,000\nŠkoda café\n".encode("cp1252"))
+    notes = []
+    assert read_cues(path, notes=notes) == [Cue(1, 0, 1_000, "Škoda café")]
+    assert len(notes) == 1 and "1252" in notes[0]
+
+    # NULs off the UTF-16 pattern (zero padding) are dropped, not guessed at.
+    path = tmp_path / "padded.srt"
+    path.write_bytes(SAMPLE.encode("utf-8") + b"\x00" * 64)
+    notes = []
+    assert read_cues(path, notes=notes) == parse_cues(SAMPLE) and notes == []
+
+    # A BOM is authoritative: a broken UTF-32/16 body is refused, not re-guessed.
     path = tmp_path / "bad.srt"
     path.write_bytes(b"\xff\xfe\x00\x00not utf-8")
     with pytest.raises(SubtitleError) as excinfo:
         read_cues(path)
-    assert "UTF-8" in str(excinfo.value)
+    assert "UTF-8" in str(excinfo.value) and "bad.srt" in str(excinfo.value)
 
 
 def test_speaker_prefix_parsing_and_formatting() -> None:
@@ -213,6 +271,66 @@ def test_speaker_prefix_parsing_and_formatting() -> None:
     )
     parsed = parse_cues(non_speech_srt)
     assert parsed == [Cue(1, 2_000, 3_500, "Xin chào các bạn.", speaker="")]
+
+    # Bracketed/parenthesised sound cues are never speakers. Before speech
+    # they are dropped from the text; alone they stay as a (non-speakable)
+    # caption. Name-shaped labels still parse as speakers, and ASR filler
+    # tokens alone are still dropped.
+    def parsed_body(body: str) -> list[tuple[str, str]]:
+        return [(c.speaker, c.text) for c in parse_cues(f"00:00:00,000 --> 00:00:01,000\n{body}\n")]
+
+    assert parsed_body("[door slams] Get out!") == [("", "Get out!")]
+    assert parsed_body("[Door slams] Get out!") == [("", "Get out!")]
+    assert parsed_body("[DOOR SLAMS] Get out!") == [("", "Get out!")]
+    assert parsed_body("[Laughs] Get out!") == [("", "Get out!")]
+    assert parsed_body("(laughs) [MUSIC PLAYING] Get out!") == [("", "Get out!")]
+    assert parsed_body("[SPEAKER_01] (sighs) Thôi.") == [("SPEAKER_01", "Thôi.")]
+    assert parsed_body("[Narrator] Ngày xửa ngày xưa.") == [("Narrator", "Ngày xửa ngày xưa.")]
+    assert parsed_body("[JOHN] Get out!") == [("JOHN", "Get out!")]
+    assert parsed_body("[SPEAKER 3]: Chào.") == [("SPEAKER 3", "Chào.")]
+    assert parsed_body("(laughs)") == [("", "(laughs)")]
+    assert parsed_body("[MUSIC PLAYING]") == [("", "[MUSIC PLAYING]")]
+    assert parsed_body("[SPEAKER_02] (laughs)") == [("SPEAKER_02", "(laughs)")]
+    assert parsed_body("[MUSIC] [APPLAUSE]") == []
+    assert parsed_body("♪♪") == [("", "♪♪")]
+    # A long parenthesised line is dialogue, not a sound description.
+    long_aside = "(anh ấy nói rằng mọi chuyện rồi sẽ ổn thôi, em đừng lo lắng gì cả nhé, cứ ngủ đi)"
+    assert parsed_body(f"{long_aside} Được.") == [("", f"{long_aside} Được.")]
+
+
+def test_is_speakable() -> None:
+    for text in (
+        "♪♪",
+        "♫ ♪",
+        "...",
+        "-",
+        "😀🎉",
+        "👍🏽",
+        "(laughs)",
+        "[MUSIC PLAYING]",
+        "[door slams] (gasps)",
+        "<i>♪</i>",
+        " — ",
+        "",
+    ):
+        assert not is_speakable(text), text
+    for text in (
+        "Get out!",
+        "♪ Happy birthday ♪",
+        "123",
+        "- Chào.",
+        "Xin chào (cười)",
+        "Đi đi!",
+        "[Narrator] Ngày xưa",
+    ):
+        assert is_speakable(text), text
+
+    # The cue-level flag reads the same rule, so a parsed sound-only cue is
+    # kept for transcript output but skipped by synthesis.
+    sound, speech = parse_cues(
+        "00:00:00,000 --> 00:00:01,000\n(laughs)\n\n00:00:01,000 --> 00:00:02,000\nỜ.\n"
+    )
+    assert (sound.speakable, speech.speakable) == (False, True)
 
 
 def test_cue_speech_bounds_properties_and_validation() -> None:

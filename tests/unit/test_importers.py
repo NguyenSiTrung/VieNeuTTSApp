@@ -72,6 +72,16 @@ class TestSrtImport:
         p.write_bytes(b"\xef\xbb\xbf" + SAMPLE_SRT.encode("utf-8"))
         assert import_document(p) == EXPECTED_CLEAN
 
+        # Legacy Vietnamese code page decodes via the shared fallback chain,
+        # and a sound-cue-only caption is not read aloud.
+        p = tmp_path / "cp1258.srt"
+        p.write_bytes(
+            "1\n00:00:00,000 --> 00:00:02,000\nXin chào\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n[door slams]\n\n"
+            "3\n00:00:03,000 --> 00:00:04,000\n...\n".encode("cp1258")
+        )
+        assert import_document(p) == "Xin chào"
+
     def test_malformed_refusals(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.srt"
         bad.write_text("just some text\nno timecodes here\n", encoding="utf-8")

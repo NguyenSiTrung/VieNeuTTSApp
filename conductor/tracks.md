@@ -44,3 +44,8 @@ under `conductor/archive/`.
 ---
 
 <!-- Archived: llm_provider_hardening_20261028 (OpenAI-Compatible LLM & Whisper API Provider Hardening — shared `core/llm_client.py` transport with error taxonomy, key redaction, `Retry-After` backoff, and `(base_url, model)` capability downgrade cache for `temperature`/`response_format`; `<think>`/fence stripping + `raw_decode` reply scanner with strict index matching and `allowedSpeakers` whitelist; slim JSON envelope with per-project `llmGlossary` + read-only neighbouring context; per-batch failure isolation with notes, `finish_reason="length"` bisection, missing-cue follow-up, verified `fit_timing`, and bounded `ThreadPoolExecutor` concurrency; per-task model overrides; separate Whisper API URL/key/model with credential isolation and 600 s silence-aware PCM16 chunked upload; POSIX `0600` `settings.json`; `SettingsModels.qml` + `SubtitlePreparePanel.qml` UI, i18n, and README provider guide; 4 phases / 9 tasks complete 2026-10-28; beads epic VieNeuTTSApp-f783 closed; 4 patterns elevated), archived 2026-10-28 → ./archive/llm_provider_hardening_20261028/ -->
+
+---
+
+## [ ] Track: Dubbing & Subtitles Hardening — Local ASR/Diarization Runtimes, Render Safety, Quality & Performance
+*Link: [./conductor/tracks/dub_asr_diar_hardening_20261029/](./conductor/tracks/dub_asr_diar_hardening_20261029/)*

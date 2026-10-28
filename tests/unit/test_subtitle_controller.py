@@ -1149,6 +1149,48 @@ class TestOrderedUnitWorker:
         assert "unreadable" in controller.errorText
         assert next_job in fake.cancelled
 
+    def test_units_synthesize_from_the_render_start_snapshot(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # H1: an AI delivery landing mid-render (forced past the busy gate)
+        # used to mix new text onto old timings and, with fewer cues, raise
+        # IndexError and leave `rendering` stuck.
+        from vienetts_app.core.subtitles import Cue
+
+        controller, fake, captured = make_deferred(tmp_path)
+        srt = "".join(
+            f"{n + 1}\n00:00:{n * 3:02d},000 --> 00:00:{n * 3 + 2:02d},000\nCâu số {n + 1}\n\n"
+            for n in range(4)
+        )
+        assert controller.importSrt(load_srt(tmp_path, srt)) is True
+        monkeypatch.setattr(
+            "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+            lambda cues, cfg, **kw: [Cue(1, 0, 2000, "Bản AI 1"), Cue(2, 3000, 5000, "Bản AI 2")],
+        )
+        submitted: list[str] = []
+        real_submit = fake.submit_stream_for_listener
+        monkeypatch.setattr(
+            fake,
+            "submit_stream_for_listener",
+            lambda text, voice, listener, **kw: (
+                submitted.append(text) or real_submit(text, voice, listener, **kw)
+            ),
+        )
+
+        assert controller.refineWithLlm("refine_asr", "vi") is True
+        work, done, _on_error = captured.pop()
+        controller._set_ai_state(False, "", 0.0)  # noqa: SLF001 - force past the gate
+        controller.render()
+        assert controller.rendering is True
+        done(work())  # the AI result lands while unit 1 synthesizes
+        assert controller.cueCount == 2
+        while fake.pending:
+            complete_next_unit(fake, tmp_path)
+
+        assert submitted == [f"Câu số {n}" for n in range(1, 5)]
+        assert controller.rendering is False
+        assert controller.errorText == ""
+
     def test_stale_render_generations_are_ignored(self, tmp_path: Path) -> None:
         controller, fake, executor = deferred_env(tmp_path)
         controller.render()
@@ -1699,6 +1741,47 @@ def test_a_second_knob_replaces_the_staged_change(tmp_path):
     assert controller.rendered is True
 
 
+def test_a_knob_change_while_rendering_waits_for_the_render_to_end(env, tmp_path):
+    # FR-1.1: a knob moved mid-render is staged, never applied under the
+    # running render (the track that lands would not match the knobs).
+    controller, fake, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    controller.render()
+    assert controller.rendering is True
+    assert controller._can_apply_now() is False  # noqa: SLF001
+    controller.rateCap = 1.2
+    assert controller.invalidationReason == "rate_cap"
+    assert controller.rateCap == 1.5
+    controller.rejectRenderInvalidation()
+    assert controller.rateCap == 1.5
+
+    # Confirmed mid-render: deferred until the render finishes.
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    assert controller.invalidationPending is False
+    assert controller.rateCap == 1.5
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendering is False
+    assert controller.rateCap == 1.2
+    assert controller._project.policy.rate_cap == 1.2  # noqa: SLF001
+    assert controller.rendered is False and controller.renderStale is True
+
+    # A cancelled render releases its deferred change too.
+    controller.render()
+    controller.offsetMs = 250
+    controller.confirmRenderInvalidation()
+    assert controller.offsetMs == 0
+    controller.cancelRender()
+    job_id, _text, listener = fake.pending.pop(0)
+    listener.on_synthesis_terminal(
+        JobTerminal(job_id=job_id, owner="audiobook", state="cancelled", value=None)
+    )
+    assert controller.rendering is False
+    assert controller.offsetMs == 250
+    assert controller._project.policy.offset_ms == 250  # noqa: SLF001
+
+
 def test_rerender_clears_staleness_and_restores_exports(tmp_path):
     controller, fake, _ = _rendered_controller(tmp_path)
     controller.rateCap = 1.2
@@ -2065,13 +2148,92 @@ def test_play_before_render_announces_the_render(env, tmp_path):
     assert controller.rendering is True
 
 
-def test_busy_ai_action_sets_a_hint(env, tmp_path):
-    controller, _, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    controller._set_ai_state(True, "Đang chạy", 0.2)  # noqa: SLF001
-    assert controller.refineWithLlm("refine_asr", "vi") is False
-    assert "chờ" in controller.hintText
-    controller._set_ai_state(False, "", 0.0)  # noqa: SLF001
+def test_busy_owners_refuse_each_other_with_a_reason(tmp_path):
+    # FR-1.1 / AC-1: `ai`, `render` and `export` exclude one another. Every
+    # refused entry slot starts nothing and explains itself through the hint
+    # channel, mirrored by `busyReason` (the dock's disabledReason).
+    fake, player, runner = FakeApp(), FakePlayer(), _DeferredRunner()
+    controller = SubtitleController(
+        fake,
+        data_dir=tmp_path,
+        player_factory=lambda: player,
+        store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
+        bg_runner=runner,
+        unit_executor=SyncOrderedExecutor(),
+    )
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.importVideo(str(video)) is True
+    assert controller.hasVideo is True
+    out = str(tmp_path / "out")
+
+    def ai_and_cue_slots_refuse() -> None:
+        assert controller.transcribeVideo(False) is False
+        assert controller.runDiarization() is False
+        assert controller.refineWithLlm("refine_asr", "vi") is False
+        assert controller.cloneSpeakerFromVideo("SPEAKER_01") is False
+        assert controller.updateCue(0, "Sửa khi đang bận", "") is False
+        assert controller.setSpeakerVoice("SPEAKER_01", "voice-b") is False
+        assert controller.cues[0]["text"] == "Xin chào"
+        assert controller.invalidationPending is False
+
+    def refused(owner_reason: str) -> None:
+        assert controller.busyReason == owner_reason != ""
+        assert controller.hintText == owner_reason
+
+    # ── an AI op in flight: render / play-to-render / exports start nothing ──
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.aiBusy is True and len(runner.calls) == 1
+    ai_reason = controller.busyReason
+    controller.render()
+    assert controller.rendering is False and fake.pending == []
+    refused(ai_reason)
+    controller.play()
+    assert controller.rendering is False and fake.pending == [] and player.played == []
+    ai_and_cue_slots_refuse()
+    assert len(runner.calls) == 1  # no second AI op queued
+    controller.rateCap = 1.2  # knobs refuse too (snap back)
+    assert controller.rateCap == 1.5
+    controller.voice = "voice-b"  # ...but not the picker's one-way voice write
+    assert controller.voice == "voice-b"
+    refused(ai_reason)
+    controller.cancelAiTask()
+    assert controller.busyReason == "" and controller.hintText == ""  # moot once idle
+
+    # ── rendering: AI ops, cue edits and exports refuse ──
+    controller.render()
+    assert controller.rendering is True
+    render_reason = controller.busyReason
+    ai_and_cue_slots_refuse()
+    refused(render_reason)
+    assert len(runner.calls) == 1
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True and controller.hintText == ""
+
+    # ── exporting: AI ops, cue edits, knobs and render refuse ──
+    assert controller.exportTrack(out) != ""
+    assert controller.exporting is True
+    export_reason = controller.busyReason
+    ai_and_cue_slots_refuse()
+    refused(export_reason)
+    controller.rateCap = 1.2
+    assert controller.rateCap == 1.5 and controller.invalidationPending is False
+    assert controller.exportSrt(out) == ""
+    assert len(runner.calls) == 2  # only the export itself
+    controller.cancelExport()
+
+    # ── AI busy on a rendered project: every export refuses ──
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    controller.confirmRenderInvalidation()
+    assert controller.aiBusy is True
+    assert controller.exportTrack(out) == ""
+    assert controller.exportSrt(out) == ""
+    assert controller.exportVideo(out) == ""
+    assert controller.exporting is False
+    refused(ai_reason)
+    assert len({ai_reason, render_reason, export_reason}) == 3
 
 
 def test_notice_level_separates_errors_from_info(env, tmp_path):

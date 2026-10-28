@@ -279,6 +279,11 @@ class SubtitleController(QObject):
 
         self._project: SubtitleProject | None = None
         self._renderer: SubtitleTrackRenderer | None = None
+        # FR-1.1: the render's start snapshot (the spec's `_render_cues`) and
+        # its effective default voice. Units read only these, never
+        # self._project, which an edit or AI delivery may replace mid-render.
+        self._render_project: SubtitleProject | None = None
+        self._render_voice = ""
         self._units: list[tuple[int, ...]] = []
         self._unit_index = 0
         self._job_id: str | None = None
@@ -315,8 +320,10 @@ class SubtitleController(QObject):
         self._ai_progress = 0.0
         self._ai_generation = 0
         self._ai_cancel_flag = False
-        # FR-1.1: the staged change (None when nothing awaits confirmation).
+        # FR-1.1: the staged change (None when nothing awaits confirmation),
+        # and a change confirmed mid-render that runs when the render ends.
         self._pending_invalidation: _PendingInvalidation | None = None
+        self._deferred_invalidation: _PendingInvalidation | None = None
         # FR-1.2: why the on-disk render no longer matches the current inputs.
         self._stale_reason = ""
         self._last_stats: Any = None
@@ -482,8 +489,14 @@ class SubtitleController(QObject):
     # ── destroy-confirmation gate (FR-1.1) ───────────────────────────────────
 
     def _can_apply_now(self) -> bool:
-        """True when the change may run without discarding a live render."""
-        return not self.rendered or self._rendering
+        """True when the change may run without discarding a render.
+
+        A running render counts (FR-1.1): it synthesizes from its start
+        snapshot, so a change applied mid-render would leave the knobs out of
+        step with the track that lands. Such a change is staged, and a
+        confirmation given mid-render waits for the render to end.
+        """
+        return not self._rendering and not self.rendered
 
     def _loss_message(self, action: str) -> str:
         return self.tr(
@@ -537,15 +550,37 @@ class SubtitleController(QObject):
 
     @Slot()
     def confirmRenderInvalidation(self) -> None:
-        """Apply the staged change (the user accepted the loss)."""
+        """Apply the staged change (the user accepted the loss).
+
+        Confirmed while a render runs, the change waits for that render to end
+        (finished, failed or cancelled) and is applied then (FR-1.1).
+        """
         pending = self._pending_invalidation
         if pending is None:
             return
         self._pending_invalidation = None
         self.pendingInvalidationChanged.emit()
-        self._stale_reason = pending.reason
-        pending.apply()
+        self._deferred_invalidation = pending
+        self._apply_deferred_invalidation()
+
+    def _apply_deferred_invalidation(self) -> bool:
+        """Run the confirmed change once no render is running; True when it ran."""
+        deferred = self._deferred_invalidation
+        if deferred is None or self._rendering:
+            return False
+        self._deferred_invalidation = None
+        self._stale_reason = deferred.reason
+        deferred.apply()
         self.staleChanged.emit()
+        return True
+
+    def _drop_deferred_invalidation(self) -> None:
+        """Forget a confirmed change whose render was abandoned (project switch)."""
+        deferred = self._deferred_invalidation
+        self._deferred_invalidation = None
+        if deferred is not None:
+            for signal in deferred.revert_signals:
+                signal.emit()
 
     @Slot()
     def rejectRenderInvalidation(self) -> None:
@@ -662,14 +697,47 @@ class SubtitleController(QObject):
             return "source_only"
         return "empty"
 
-    def _compute_busy_owner(self) -> str:
-        if self._exporting:
-            return "export"
-        if self._rendering:
-            return "render"
-        if self._ai_busy:
-            return "ai"
+    def _owner_busy(self, except_owner: str = "") -> str:
+        """The busy owner other than ``except_owner`` (``""`` when none is).
+
+        FR-1.1: ``ai``, ``render`` and ``export`` exclude one another. Every
+        entry slot that would start or feed one of them asks this first.
+        """
+        for owner, busy in (
+            ("export", self._exporting),
+            ("render", self._rendering),
+            ("ai", self._ai_busy),
+        ):
+            if busy and owner != except_owner:
+                return owner
         return ""
+
+    def _owner_reason(self, owner: str) -> str:
+        if owner == "export":
+            return self.tr("Đang xuất tệp — chờ hoàn tất.")
+        if owner == "render":
+            return self.tr("Đang tạo âm thanh — chờ hoàn tất.")
+        if owner == "ai":
+            return self.tr("Đang chạy tác vụ AI — chờ hoàn tất.")
+        return ""
+
+    def _refuse_if_busy(self, except_owner: str = "") -> bool:
+        """True (with the reason on the hint channel) when another owner is busy."""
+        owner = self._owner_busy(except_owner)
+        if not owner:
+            return False
+        self._set_hint(self._owner_reason(owner))
+        return True
+
+    def _refuse_knob(self, revert_signal: Any) -> bool:
+        """A knob waits out a render (staged) but refuses AI and export (FR-1.1).
+
+        On refusal the knob's notify signal snaps the control back.
+        """
+        if not self._refuse_if_busy("render"):
+            return False
+        revert_signal.emit()
+        return True
 
     def _refresh_state(self) -> None:
         """Recompute the derived state; emit only when it actually changed."""
@@ -677,10 +745,14 @@ class SubtitleController(QObject):
         if state != self._last_state:
             self._last_state = state
             self.stateChanged.emit()
-        owner = self._compute_busy_owner()
+        owner = self._owner_busy()
         if owner != self._last_busy_owner:
+            # A "wait for X" hint is moot once X is no longer busy.
+            moot_hint = self._owner_reason(self._last_busy_owner)
             self._last_busy_owner = owner
             self.busyOwnerChanged.emit()
+            if moot_hint and self._hint_text == moot_hint:
+                self._set_hint("")
 
     @Property(str, notify=stateChanged)
     def state(self) -> str:
@@ -694,7 +766,16 @@ class SubtitleController(QObject):
     @Property(str, notify=busyOwnerChanged)
     def busyOwner(self) -> str:
         """``"" | "ai" | "render" | "export"`` — never two at once."""
-        return self._compute_busy_owner()
+        return self._owner_busy()
+
+    @Property(str, notify=busyOwnerChanged)
+    def busyReason(self) -> str:
+        """Why owner-gated actions are unavailable ("" while no owner is busy).
+
+        The same text a refused slot puts on the hint channel (FR-1.1); the
+        dock shows it as the disabled Render/Play/Export reason.
+        """
+        return self._owner_reason(self._owner_busy())
 
     # ── properties ───────────────────────────────────────────────────────────
 
@@ -817,6 +898,8 @@ class SubtitleController(QObject):
         value = value if value in MODES else MODE_DUB
         if value == self._mode:
             return
+        if self._refuse_knob(self.modeChanged):
+            return
 
         def apply() -> None:
             self._mode = value
@@ -841,6 +924,8 @@ class SubtitleController(QObject):
     def rateCap(self, value: float) -> None:  # noqa: F811
         value = clamp_rate_cap(value)
         if value == self._rate_cap:
+            return
+        if self._refuse_knob(self.rateCapChanged):
             return
 
         def apply() -> None:
@@ -867,6 +952,8 @@ class SubtitleController(QObject):
             return
         if value == self.maxGapMs and self._max_gap_ms_set:
             return
+        if self._refuse_knob(self.maxGapMsChanged):
+            return
 
         def apply() -> None:
             self._max_gap_ms = value
@@ -891,6 +978,8 @@ class SubtitleController(QObject):
             return
         if value == self._offset_ms:
             return
+        if self._refuse_knob(self.offsetMsChanged):
+            return
 
         def apply() -> None:
             self._offset_ms = value
@@ -910,6 +999,8 @@ class SubtitleController(QObject):
     def mergeSentences(self, value: bool) -> None:  # noqa: F811
         value = bool(value)
         if value == self._merge_sentences:
+            return
+        if self._refuse_knob(self.mergeSentencesChanged):
             return
 
         def apply() -> None:
@@ -931,6 +1022,10 @@ class SubtitleController(QObject):
         value = value or ""
         if value == self._voice:
             return
+        # No _refuse_knob here: the voice picker writes this one-way (it never
+        # re-reads `voice`), so a refusal would leave it showing a voice the
+        # render does not use. A new voice changes no cue and no AI input; it
+        # still waits out a running render through the staging below.
 
         def apply() -> None:
             self._voice = value
@@ -1701,7 +1796,7 @@ class SubtitleController(QObject):
         with the capability table's own reason.
         """
         project = self._project
-        if project is None or self._rendering:
+        if project is None or self._rendering or self._refuse_if_busy("render"):
             return
         context, refused = self._submission_context()
         if refused:
@@ -1773,6 +1868,8 @@ class SubtitleController(QObject):
             return
         self._render_generation += 1
         self._renderer = renderer
+        self._render_project = project
+        self._render_voice = self._effective_voice()
         self._rendering = True
         self._set_error("")
         self.renderingChanged.emit()
@@ -1814,6 +1911,9 @@ class SubtitleController(QObject):
                 self._app.cancel_job(self._job_id)
             self._job_id = None
         self._abort_renderer()
+        # The caller replaces or clears the project: a change confirmed for
+        # this render no longer has a render to wait for.
+        self._drop_deferred_invalidation()
         if self._rendering:
             self._rendering = False
             self._render_progress = 0.0
@@ -1821,7 +1921,9 @@ class SubtitleController(QObject):
             self.renderProgressChanged.emit()
 
     def _submit_next_unit(self) -> None:
-        project = self._project
+        # FR-1.1: text, speaker voices and identity all come from the start
+        # snapshot the renderer places against — never from self._project.
+        project = self._render_project
         if project is None or self._renderer is None:
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
@@ -1831,17 +1933,18 @@ class SubtitleController(QObject):
         unit = self._units[self._unit_index]
         text = " ".join(project.cues[index].text for index in unit).strip()
         first_cue = project.cues[unit[0]] if unit else None
+        default_voice = self._render_voice
         unit_voice = (
             project.speaker_voices.get(first_cue.speaker, "")
             if first_cue is not None and first_cue.speaker
             else ""
-        ) or self._effective_voice()
+        ) or default_voice
         submit = getattr(self._app, "submit_stream_for_listener", None)
         if not callable(submit):
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
         context = project.context
-        if unit_voice and unit_voice != self._effective_voice():
+        if unit_voice and unit_voice != default_voice:
             probe = getattr(self._app, "submission_context_for", None)
             if callable(probe):
                 try:
@@ -1910,7 +2013,7 @@ class SubtitleController(QObject):
         on ``_units_exec`` in submission order while the engine already works
         on the following unit; failures come back here and fail the render.
         """
-        project = self._project
+        project = self._render_project
         renderer = self._renderer
         if project is None or renderer is None:
             self._release_artifact(artifact)
@@ -1985,7 +2088,7 @@ class SubtitleController(QObject):
     def _finish_render(self) -> None:
         """Queue the track finish behind every placement (ordered worker)."""
         renderer = self._renderer
-        project = self._project
+        project = self._render_project
         if renderer is None or project is None:
             self._fail_render(self.tr("Tổng hợp thất bại."))
             return
@@ -2012,6 +2115,7 @@ class SubtitleController(QObject):
                     self._set_error(str(exc))
             # The renderer is done: the promoted track is live.
             self._renderer = None
+            self._render_project = None
             self._project = loaded
             self._reset_staleness()
             self._cues_dirty = False
@@ -2024,6 +2128,9 @@ class SubtitleController(QObject):
             self.renderedChanged.emit()
             self.durationChanged.emit()
             self.statsChanged.emit()
+            if self._apply_deferred_invalidation():
+                # A change confirmed mid-render already outdated this track.
+                self._play_after_render = False
             self._after_render_ready()
 
         def failed(exc: BaseException) -> None:
@@ -2052,6 +2159,7 @@ class SubtitleController(QObject):
         """
         renderer = self._renderer
         self._renderer = None
+        self._render_project = None
         self._render_generation += 1
         if renderer is None:
             return
@@ -2077,6 +2185,7 @@ class SubtitleController(QObject):
         self._render_progress = 0.0
         self.renderingChanged.emit()
         self.renderProgressChanged.emit()
+        self._apply_deferred_invalidation()
         if message:
             self._set_error(message)
 
@@ -2111,6 +2220,8 @@ class SubtitleController(QObject):
             return
         cached = self._store.cached_render(project)
         if cached is None:
+            if self._refuse_if_busy("render"):  # playing would start a render
+                return
             self._play_after_render = True
             self._set_hint(self.tr("Chưa có bản âm thanh — đang tạo trước khi phát."))
             self.render()
@@ -2272,7 +2383,7 @@ class SubtitleController(QObject):
     def exportTrack(self, dest_dir: str) -> str:  # type: ignore[override]
         """Export ``track.wav`` off-thread; ``exportFinished(path, error)`` lands later."""
         project = self._project
-        if project is None or self._rendering or self._exporting:
+        if project is None or self._refuse_if_busy():
             return ""
         if not self.rendered:
             self._set_error(self.exportBlockedReason or self.tr("Chưa có tệp âm thanh để xuất."))
@@ -2315,7 +2426,7 @@ class SubtitleController(QObject):
         faithful retimed file) only exist once a render lands.
         """
         project = self._project
-        if project is None or self._rendering or self._exporting:
+        if project is None or self._refuse_if_busy():
             return ""
         if not self.rendered:
             self._set_error(self.exportBlockedReason or self.tr("Chưa có phụ đề đã chỉnh để xuất."))
@@ -2355,7 +2466,7 @@ class SubtitleController(QObject):
     def exportVideo(self, dest_dir: str) -> str:  # type: ignore[override]
         """Mux ``track.wav`` onto ``videoPath`` off-thread; emits ``exportFinished``."""
         project = self._project
-        if project is None or self._rendering or self._exporting:
+        if project is None or self._refuse_if_busy():
             return ""
         if not self.rendered:
             self._set_error(
@@ -2578,8 +2689,7 @@ class SubtitleController(QObject):
         if not vpath_str or not Path(vpath_str).is_file():
             self._set_error(self.tr("Chưa có tệp video để nhận diện phụ đề."))
             return False
-        if self._rendering or self._ai_busy:
-            self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
+        if self._refuse_if_busy():
             return False
         self._set_hint("")
         # FR-1.6: a re-run overwrites the managed SRT — never silently discard
@@ -2593,6 +2703,8 @@ class SubtitleController(QObject):
         return True
 
     def _transcribe_video_now(self, with_diarization: bool) -> None:
+        if self._refuse_if_busy():  # an owner started while confirmation was pending
+            return
         vpath_str = self.videoPath
         if not vpath_str or not Path(vpath_str).is_file():
             self._set_error(self.tr("Chưa có tệp video để nhận diện phụ đề."))
@@ -2693,9 +2805,7 @@ class SubtitleController(QObject):
     def runDiarization(self) -> bool:  # type: ignore[override]
         """Run speaker diarization on the loaded project's video or rendered track."""
         project = self._project
-        if project is None or self._rendering or self._ai_busy:
-            if project is not None and (self._rendering or self._ai_busy):
-                self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
+        if project is None or self._refuse_if_busy():
             return False
         media = self.videoPath
         if not media or not Path(media).is_file():
@@ -2709,7 +2819,7 @@ class SubtitleController(QObject):
 
     def _run_diarization_now(self) -> None:
         project = self._project
-        if project is None:
+        if project is None or self._refuse_if_busy():
             return
         media = self.videoPath
         if not media or not Path(media).is_file():
@@ -2773,7 +2883,7 @@ class SubtitleController(QObject):
         """Assign ``voice_key`` to ``speaker`` in ``project.speaker_voices``."""
         project = self._project
         spk = (speaker or "").strip()
-        if project is None or not spk or self._rendering:
+        if project is None or not spk or self._refuse_if_busy():
             return False
         updated_map = dict(project.speaker_voices)
         vkey = (voice_key or "").strip()
@@ -2794,7 +2904,7 @@ class SubtitleController(QObject):
     def updateCue(self, index: int, text: str, speaker: str | None = None) -> bool:
         """Update one cue's ``text`` (and optionally ``speaker``) in place."""
         project = self._project
-        if project is None or self._rendering or self._ai_busy:
+        if project is None or self._refuse_if_busy():
             return False
         idx = int(index)
         if not (0 <= idx < len(project.cues)):
@@ -2883,7 +2993,7 @@ class SubtitleController(QObject):
                 )
             )
             return False
-        if self._rendering or self._ai_busy:
+        if self._refuse_if_busy():
             return False
 
         name = (clone_name or "").strip() or f"{project.title}_{spk}"
@@ -2948,9 +3058,7 @@ class SubtitleController(QObject):
     def refineWithLlm(self, task: str = "refine_asr", target_language: str = "") -> bool:  # type: ignore[override]
         """Refine project cues with the configured OpenAI-compatible LLM off-thread."""
         project = self._project
-        if project is None or self._rendering or self._ai_busy:
-            if project is not None and (self._rendering or self._ai_busy):
-                self._set_hint(self.tr("Đang bận — hãy chờ tác vụ hiện tại hoàn tất."))
+        if project is None or self._refuse_if_busy():
             return False
         self._set_hint("")
         self._stage_invalidation(
@@ -2962,7 +3070,7 @@ class SubtitleController(QObject):
 
     def _refine_with_llm_now(self, task: str, target_language: str) -> None:
         project = self._project
-        if project is None:
+        if project is None or self._refuse_if_busy():
             return
         llm_cfg = self._llm_config(task)
         cues_in = project.cues

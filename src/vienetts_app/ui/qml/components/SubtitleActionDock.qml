@@ -33,6 +33,9 @@ Rectangle {
     // The controller's derived owner is the single source for "who is busy";
     // a render and an export can never both be true.
     readonly property string busyOwner: available ? subtitleController.busyOwner : ""
+    // FR-1.1: why the owner-gated actions are disabled ("" while idle); the
+    // controller refuses the same actions with the same text on its hint.
+    readonly property string busyReason: available ? (subtitleController.busyReason || "") : ""
     readonly property bool hasTrack: available && subtitleController.rendered === true
     readonly property bool hasVideo: available && subtitleController.hasVideo === true
     readonly property bool hasSpeakers: available && subtitleController.hasSpeakers === true
@@ -104,9 +107,10 @@ Rectangle {
                 tooltipText: qsTr("Tạo bản lồng tiếng và phụ đề đã căn chỉnh (Ctrl+Enter)")
                 accessibleLabel: text
                 visible: root.loaded
-                enabled: root.loaded && !root.busy && !root.exporting
+                enabled: root.loaded && !root.busy && !root.aiBusy && !root.exporting
                     && EngineState.blockerReason === ""
-                disabledReason: EngineState.blockerReason
+                disabledReason: root.busyReason !== "" ? root.busyReason
+                    : EngineState.blockerReason
                 busy: root.busy
                 onClicked: {
                     if (root.available)
@@ -143,9 +147,13 @@ Rectangle {
                     : root.playerState === "playing" ? qsTr("Tạm dừng") : qsTr("Phát")
                 iconKind: root.playerState === "playing" ? "pause" : "play"
                 visible: root.loaded
+                // FR-1.1: nothing starts while AI rewrites the cues; pausing
+                // or resuming a playback already under way stays available.
                 enabled: root.available && (root.hasTrack || !root.busy) && !root.exporting
+                    && (!root.aiBusy || root.playerState !== "stopped")
                     && (root.hasTrack || EngineState.blockerReason === "")
-                disabledReason: root.hasTrack ? "" : EngineState.blockerReason
+                disabledReason: root.busyReason !== "" ? root.busyReason
+                    : (root.hasTrack ? "" : EngineState.blockerReason)
                 onClicked: {
                     if (!root.available)
                         return;
@@ -167,7 +175,8 @@ Rectangle {
                 iconKind: "download"
                 text: qsTr("Xuất")
                 visible: root.loaded
-                enabled: root.available && !root.busy && !root.exporting
+                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                disabledReason: root.busyReason
                 accessibleLabel: qsTr("Xuất âm thanh, phụ đề hoặc video lồng tiếng")
                 tooltipText: accessibleLabel
                 onClicked: exportMenu.opened ? exportMenu.close() : exportMenu.open()
@@ -183,7 +192,7 @@ Rectangle {
                         objectName: "subtitleExportWavButton"
                         text: root.exportFormat === "mp3" ? qsTr("Xuất MP3") : qsTr("Xuất WAV")
                         enabled: root.available && subtitleController.canExportTrack
-                            && !root.busy && !root.exporting
+                            && !root.busy && !root.aiBusy && !root.exporting
                         onTriggered: root.available && subtitleController.exportTrack(root.exportDir())
                     }
 
@@ -191,7 +200,7 @@ Rectangle {
                         objectName: "subtitleExportSrtButton"
                         text: qsTr("Xuất SRT")
                         enabled: root.available && subtitleController.canExportSrt
-                            && !root.busy && !root.exporting
+                            && !root.busy && !root.aiBusy && !root.exporting
                         onTriggered: root.available && subtitleController.exportSrt(root.exportDir())
                     }
 

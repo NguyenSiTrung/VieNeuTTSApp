@@ -87,7 +87,7 @@ Test seams and fakes:
 <!-- execution: sequential -->
 <!-- depends: phase1 -->
 
-- [~] **Task 2.1: One busy owner — gate render/play/export vs AI; render from a snapshot (FR-1.1, H1)**
+- [x] **Task 2.1: One busy owner — gate render/play/export vs AI; render from a snapshot (FR-1.1, H1)**
   <!-- files: src/vienetts_app/ui/subtitle_controller.py, src/vienetts_app/ui/qml/components/SubtitleActionDock.qml, src/vienetts_app/ui/qml/SubtitlesTab.qml, tests/unit/test_subtitle_controller.py, tests/unit/test_subtitle_components.py -->
   - Red tests:
     - While an injected slow AI runner is in flight, `render()`/`play()` start nothing and set `disabledReason`. While rendering or exporting, `transcribeVideo`/`diarizeSpeakers`/`refineWithLlm` and cue-mutating slots refuse.

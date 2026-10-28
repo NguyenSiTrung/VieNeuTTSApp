@@ -25,7 +25,10 @@ COMPONENTS = (
     "SubtitlePreparePanel.qml",
     "SubtitleCastPanel.qml",
     "SubtitleVideoPreview.qml",
+    "SubtitleActionDock.qml",
 )
+# Composed pages instantiated in the same engine run (FR-1.1 gating checks).
+PAGES = ("SubtitlesTab.qml",)
 
 VIDEO_PREVIEW_OBJECT_NAMES = (
     "subtitleVideoPreview",
@@ -49,8 +52,10 @@ _DRIVER = textwrap.dedent(
     from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Signal, Slot
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlComponent, QQmlEngine
+    from PySide6.QtQuick import QQuickItem  # noqa: F401 - registers the item converter
 
     qml_dir, files = sys.argv[1], sys.argv[2:]
+    DOCK_BUTTONS = ("subtitleRenderButton", "subtitlePlayButton", "subtitleExportMenuButton")
 
 
     class StubController(QObject):
@@ -75,6 +80,9 @@ _DRIVER = textwrap.dedent(
         videoBgGainDbChanged = Signal()
         softSubtitlesSupportedChanged = Signal()
         llmGlossaryChanged = Signal()
+        busyChanged = Signal()
+        projectsChanged = Signal()
+        exportFinished = Signal(str, str)
 
         def __init__(self):
             super().__init__()
@@ -121,6 +129,70 @@ _DRIVER = textwrap.dedent(
             self.glossary_calls = []
             self.notified_video_playing = 0
             self.synced_positions = []
+            self._busy_owner = ""
+            self._projects = [
+                {"id": "p1", "title": "Một", "cueCount": 2, "rendered": True, "active": True},
+                {"id": "p2", "title": "Hai", "cueCount": 1, "rendered": False, "active": False},
+            ]
+
+        def set_owner(self, owner):
+            # Drive the FR-1.1 busy axis: one owner (or none) at a time.
+            self._busy_owner = owner
+            self.busyChanged.emit()
+
+        @Property(str, notify=busyChanged)
+        def busyOwner(self):
+            return self._busy_owner
+
+        @Property(str, notify=busyChanged)
+        def busyReason(self):
+            return {"ai": "AI đang chạy", "render": "Đang tạo", "export": "Đang xuất"}.get(
+                self._busy_owner, ""
+            )
+
+        @Property(bool, notify=busyChanged)
+        def aiBusy(self):
+            return self._busy_owner == "ai"
+
+        @Property(bool, notify=busyChanged)
+        def rendering(self):
+            return self._busy_owner == "render"
+
+        @Property(bool, notify=busyChanged)
+        def exporting(self):
+            return self._busy_owner == "export"
+
+        @Property(bool, notify=renderedChanged)
+        def renderStale(self):
+            return False
+
+        @Property(str, notify=renderedChanged)
+        def renderStaleReason(self):
+            return ""
+
+        @Property(float, notify=busyChanged)
+        def renderProgress(self):
+            return 0.0
+
+        @Property(float, notify=busyChanged)
+        def exportProgress(self):
+            return 0.0
+
+        @Property(bool, notify=renderedChanged)
+        def canExportTrack(self):
+            return self._rendered
+
+        @Property(bool, notify=renderedChanged)
+        def canExportSrt(self):
+            return self._rendered
+
+        @Property("QVariantList", notify=projectsChanged)
+        def projects(self):
+            return self._projects
+
+        @Property(int, notify=projectsChanged)
+        def projectCount(self):
+            return len(self._projects)
 
         @Property(str, notify=llmGlossaryChanged)
         def llmGlossary(self):
@@ -317,6 +389,10 @@ _DRIVER = textwrap.dedent(
         def supportsCloning(self):
             return True
 
+        @Property(str)
+        def blockerReason(self):
+            return ""
+
 
     class StubBridge(QObject):
         @Slot(str)
@@ -424,6 +500,35 @@ _DRIVER = textwrap.dedent(
                 app.processEvents()
                 extra["fallback_error_active"] = bool(item.property("hasDecodeError"))
 
+            # FR-1.1: per busy owner, the dock's Render/Play/Export and every
+            # project delete button. `enabled` itself is asserted — click()
+            # would bypass it.
+            if name in ("SubtitleActionDock.qml", "SubtitlesTab.qml"):
+                app.processEvents()
+                gated = {}
+                for owner in ("", "ai", "render", "export"):
+                    controller.set_owner(owner)
+                    app.processEvents()
+                    if name == "SubtitleActionDock.qml":
+                        buttons = {n: item.findChild(QObject, n) for n in DOCK_BUTTONS}
+                        gated[owner] = {
+                            n: [bool(b.property("enabled")), str(b.property("disabledReason"))]
+                            for n, b in buttons.items()
+                        }
+                    else:
+                        # Repeater delegates are visual children only: walk
+                        # the projects dialog's item tree, not QObject children.
+                        dialog = item.findChild(QObject, "subtitleProjectsDialog")
+                        stack, deletes = [dialog.property("contentItem")], []
+                        while stack:
+                            node = stack.pop()
+                            if node.objectName() == "subtitleDeleteProjectButton":
+                                deletes.append(bool(node.property("enabled")))
+                            stack.extend(node.childItems())
+                        gated[owner] = deletes
+                controller.set_owner("")
+                extra["gated"] = gated
+
         results[name] = {
             "created": created,
             "loaded": loaded,
@@ -441,7 +546,8 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
     proc = subprocess.run(
         [sys.executable, str(driver), str(QML_DIR)]
-        + [str(QML_DIR / "components" / name) for name in COMPONENTS],
+        + [str(QML_DIR / "components" / name) for name in COMPONENTS]
+        + [str(QML_DIR / name) for name in PAGES],
         capture_output=True,
         text=True,
         timeout=120,
@@ -451,7 +557,7 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     payload = [line for line in proc.stdout.splitlines() if line.startswith("RESULT:")]
     assert proc.returncode == 0 and payload, (proc.stdout, proc.stderr)
     results = json.loads(payload[-1][len("RESULT:") :])
-    for name in COMPONENTS:
+    for name in (*COMPONENTS, *PAGES):
         assert results[name]["created"], results[name]
         assert results[name]["loaded"], results[name]
         assert results[name]["errors"] == [], results[name]
@@ -480,3 +586,20 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     assert vp["seek_position_ms"] == 4200
     assert vp["released_source"] == ""
     assert vp["fallback_error_active"] is True
+
+    # FR-1.1: Render/Play/Export are disabled (with the owner's reason) while
+    # AI rewrites the cues; the dock's own render/export gates still hold.
+    dock = results["SubtitleActionDock.qml"]["gated"]
+    assert all(enabled for enabled, _reason in dock[""].values()), dock[""]
+    for owner, reason in (("ai", "AI đang chạy"), ("export", "Đang xuất")):
+        assert dock[owner] == {
+            name: [False, reason]
+            for name in ("subtitleRenderButton", "subtitlePlayButton", "subtitleExportMenuButton")
+        }, (owner, dock[owner])
+    assert dock["render"]["subtitleRenderButton"] == [False, "Đang tạo"]
+    assert dock["render"]["subtitleExportMenuButton"] == [False, "Đang tạo"]
+
+    # The project delete button is disabled while ANY owner is busy.
+    deletes = results["SubtitlesTab.qml"]["gated"]
+    assert deletes[""] and all(deletes[""]), deletes
+    assert all(deletes[owner] == [False] * len(deletes[""]) for owner in ("ai", "render", "export"))

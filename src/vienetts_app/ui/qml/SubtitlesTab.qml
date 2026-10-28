@@ -268,6 +268,9 @@ Pane {
                         iconKind: "close"
                         tooltipText: qsTr("Xóa dự án này")
                         accessibleLabel: tooltipText
+                        // FR-1.1: never delete under a running AI op, render
+                        // or export (busyOwner is "" only while idle).
+                        enabled: !root.subtitleAvailable || !subtitleController.busyOwner
                         onClicked: {
                             root.pendingDeleteProjectId = modelData.id;
                             deleteProjectDialog.title = qsTr("Xóa '%1'?").arg(

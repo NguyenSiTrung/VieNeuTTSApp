@@ -41,3 +41,8 @@ under `conductor/archive/`.
 
 <!-- Archived: video_preview_panel_20261028 (Subtitles Tab Video Preview Panel — dual-mode `SubtitleVideoPreview.qml` with `QtMultimedia` `MediaPlayer`/`VideoOutput` and lazy `Loader`-wrapped `AudioOutput`, `"source"` vs `"dub"` audio exclusivity, unrendered & rendered cue seeking via `videoSeekRequested`, live caption overlay, mini transport, compact auto-collapse, codec fallback notice, Windows `videoReleaseRequested` handle release, and all-stage adaptive 1-/2-column placement in `SubtitleCard.qml`; 3 phases / 4 tasks complete 2026-10-28; beads epic VieNeuTTSApp-t80a closed; 5 patterns elevated), archived 2026-10-28 → ./archive/video_preview_panel_20261028/ -->
 
+---
+
+## [ ] Track: OpenAI-Compatible LLM & Whisper API Provider Hardening — shared transport with readable errors, retries and capability fallback; correct reply parsing; glossary/context-aware batched refinement with failure isolation and concurrency; per-task models; separate chunked Whisper API; owner-only settings.json
+*Link: [./conductor/tracks/llm_provider_hardening_20261028/](./conductor/tracks/llm_provider_hardening_20261028/)*
+

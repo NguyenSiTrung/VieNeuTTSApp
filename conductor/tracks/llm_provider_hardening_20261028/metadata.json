@@ -1,0 +1,29 @@
+{
+  "track_id": "llm_provider_hardening_20261028",
+  "type": "feature",
+  "status": "new",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-10-28T06:20:50Z",
+  "updated_at": "2026-10-28T06:20:50Z",
+  "description": "OpenAI-compatible LLM & Whisper API provider hardening for dubbing/subtitles: shared core/llm_client.py transport (error taxonomy + provider error detail, Retry-After backoff, temperature/response_format capability downgrade), robust reply parsing (think-strip, raw_decode scan, strict index matching, speaker whitelist, null-speaker fix), slim JSON envelope with per-project glossary + read-only neighbouring context, per-batch failure isolation with notes, truncation bisection, missing-cue follow-up, verified fit_timing, ordered concurrency, per-task model overrides, separate Whisper API URL/key/model with no LLM-key leakage, silence-aware 10-minute chunked cloud ASR upload, owner-only settings.json, Settings/Prepare UI, i18n and README provider docs.",
+  "execution_mode": "parallel",
+  "manual_phase_verification": false,
+  "beads_epic": "VieNeuTTSApp-f783",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-f783.1",
+    "phase1_task1": "VieNeuTTSApp-f783.1.1",
+    "phase1_task2": "VieNeuTTSApp-f783.1.2",
+    "phase2": "VieNeuTTSApp-f783.2",
+    "phase2_task1": "VieNeuTTSApp-f783.2.1",
+    "phase2_task2": "VieNeuTTSApp-f783.2.2",
+    "phase3": "VieNeuTTSApp-f783.3",
+    "phase3_task1": "VieNeuTTSApp-f783.3.1",
+    "phase3_task2": "VieNeuTTSApp-f783.3.2",
+    "phase4": "VieNeuTTSApp-f783.4",
+    "phase4_task1": "VieNeuTTSApp-f783.4.1",
+    "phase4_task2": "VieNeuTTSApp-f783.4.2",
+    "phase4_task3": "VieNeuTTSApp-f783.4.3"
+  }
+}

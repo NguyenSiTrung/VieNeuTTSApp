@@ -2,10 +2,11 @@
 
 **Verdict: YES — this tab needs a redesign.** It is the only top-level destination that never received the 2026-10-10 shell redesign treatment, and it is now structurally the weakest page in the app.
 
-> **Status: resolved 2026-10-23** by track `subtitles_ux_overhaul_20261023`
-> (commits `da92163`, `601f981`, `6e22bb1`, `0d3f935` and the phase-5 commits).
-> Every finding below is addressed except 3.6, deliberately deferred; the audit
-> is kept as the historical record of the pre-redesign surface.
+> **Status: resolved 2026-10-23 / 2026-10-28** by tracks `subtitles_ux_overhaul_20261023`
+> (commits `da92163`, `601f981`, `6e22bb1`, `0d3f935` and the phase-5 commits) and
+> `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`).
+> Every finding below is now addressed; the audit is kept as the historical
+> record of the pre-redesign surface.
 >
 > | Finding | Resolution |
 > |---|---|
@@ -25,7 +26,7 @@
 > | 3.3 duplicate diarization | One affordance per stage (speaker bar), deduplicated and asserted. |
 > | 3.4 raw voice IDs | `VoicePicker` per speaker; "assign current voice" shortcut. |
 > | 3.5 no way to start over | `New project` + projects dialog. |
-> | 3.6 no video preview | Out of scope for this track; filed as `VieNeuTTSApp-t80a`. The video bar carries the file name and dub options. |
+> | 3.6 no video preview | Resolved by `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`): extracted `SubtitleVideoPreview.qml` with dual-mode `MediaPlayer` + `VideoOutput` (Source audio preview & Dub sync), live caption pill overlay, mini transport/scrubber, unrendered cue seeking, and Windows file-handle release (`videoReleaseRequested`). |
 > | 3.7 export has no cancel/progress escape | `cancelExport` + export progress + cancel button in the dock. |
 > | 4.1 five independent booleans | Controller `state` + `busyOwner`; one progress indicator per owner. |
 > | 4.2 invisible behaviour | Hints channel (`hintText`), dismissible tone-aware banner, stale chip. |

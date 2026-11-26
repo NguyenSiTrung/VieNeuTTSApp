@@ -10,12 +10,14 @@ import soundfile as sf
 from tests.unit.wsola_reference import reference_time_stretch
 
 from vienetts_app.core.audio import (
+    ExportCancelled,
     apply_micro_fade,
     compute_waveform_envelope,
     compute_waveform_envelope_from_wav,
     encode_wav_bytes,
     export_audio_file,
     export_format_for,
+    export_mp3_parts,
     export_wav_file,
     read_wav,
     time_stretch_audio,
@@ -462,6 +464,196 @@ class TestExportAudioFile:
         assert export_format_for(tmp_path / "a.wav") == "wav"
         assert export_format_for(tmp_path / "a") == "wav"
         assert export_format_for(tmp_path / "a.ogg") == "wav"
+
+
+def _minimal_id3v24_tag(title: str = "Chapter 1") -> bytes:
+    """Build a valid minimal ID3v2.4 header containing a single UTF-8 TIT2 frame."""
+    payload = b"\x03" + title.encode("utf-8")
+
+    def _syncsafe(n: int) -> bytes:
+        return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+
+    frame = b"TIT2" + _syncsafe(len(payload)) + b"\x00\x00" + payload
+    return b"ID3\x04\x00\x00" + _syncsafe(len(frame)) + frame
+
+
+class TestExportMp3Parts:
+    def test_concatenates_parts_with_id3_tag_and_cleans_temps(self, tmp_path: Path) -> None:
+        wav1 = write_wav_file(tone(24_000, freq=440.0, sr=48_000), tmp_path / "part1.wav")
+        wav2 = write_wav_file(tone(36_000, freq=660.0, sr=48_000), tmp_path / "part2.wav")
+        dest = tmp_path / "out" / "book.mp3"
+        tag = _minimal_id3v24_tag("Part One")
+
+        result = export_mp3_parts([wav1, wav2], dest, id3_bytes=tag)
+
+        assert result == dest
+        assert dest.is_file()
+        raw_bytes = dest.read_bytes()
+        assert raw_bytes.startswith(tag)
+
+        info = sf.info(str(dest))
+        assert info.format == "MP3"
+        assert info.subtype == "MPEG_LAYER_III"
+        assert info.samplerate == 48_000
+        assert info.channels == 1
+        expected_dur = wav_duration_seconds(wav1) + wav_duration_seconds(wav2)
+        assert info.duration == pytest.approx(expected_dur, abs=0.15)
+        assert list(dest.parent.glob("*.part.mp3")) == []
+
+    def test_without_id3_and_empty_id3_bytes(self, tmp_path: Path) -> None:
+        wav1 = write_wav_file(tone(12_000), tmp_path / "p1.wav")
+        wav2 = write_wav_file(tone(12_000), tmp_path / "p2.wav")
+
+        for name, id3_bytes in [("none.mp3", None), ("empty.mp3", b"")]:
+            dest = tmp_path / name
+            result = export_mp3_parts([wav1, wav2], dest, id3_bytes=id3_bytes)
+            assert result == dest
+            assert not dest.read_bytes().startswith(b"ID3")
+            info = sf.info(str(dest))
+            assert info.format == "MP3"
+            assert info.duration == pytest.approx(0.5, abs=0.15)
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+    def test_validation_errors_and_mismatches_leave_no_temps(self, tmp_path: Path) -> None:
+        wav_48k_mono = write_wav_file(tone(12_000, sr=48_000), tmp_path / "m48.wav")
+        wav_24k_mono = write_wav_file(
+            tone(6_000, sr=24_000), tmp_path / "m24.wav", sample_rate=24_000
+        )
+        wav_48k_stereo = tmp_path / "s48.wav"
+        stereo = np.column_stack([tone(12_000, sr=48_000), tone(12_000, sr=48_000)])
+        sf.write(str(wav_48k_stereo), stereo, 48_000, subtype="FLOAT")
+
+        with pytest.raises(ValueError, match="sources"):
+            export_mp3_parts([], tmp_path / "empty.mp3")
+
+        with pytest.raises(ValueError, match="block_frames"):
+            export_mp3_parts([wav_48k_mono], tmp_path / "bad_block.mp3", block_frames=0)
+
+        with pytest.raises(FileNotFoundError):
+            export_mp3_parts([wav_48k_mono, tmp_path / "missing.wav"], tmp_path / "missing.mp3")
+
+        dest_sr = tmp_path / "mismatch_sr.mp3"
+        dest_sr.write_bytes(b"keep-existing")
+        with pytest.raises(ValueError, match="sample rate"):
+            export_mp3_parts([wav_48k_mono, wav_24k_mono], dest_sr)
+        assert dest_sr.read_bytes() == b"keep-existing"
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+        dest_ch = tmp_path / "mismatch_ch.mp3"
+        with pytest.raises(ValueError, match="channel"):
+            export_mp3_parts([wav_48k_mono, wav_48k_stereo], dest_ch)
+        assert not dest_ch.exists()
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+    def test_cancel_before_start_mid_stream_and_during_id3_copy(self, tmp_path: Path) -> None:
+        # ~9 s total so raw MP3 (~84 KiB) exceeds one 64 KiB ID3 copy chunk.
+        wav1 = write_wav_file(speechy(4.5, seed=1), tmp_path / "c1.wav")
+        wav2 = write_wav_file(speechy(4.5, seed=2), tmp_path / "c2.wav")
+        tag = _minimal_id3v24_tag("Cancelled Book")
+
+        # 1. Cancel immediately before starting
+        dest_pre = tmp_path / "pre_cancel.mp3"
+        with pytest.raises(ExportCancelled):
+            export_mp3_parts([wav1, wav2], dest_pre, id3_bytes=tag, cancel_check=lambda: True)
+        assert not dest_pre.exists()
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+        # 2. Cancel mid-stream during PCM -> MP3 block encoding
+        dest_mid = tmp_path / "mid_cancel.mp3"
+        dest_mid.write_bytes(b"untouched")
+        checks = 0
+
+        def cancel_after_two_checks() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks >= 3
+
+        with pytest.raises(ExportCancelled):
+            export_mp3_parts(
+                [wav1, wav2],
+                dest_mid,
+                id3_bytes=tag,
+                block_frames=1024,
+                cancel_check=cancel_after_two_checks,
+            )
+        assert dest_mid.read_bytes() == b"untouched"
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+        # 3. Cancel mid-copy during the ID3v2.4 prepend streaming stage
+        dest_id3 = tmp_path / "id3_cancel.mp3"
+        tagged_polls = 0
+        observed_partial_bytes = 0
+
+        def cancel_mid_id3_copy() -> bool:
+            nonlocal tagged_polls, observed_partial_bytes
+            tagged_files = list(tmp_path.glob("*.tagged.part.mp3"))
+            if tagged_files:
+                tagged_polls += 1
+                if tagged_polls >= 2:
+                    observed_partial_bytes = tagged_files[0].stat().st_size
+                    return True
+            return False
+
+        with pytest.raises(ExportCancelled):
+            export_mp3_parts(
+                [wav1, wav2],
+                dest_id3,
+                id3_bytes=tag,
+                cancel_check=cancel_mid_id3_copy,
+            )
+        assert tagged_polls >= 2
+        assert observed_partial_bytes >= 65_536
+        assert not dest_id3.exists()
+        assert list(tmp_path.glob("*.part.mp3")) == []
+
+    def test_respects_bounded_block_frames_across_multiple_parts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wav1 = write_wav_file(tone(5_000, freq=330.0), tmp_path / "b1.wav")
+        wav2 = write_wav_file(tone(4_500, freq=550.0), tmp_path / "b2.wav")
+        dest = tmp_path / "bounded.mp3"
+        block_frames = 1024
+
+        read_sizes: list[int] = []
+        write_lengths: list[int] = []
+        orig_soundfile = sf.SoundFile
+
+        def spying_soundfile(*args, **kwargs):
+            handle = orig_soundfile(*args, **kwargs)
+            mode = kwargs.get("mode", "r")
+            if mode == "r":
+                orig_read = handle.read
+
+                def tracked_read(frames=-1, *a, **kw):
+                    read_sizes.append(frames)
+                    return orig_read(frames, *a, **kw)
+
+                handle.read = tracked_read
+            elif mode == "w":
+                orig_write = handle.write
+
+                def tracked_write(data):
+                    write_lengths.append(len(data))
+                    return orig_write(data)
+
+                handle.write = tracked_write
+            return handle
+
+        monkeypatch.setattr(sf, "SoundFile", spying_soundfile)
+
+        result = export_mp3_parts([wav1, wav2], dest, block_frames=block_frames)
+
+        assert result == dest
+        assert len(read_sizes) > 2
+        assert all(size == block_frames for size in read_sizes)
+        assert len(write_lengths) >= 10  # ceil(5000/1024)=5 + ceil(4500/1024)=5
+        assert all(length <= block_frames for length in write_lengths)
+        assert sum(write_lengths) == 9_500
+
+        info = sf.info(str(dest))
+        assert info.format == "MP3"
+        assert info.duration == pytest.approx(9_500 / 48_000, abs=0.15)
+        assert list(tmp_path.glob("*.part.mp3")) == []
 
 
 class TestTrimSpeechEdges:

@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
+import time
+import uuid
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +267,40 @@ MP3_SUFFIX = ".mp3"
 WAV_SUFFIX = ".wav"
 SUPPORTED_EXPORT_SUFFIXES = frozenset((WAV_SUFFIX, MP3_SUFFIX))
 
+_ATOMIC_RETRY_ATTEMPTS = 5
+_ATOMIC_RETRY_BASE_DELAY_S = 0.05
+_ID3_COPY_CHUNK_BYTES = 65_536
+
+
+class ExportCancelled(RuntimeError):
+    """Audio export was cancelled by the caller."""
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """Atomically promote ``src`` to ``dst``, retrying transient Windows locks."""
+    for attempt in range(_ATOMIC_RETRY_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _ATOMIC_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_ATOMIC_RETRY_BASE_DELAY_S * (2**attempt))
+
+
+def _unlink_with_retry(path: Path) -> None:
+    """Best-effort unlink of a temp file, retrying transient Windows locks."""
+    for attempt in range(_ATOMIC_RETRY_ATTEMPTS):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == _ATOMIC_RETRY_ATTEMPTS - 1:
+                return
+            time.sleep(_ATOMIC_RETRY_BASE_DELAY_S * (2**attempt))
+        except OSError:
+            return
+
 
 def export_format_for(destination: str | Path) -> str:
     """Return ``"mp3"`` when ``destination`` ends in ``.mp3`` (any case), else ``"wav"``."""
@@ -289,70 +327,137 @@ def export_audio_file(
     return export_wav_file(source, destination, subtype=subtype, block_frames=block_frames)
 
 
+def export_mp3_parts(
+    sources: Sequence[str | Path],
+    destination: str | Path,
+    *,
+    id3_bytes: bytes | None = None,
+    block_frames: int = 65_536,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Path:
+    """Stream-encode one or more audio files into a single MP3 atomically.
+
+    All sources must share the same sample rate and channel count. Audio is
+    read and encoded in fixed-size ``block_frames`` chunks so long audiobooks
+    never load into RAM. When ``id3_bytes`` is non-empty, it is prepended in a
+    streaming 64 KiB copy stage before atomic promotion via ``os.replace``.
+    """
+    if isinstance(sources, (str, bytes, Path)):
+        raise TypeError("sources must be a sequence of paths, not a single path")
+    src_paths = [Path(src) for src in sources]
+    if not src_paths:
+        raise ValueError("sources must not be empty")
+    if block_frames <= 0:
+        raise ValueError(f"block_frames must be > 0, got {block_frames}")
+
+    for src_path in src_paths:
+        if not src_path.is_file():
+            raise FileNotFoundError(f"Source audio file does not exist: {src_path}")
+
+    def _check_cancelled() -> None:
+        if cancel_check is not None and cancel_check():
+            raise ExportCancelled("Audio export cancelled.")
+
+    _check_cancelled()
+
+    dest_path = Path(destination)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.mp3"
+    temp_paths: list[Path] = [raw_part_path]
+
+    sf = _sf()
+    try:
+        sr = 0
+        channels = 0
+        writer: Any = None
+        encode_ok = False
+        try:
+            for src_path in src_paths:
+                _check_cancelled()
+                with sf.SoundFile(str(src_path), mode="r") as reader:
+                    if writer is None:
+                        sr = int(reader.samplerate)
+                        channels = int(reader.channels)
+                        writer = sf.SoundFile(
+                            str(raw_part_path),
+                            mode="w",
+                            samplerate=sr,
+                            channels=channels,
+                            subtype="MPEG_LAYER_III",
+                            format="MP3",
+                        )
+                    else:
+                        if reader.samplerate != sr:
+                            raise ValueError(
+                                f"Source sample rate mismatch for {src_path}: "
+                                f"expected {sr} Hz, got {reader.samplerate} Hz"
+                            )
+                        if reader.channels != channels:
+                            raise ValueError(
+                                f"Source channel count mismatch for {src_path}: "
+                                f"expected {channels}, got {reader.channels}"
+                            )
+                    while True:
+                        _check_cancelled()
+                        block = reader.read(block_frames, dtype="float32", always_2d=False)
+                        if len(block) == 0:
+                            break
+                        _check_cancelled()
+                        np.clip(block, -1.0, 1.0, out=block)
+                        writer.write(block)
+            encode_ok = True
+        finally:
+            if writer is not None:
+                if encode_ok:
+                    try:
+                        writer.close()
+                    finally:
+                        _force_close_soundfile(writer)
+                else:
+                    _force_close_soundfile(writer)
+
+        _validate_mp3_artifact(raw_part_path, expected_rate=sr)
+
+        final_part_path = raw_part_path
+        if id3_bytes:
+            _check_cancelled()
+            tagged_part_path = (
+                dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.tagged.part.mp3"
+            )
+            temp_paths.append(tagged_part_path)
+            with (
+                raw_part_path.open("rb") as src_fh,
+                tagged_part_path.open("wb") as dst_fh,
+            ):
+                dst_fh.write(id3_bytes)
+                while True:
+                    _check_cancelled()
+                    chunk = src_fh.read(_ID3_COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    dst_fh.write(chunk)
+            _unlink_with_retry(raw_part_path)
+            final_part_path = tagged_part_path
+
+        _check_cancelled()
+        _replace_with_retry(final_part_path, dest_path)
+    except BaseException:
+        for part_path in temp_paths:
+            _unlink_with_retry(part_path)
+        raise
+
+    return dest_path
+
+
 def _export_mp3_file(
     source: str | Path,
     destination: str | Path,
     *,
     block_frames: int = 65_536,
 ) -> Path:
-    """Stream-convert a WAV artifact to MPEG Layer III atomically (see :func:`export_wav_file`)."""
-    import os
-    import time
-    import uuid
-
-    src_path = Path(source)
-    if not src_path.is_file():
-        raise FileNotFoundError(f"Source audio file does not exist: {src_path}")
-
-    dest_path = Path(destination)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.mp3"
-
-    sf = _sf()
-    try:
-        with sf.SoundFile(str(src_path), mode="r") as reader:
-            sr = reader.samplerate
-            channels = reader.channels
-            with sf.SoundFile(
-                str(part_path),
-                mode="w",
-                samplerate=sr,
-                channels=channels,
-                subtype="MPEG_LAYER_III",
-                format="MP3",
-            ) as writer:
-                while True:
-                    block = reader.read(block_frames, dtype="float32", always_2d=False)
-                    if len(block) == 0:
-                        break
-                    np.clip(block, -1.0, 1.0, out=block)
-                    writer.write(block)
-
-        _validate_mp3_artifact(part_path, expected_rate=sr)
-
-        for attempt in range(5):
-            try:
-                os.replace(part_path, dest_path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.05 * (2**attempt))
-    except Exception:
-        for attempt in range(5):
-            try:
-                part_path.unlink(missing_ok=True)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    break
-                time.sleep(0.05 * (2**attempt))
-            except OSError:
-                break
-        raise
-
-    return dest_path
+    """Stream-convert a WAV artifact to MPEG Layer III atomically (see :func:`export_mp3_parts`)."""
+    return export_mp3_parts([source], destination, block_frames=block_frames)
 
 
 def _validate_mp3_artifact(path: Path, expected_rate: int) -> None:
@@ -391,10 +496,6 @@ def export_wav_file(
     If conversion or promotion fails, the temporary part file is unlinked
     and the source file is left untouched.
     """
-    import os
-    import time
-    import uuid
-
     src_path = Path(source)
     if not src_path.is_file():
         raise FileNotFoundError(f"Source audio file does not exist: {src_path}")
@@ -430,25 +531,9 @@ def export_wav_file(
         validate_wav_artifact(part_path)
 
         # Atomic promote with bounded retry for Windows locks
-        for attempt in range(5):
-            try:
-                os.replace(part_path, dest_path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.05 * (2**attempt))
+        _replace_with_retry(part_path, dest_path)
     except Exception:
-        for attempt in range(5):
-            try:
-                part_path.unlink(missing_ok=True)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    break
-                time.sleep(0.05 * (2**attempt))
-            except OSError:
-                break
+        _unlink_with_retry(part_path)
         raise
 
     return dest_path

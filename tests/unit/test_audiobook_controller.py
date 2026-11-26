@@ -339,15 +339,18 @@ class Harness:
         app_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.fake_player = FakePlayer()
+        defaults: dict[str, Any] = {
+            "catalog": lambda: [],
+            "saved_names": lambda _dir: [],
+        }
+        defaults.update(app_kwargs or {})
         self.app = AppController(
             data_dir=tmp_path,
             engine_factory=lambda **kw: FakeEngine(**kw),
             # One argument for the VieNeu posture, (engine, providers) once a
             # Qwen profile is active (same seam AppController documents).
             worker_factory=lambda engine, providers=None: self._new_worker(),
-            catalog=lambda: [],
-            saved_names=lambda _dir: [],
-            **(app_kwargs or {}),
+            **defaults,
         )
         self.workers: list[FakeWorker] = []
         self.audiobook = AudiobookController(
@@ -2138,3 +2141,232 @@ class TestChapterListModel:
         assert ab.currentChapterIndex == 2
         assert ab.currentChapterTitle == ab.chapters[2]["title"]
         assert fired
+
+
+class TestBooksReaderExportAndCancel:
+    """Task 5.1 (FR-5.2): coverUrl, exportAudiobook modes, narrator resolution, cancelExport."""
+
+    def test_books_rows_expose_cover_url_only_when_cover_exists(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.epub import EpubBook, EpubChapter
+
+        # Book without cover -> empty coverUrl.
+        harness.open_sample()
+        assert harness.audiobook.books[0]["coverUrl"] == ""
+
+        # Book with persisted PNG cover -> valid file:// URL.
+        tiny_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        covered = EpubBook(
+            title="Sách Có Bìa",
+            author="Tác Giả",
+            chapters=[EpubChapter(0, "Chương 1", "Nội dung.")],
+            source_path=str(tmp_path / "covered.epub"),
+            content_hash="7" * 64,
+            authors=("Tác Giả",),
+            cover_bytes=tiny_png,
+            cover_ext="png",
+        )
+        rec = harness.audiobook_lib.add_book(covered)
+        harness.audiobook._refresh_books()
+        by_id = {row["id"]: row for row in harness.audiobook.books}
+        assert by_id[rec.id]["coverUrl"].startswith("file://")
+        assert by_id[rec.id]["coverUrl"].endswith("cover.png")
+
+        # If the cover file vanishes from disk, coverUrl degrades cleanly to "".
+        cover_file = harness.audiobook_lib.cover_path(rec.id, rec.cover_file)
+        assert cover_file is not None
+        cover_file.unlink()
+        harness.audiobook._refresh_books()
+        by_id = {row["id"]: row for row in harness.audiobook.books}
+        assert by_id[rec.id]["coverUrl"] == ""
+
+    def test_export_audiobook_dispatches_all_four_modes_and_resolves_narrator(
+        self, tmp_path: Path, qcoreapp, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.audiobook_controller as ab_ctrl_mod
+
+        harness = Harness(
+            tmp_path,
+            app_kwargs={
+                "catalog": lambda: [
+                    {"name": "Ngọc Anh", "description": "Nữ · Bắc · Dịu dàng"},
+                    {"name": "Adam", "description": "Nam · Bắc · Ấm áp"},
+                ],
+            },
+        )
+        ab = harness.audiobook
+        harness.open_sample()
+        ab.renderVoice = "Ngọc Anh"
+        harness.render(0)
+        harness.render(1)
+
+        # Invalid format mode sets actionable errorText and returns False.
+        assert ab.exportAudiobook(str(tmp_path / "bad"), "flac") is False
+        assert ab.errorText != ""
+
+        # 1. WAV mode: flat in dest_dir.
+        wav_dest = tmp_path / "wav_out"
+        finished: list[tuple[int, str]] = []
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        assert ab.exportAudiobook(str(wav_dest), "wav") is True
+        assert sorted(p.name for p in wav_dest.iterdir()) == [
+            "01 - Chương một.wav",
+            "02 - Chương hai.wav",
+        ]
+        assert finished[-1] == (2, "")
+
+        # 2. MP3 mode: subfolder <Sanitized Book Title>/ with ID3v2.4 narrator display name.
+        mp3_dest = tmp_path / "mp3_out"
+        assert ab.exportAudiobook(str(mp3_dest), "mp3") is True
+        book_dir = mp3_dest / "Sách thử nghiệm"
+        assert sorted(p.name for p in book_dir.iterdir()) == [
+            "01 - Chương một.mp3",
+            "02 - Chương hai.mp3",
+        ]
+        raw_mp3 = (book_dir / "01 - Chương một.mp3").read_bytes()
+        assert raw_mp3.startswith(b"ID3\x04\x00\x00")
+        assert "Ngọc Anh".encode() in raw_mp3
+        assert finished[-1] == (2, "")
+
+        # Backward-compatible exportAllReady follows controller.exportFormat="mp3" -> subfolder.
+        harness.app.exportFormat = "mp3"
+        compat_dest = tmp_path / "compat_mp3_out"
+        assert ab.exportAllReady(str(compat_dest)) is True
+        assert sorted(p.name for p in (compat_dest / "Sách thử nghiệm").iterdir()) == [
+            "01 - Chương một.mp3",
+            "02 - Chương hai.mp3",
+        ]
+        harness.app.exportFormat = "wav"
+
+        # 3. EPUB 3 mode: single .epub file with Media Overlays.
+        epub_dest = tmp_path / "epub_out"
+        progress_ticks: list[tuple[int, int]] = []
+        ab.exportProgress.connect(lambda d, t: progress_ticks.append((d, t)))
+        assert ab.exportAudiobook(str(epub_dest), "epub3") is True
+        assert (epub_dest / "Sách thử nghiệm.epub").is_file()
+        assert finished[-1] == (1, "")
+        assert progress_ticks[-1][0] == progress_ticks[-1][1] and progress_ticks[-1][1] > 0
+
+        # 4. M4B mode: forwards m4bBitrate, data_dir, narrator, progress, cancel_check.
+        harness.app.m4bBitrate = "128k"
+        captured: dict[str, Any] = {}
+
+        def fake_m4b(
+            library,
+            book_id,
+            dest_dir,
+            *,
+            ready_indices=None,
+            bitrate="96k",
+            narrator="",
+            data_dir=None,
+            book=None,
+            progress=None,
+            cancel_check=None,
+        ):
+            captured.update(
+                {
+                    "book_id": book_id,
+                    "ready_indices": list(ready_indices or []),
+                    "bitrate": bitrate,
+                    "narrator": narrator,
+                    "data_dir": data_dir,
+                    "has_cancel": callable(cancel_check),
+                }
+            )
+            if progress is not None:
+                progress(0.5)
+                progress(1.0)
+            out = Path(dest_dir) / "Sách thử nghiệm.m4b"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"ftypmoov")
+            return out
+
+        monkeypatch.setattr(ab_ctrl_mod, "export_m4b_audiobook", fake_m4b)
+        m4b_dest = tmp_path / "m4b_out"
+        progress_ticks.clear()
+        assert ab.exportAudiobook(str(m4b_dest), "m4b") is True
+        assert captured == {
+            "book_id": ab.currentBookId,
+            "ready_indices": [0, 1],
+            "bitrate": "128k",
+            "narrator": "Ngọc Anh",
+            "data_dir": tmp_path,
+            "has_cancel": True,
+        }
+        assert (50, 100) in progress_ticks
+        assert progress_ticks[-1] == (100, 100)
+        assert finished[-1] == (1, "")
+
+    def test_single_file_modes_refuse_zero_ready_or_actively_playing_chapter(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+
+        # 0 ready chapters -> refuse both epub3 and m4b with actionable error.
+        for mode in ("epub3", "m4b"):
+            assert ab.exportAudiobook(str(tmp_path / mode), mode) is False
+            assert ab.errorText != ""
+            assert ab.exporting is False
+
+        # Ready chapter actively playing -> refuse single-file exports so no chapter is dropped.
+        harness.render(0)
+        ab.playChapter(0)
+        assert ab.playerState == "playing"
+        for mode in ("epub3", "m4b"):
+            ab._set_error("")
+            assert ab.exportAudiobook(str(tmp_path / f"playing_{mode}"), mode) is False
+            assert "đang phát" in ab.errorText.lower()
+            assert ab.exporting is False
+
+    def test_cancel_export_and_shutdown_stop_inflight_work_silently(
+        self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.audiobook_controller as ab_ctrl_mod
+
+        ab = harness.audiobook
+        harness.open_sample()
+        harness.render(0)
+        harness.render(1)
+
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        captured_cancel: list[Any] = []
+        real_export_epub = ab_ctrl_mod.export_epub_media_overlays
+
+        def spy_epub(*args, **kwargs):
+            captured_cancel.append(kwargs.get("cancel_check"))
+            return real_export_epub(*args, **kwargs)
+
+        monkeypatch.setattr(ab_ctrl_mod, "export_epub_media_overlays", spy_epub)
+
+        finished: list[tuple[int, str]] = []
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        dest = tmp_path / "cancel_epub"
+        assert ab.exportAudiobook(str(dest), "epub3") is True
+        assert ab.exporting is True
+
+        # Cancel before background work runs: immediate silent reset + cancel_check flipped.
+        ab.cancelExport()
+        assert ab.exporting is False
+        assert ab.errorText == ""
+        assert finished == [(0, "")]
+
+        # When the background callable executes after cancel, it raises ExportCancelled,
+        # produces no output, and does not double-emit exportFinished.
+        runner.run()
+        assert captured_cancel and captured_cancel[0]() is True
+        assert not (dest / "Sách thử nghiệm.epub").exists()
+        assert finished == [(0, "")]
+
+        # shutdown() cancels an active export and calls terminate_children().
+        terminated: list[int] = []
+        monkeypatch.setattr(ab_ctrl_mod, "terminate_children", lambda: terminated.append(1) or 0)
+        assert ab.exportAudiobook(str(tmp_path / "shutdown_epub"), "epub3") is True
+        assert ab.exporting is True
+        ab.shutdown()
+        assert ab.exporting is False
+        assert terminated == [1]

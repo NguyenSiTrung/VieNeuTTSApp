@@ -55,8 +55,9 @@ from __future__ import annotations
 
 import bisect
 import logging
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, QTimer, Signal,
 from PySide6.QtGui import QGuiApplication
 
 from vienetts_app.core.artifacts import SynthesisArtifact, validate_wav_artifact
+from vienetts_app.core.audio import ExportCancelled
 from vienetts_app.core.audiobook import (
     STATUS_PENDING,
     STATUS_READY,
@@ -75,7 +77,10 @@ from vienetts_app.core.audiobook import (
 from vienetts_app.core.chapter_split import ChapterPart
 from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
-from vienetts_app.core.paths import normalize_local_path
+from vienetts_app.core.epub_export import export_epub_media_overlays
+from vienetts_app.core.m4b_export import export_m4b_audiobook
+from vienetts_app.core.paths import normalize_local_path, path_to_file_url
+from vienetts_app.core.processes import terminate_children
 from vienetts_app.core.synthesis_context import SynthesisContext, context_matches
 from vienetts_app.core.timeline import (
     Timeline,
@@ -125,6 +130,12 @@ def _default_library_factory(data_dir: Path) -> AudiobookLibrary:
 def _default_player_factory() -> PlaybackController:
     return PlaybackController()
 
+
+# Supported full-audiobook export modes exposed to QML (FR-5.2).
+EXPORT_MODES = frozenset(("epub3", "m4b", "mp3", "wav"))
+
+# Sentinel error returned by a cancelled background export callable.
+_EXPORT_CANCELLED_SENTINEL = "__export_cancelled__"
 
 # Keys of one `chapters` row — the roles of `chapterModel`.
 CHAPTER_ROLES = (
@@ -179,7 +190,7 @@ class AudiobookController(QObject):
     exportingChanged = Signal()
     exportProgress = Signal(int, int)
     exportFinished = Signal(int, str)
-    _exportStep = Signal(int, int)
+    _exportStep = Signal(int, int, int)
 
     def __init__(
         self,
@@ -217,6 +228,8 @@ class AudiobookController(QObject):
         self._open_generation = 0
         self._refresh_generation = 0
         self._exporting = False
+        self._export_generation = 0
+        self._export_cancel_event: threading.Event | None = None
         self._exportStep.connect(self._on_export_step)
         # Chapter-model emissions coalesce: a chapter landing fires several
         # invalidations in one event-loop cycle (status + error clear + …).
@@ -708,15 +721,20 @@ class AudiobookController(QObject):
         return context_matches(self._contexts.get(index), context)
 
     def _refresh_books(self) -> None:
-        self._books = [
-            {
-                "id": record.id,
-                "title": record.title,
-                "author": record.author,
-                "chapterCount": record.chapter_count,
-            }
-            for record in self._library.list_books()
-        ]
+        rows: list[dict[str, Any]] = []
+        for record in self._library.list_books():
+            cpath = self._library.cover_path(record.id, record.cover_file)
+            cover_url = path_to_file_url(cpath) if cpath is not None and cpath.is_file() else ""
+            rows.append(
+                {
+                    "id": record.id,
+                    "title": record.title,
+                    "author": record.author,
+                    "chapterCount": record.chapter_count,
+                    "coverUrl": cover_url,
+                }
+            )
+        self._books = rows
         self.booksChanged.emit()
 
     # ── library / book lifecycle ─────────────────────────────────────────────
@@ -1761,7 +1779,48 @@ class AudiobookController(QObject):
         except (AudiobookError, OSError):  # noqa: BLE001 - progress persistence is best-effort
             logger.exception("saving audiobook progress failed")
 
-    # ── export (FR-A6) ───────────────────────────────────────────────────────
+    # ── export (FR-A6, FR-5.2) ───────────────────────────────────────────────
+
+    def _resolve_narrator_name(self, indices: Sequence[int]) -> str:
+        """Resolve a human-readable narrator name from chapter context or voice catalog."""
+        voice_id = ""
+        for idx in indices:
+            ctx = self._contexts.get(idx)
+            if ctx is not None:
+                candidate = str(ctx.clone_id or ctx.voice_id or "").strip()
+                if candidate:
+                    voice_id = candidate
+                    break
+        if not voice_id:
+            voice_id = str(self._render_voice or "").strip()
+        if not voice_id and self._state is not None:
+            voice_id = str(self._state.progress.voice or "").strip()
+        if not voice_id:
+            voice_id = str(getattr(self._app, "defaultVoice", "") or "").strip()
+        if not voice_id:
+            return ""
+
+        def _extract_name(label: str) -> str:
+            text = str(label or "").strip()
+            if " — " in text:
+                return text.split(" — ", 1)[0].strip()
+            return text
+
+        for group in getattr(self._app, "voices", ()) or ():
+            if not isinstance(group, dict):
+                continue
+            for item in group.get("voices") or ():
+                if isinstance(item, dict) and str(item.get("id") or "") == voice_id:
+                    name = _extract_name(str(item.get("label") or ""))
+                    if name:
+                        return name
+        for attr in ("profileVoices", "profileClones"):
+            for item in getattr(self._app, attr, ()) or ():
+                if isinstance(item, dict) and str(item.get("id") or "") == voice_id:
+                    name = _extract_name(str(item.get("label") or ""))
+                    if name:
+                        return name
+        return voice_id
 
     @Slot(int, str, result=bool)
     def exportChapter(self, index: int, dest_dir: str) -> bool:  # type: ignore[override]
@@ -1777,16 +1836,24 @@ class AudiobookController(QObject):
             # on Windows (locked handle) — stop playback first, then export.
             self._set_error(self.tr("Chương đang phát — hãy dừng rồi xuất lại."))
             return False
-        self._start_export([index], dest_dir, skipped_playing=False)
+        audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav").strip().lower()
+        mode = "mp3" if audio_format == "mp3" else "wav"
+        self._start_export(
+            [index],
+            dest_dir,
+            format_mode=mode,
+            skipped_playing=False,
+            single_chapter=True,
+        )
         return True
 
-    @Slot(str, result=bool)
-    def exportAllReady(self, dest_dir: str) -> bool:  # type: ignore[override]
-        """Export every reusable chapter in the background; True when accepted.
-
-        The chapter currently playing is skipped (same reason as
-        :meth:`exportChapter`) and reported once the run finishes.
-        """
+    @Slot(str, str, result=bool)
+    def exportAudiobook(self, dest_dir: str, format_mode: str) -> bool:  # type: ignore[override]
+        """Export ready chapters in ``format_mode`` (``epub3|m4b|mp3|wav``) off-thread."""
+        mode = str(format_mode or "").strip().lower()
+        if mode not in EXPORT_MODES:
+            self._set_error(self.tr("Định dạng xuất không hỗ trợ: '{}'.").format(format_mode))
+            return False
         if not self._can_start_export():
             return False
         book_id = self._state.record.id  # type: ignore[union-attr]
@@ -1800,10 +1867,51 @@ class AudiobookController(QObject):
                 continue
             if self._is_playing_chapter(chapter.index):
                 skipped_playing = True
+                if mode in ("epub3", "m4b"):
+                    indices.append(chapter.index)
                 continue
             indices.append(chapter.index)
-        self._start_export(indices, dest_dir, skipped_playing=skipped_playing)
+        if mode in ("epub3", "m4b"):
+            if skipped_playing:
+                self._set_error(self.tr("Chương đang phát — hãy dừng rồi xuất lại."))
+                return False
+            if not indices:
+                self._set_error(
+                    self.tr("Chưa có chương nào sẵn sàng để xuất — hãy tạo âm thanh trước.")
+                )
+                return False
+        self._start_export(
+            indices,
+            dest_dir,
+            format_mode=mode,
+            skipped_playing=skipped_playing,
+            single_chapter=False,
+        )
         return True
+
+    @Slot(str, result=bool)
+    def exportAllReady(self, dest_dir: str) -> bool:  # type: ignore[override]
+        """Export every reusable chapter in the background; True when accepted.
+
+        Routes via ``controller.exportFormat`` (``"wav"`` flat or ``"mp3"`` into
+        ``<dest_dir>/<Sanitized Book Title>/`` with ID3v2.4 tags). The chapter
+        currently playing is skipped and reported once the run finishes.
+        """
+        audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav").strip().lower()
+        mode = "mp3" if audio_format == "mp3" else "wav"
+        return self.exportAudiobook(dest_dir, mode)
+
+    @Slot()
+    def cancelExport(self) -> None:
+        """Cancel an in-flight audiobook export silently (matching ``cancelRender``)."""
+        if not self._exporting:
+            return
+        self._export_generation += 1
+        if self._export_cancel_event is not None:
+            self._export_cancel_event.set()
+            self._export_cancel_event = None
+        self._set_exporting(False)
+        self.exportFinished.emit(0, "")
 
     def _can_start_export(self) -> bool:
         if self._state is None:
@@ -1814,34 +1922,130 @@ class AudiobookController(QObject):
             return False
         return True
 
-    def _start_export(self, indices: list[int], dest_dir: str, *, skipped_playing: bool) -> None:
+    def _start_export(
+        self,
+        indices: list[int],
+        dest_dir: str,
+        *,
+        format_mode: str,
+        skipped_playing: bool,
+        single_chapter: bool,
+    ) -> None:
         book_id = self._state.record.id  # type: ignore[union-attr]
         clean_dest = normalize_local_path(dest_dir)
-        audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
         library = self._library
         step = self._exportStep
-        total = len(indices)
+        narrator = self._resolve_narrator_name(indices)
+        m4b_bitrate = str(getattr(self._app, "m4bBitrate", "96k") or "96k")
+        data_dir = self._data_dir
+
+        self._export_generation += 1
+        gen = self._export_generation
+        cancel_event = threading.Event()
+        self._export_cancel_event = cancel_event
+
+        def cancel_check() -> bool:
+            return cancel_event.is_set() or gen != self._export_generation
+
+        if format_mode == "epub3":
+            initial_total = len(indices) + 1
+        elif format_mode == "m4b":
+            initial_total = 100
+        else:
+            initial_total = len(indices)
+
+        self._set_error("")
         self._set_exporting(True)
-        self.exportProgress.emit(0, total)  # the total is known before any copy
+        self.exportProgress.emit(0, initial_total)  # the total is known before any copy
 
         def work() -> tuple[int, str]:
-            # Pool thread: one book.json parse for the whole run.
-            book = library.load_book(book_id) if indices else None
-            exported = 0
-            for index in indices:
-                try:
-                    library.export_chapter(book_id, index, clean_dest, audio_format, book=book)
-                except AudiobookError as exc:
-                    return exported, str(exc)
-                exported += 1
-                step.emit(exported, total)
-            return exported, ""
+            try:
+                if format_mode == "epub3":
+                    book = library.load_book(book_id)
+                    export_epub_media_overlays(
+                        library,
+                        book_id,
+                        clean_dest,
+                        ready_indices=indices,
+                        book=book,
+                        progress=lambda d, t: step.emit(gen, int(d), int(t)),
+                        cancel_check=cancel_check,
+                    )
+                    return 1, ""
+                if format_mode == "m4b":
+                    book = library.load_book(book_id)
+                    export_m4b_audiobook(
+                        library,
+                        book_id,
+                        clean_dest,
+                        ready_indices=indices,
+                        bitrate=m4b_bitrate,
+                        narrator=narrator,
+                        data_dir=data_dir,
+                        book=book,
+                        progress=lambda frac: step.emit(
+                            gen, max(0, min(100, int(round(frac * 100)))), 100
+                        ),
+                        cancel_check=cancel_check,
+                    )
+                    return 1, ""
+                if format_mode == "mp3" and not single_chapter:
+                    if not indices:
+                        return 0, ""
+                    book = library.load_book(book_id)
+                    paths = library.export_mp3_chapters(
+                        book_id,
+                        indices,
+                        clean_dest,
+                        narrator=narrator,
+                        book=book,
+                        progress=lambda d, t: step.emit(gen, int(d), int(t)),
+                        cancel_check=cancel_check,
+                    )
+                    return len(paths), ""
+                # WAV (flat, split parts) or single-chapter MP3 (flat in dest_dir).
+                book = library.load_book(book_id) if indices else None
+                exported = 0
+                total = len(indices)
+                for index in indices:
+                    if cancel_check():
+                        raise ExportCancelled("Audio export cancelled.")
+                    library.export_chapter(
+                        book_id,
+                        index,
+                        clean_dest,
+                        format_mode,
+                        book=book,
+                        narrator=narrator,
+                        cancel_check=cancel_check,
+                    )
+                    exported += 1
+                    step.emit(gen, exported, total)
+                return exported, ""
+            except ExportCancelled:
+                return 0, _EXPORT_CANCELLED_SENTINEL
+            except AudiobookError as exc:
+                return 0, str(exc)
 
         def done(result: Any) -> None:
+            if gen != self._export_generation:
+                return
+            self._export_cancel_event = None
             exported, error = _unwrap_bg_result(result)
+            if error == _EXPORT_CANCELLED_SENTINEL:
+                self._set_exporting(False)
+                self.exportFinished.emit(0, "")
+                return
             self._finish_export(exported, error, skipped_playing=skipped_playing)
 
         def failed(exc: BaseException) -> None:
+            if gen != self._export_generation:
+                return
+            self._export_cancel_event = None
+            if isinstance(exc, ExportCancelled):
+                self._set_exporting(False)
+                self.exportFinished.emit(0, "")
+                return
             self._finish_export(0, str(exc), skipped_playing=skipped_playing)
 
         self._run_bg(work, done, self, on_error=failed)
@@ -1854,8 +2058,10 @@ class AudiobookController(QObject):
             self._set_error(self.tr("Bỏ qua chương đang phát — hãy dừng rồi xuất lại."))
         self.exportFinished.emit(exported, error)
 
-    @Slot(int, int)
-    def _on_export_step(self, done: int, total: int) -> None:
+    @Slot(int, int, int)
+    def _on_export_step(self, gen: int, done: int, total: int) -> None:
+        if gen != self._export_generation:
+            return
         self.exportProgress.emit(done, total)
 
     def _set_exporting(self, value: bool) -> None:
@@ -1871,6 +2077,9 @@ class AudiobookController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        if self._exporting:
+            self.cancelExport()
+        terminate_children()
         self._save_progress(force=True)
         self._stop_playback()
         # In-flight chapter writes finish before teardown returns (bounded).

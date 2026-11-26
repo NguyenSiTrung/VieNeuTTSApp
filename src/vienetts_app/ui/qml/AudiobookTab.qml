@@ -17,7 +17,9 @@
 // shelfRowProgress, shelfRemoveButton, shelfDropHint, audiobookBookCount,
 // audiobookBookTitle, audiobookBookMeta, audiobookBookActions,
 // audiobookLibraryButton, readerSlot,
-// audiobookBookCard, renderAllButton, exportAllButton, autoAdvanceToggle,
+// audiobookBookCard, renderAllButton, exportAllButton, audiobookExportMenu,
+// exportEpub3MenuItem, exportM4bMenuItem, exportMp3MenuItem, exportWavMenuItem,
+// cancelExportButton, shelfCoverImage, shelfCoverInitials, autoAdvanceToggle,
 // voicePicker, chapterList, renderBusyLabel, renderProgressBar,
 // renderPercentLabel, renderEtaLabel, renderAllProgressBar,
 // renderAllProgressLabel, renderDoneLabel, cancelRenderButton,
@@ -45,6 +47,7 @@ Pane {
     }
 
     property bool dragOver: false
+    property string pendingExportFormat: ""
     readonly property bool bookOpen: audiobook.currentBookId !== ""
 
     // Master–detail budget (FR-4.1): the library column sits beside the
@@ -114,9 +117,23 @@ Pane {
 
     // Export-all entry point for exportAllDialog.onAccepted AND the offscreen
     // tests — the URL must go through toLocalPath, never toString()-slicing
-    // (Windows drive letters, percent-encoded diacritics).
+    // (Windows drive letters, percent-encoded diacritics). When a format was
+    // picked from audiobookExportMenu, dispatch to exportAudiobook(dest, mode);
+    // direct calls stay backward-compatible via exportAllReady(dest).
+    function chooseExportFormat(mode) {
+        root.pendingExportFormat = mode;
+        exportAllDialog.open();
+    }
+
     function exportAllTo(url) {
-        audiobook.exportAllReady(toLocalPath(url));
+        const dest = toLocalPath(url);
+        if (root.pendingExportFormat !== "") {
+            const mode = root.pendingExportFormat;
+            root.pendingExportFormat = "";
+            audiobook.exportAudiobook(dest, mode);
+            return;
+        }
+        audiobook.exportAllReady(dest);
     }
 
     // ms → "m:ss" / "h:mm:ss"
@@ -427,16 +444,40 @@ Pane {
                                 anchors.rightMargin: Theme.spacingXs
                                 spacing: Theme.spacingMd
 
-                                // Cover tile: the title's initials.
+                                // Cover tile: extracted EPUB cover thumbnail with title initials fallback.
                                 Rectangle {
                                     Layout.preferredWidth: 40
                                     Layout.preferredHeight: 52
                                     Layout.alignment: Qt.AlignTop
                                     radius: Theme.radiusSm
+                                    clip: true
                                     color: shelfRow.isActive ? Theme.accent : Theme.surfaceAlt
 
+                                    Image {
+                                        id: coverThumb
+
+                                        objectName: "shelfCoverImage"
+                                        anchors.fill: parent
+                                        source: shelfRow.modelData.coverUrl ? shelfRow.modelData.coverUrl : ""
+                                        fillMode: Image.PreserveAspectCrop
+                                        asynchronous: true
+                                        smooth: true
+                                        visible: source.toString() !== "" && status === Image.Ready
+                                    }
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: parent.radius
+                                        color: "transparent"
+                                        border.width: 1
+                                        border.color: Theme.borderSubtle
+                                        visible: coverThumb.visible
+                                    }
+
                                     Label {
+                                        objectName: "shelfCoverInitials"
                                         anchors.centerIn: parent
+                                        visible: !coverThumb.visible
                                         text: root.initials(shelfRow.modelData.title)
                                         color: shelfRow.isActive ? Theme.accentText : Theme.textMuted
                                         font.family: Theme.fontFamily
@@ -578,10 +619,11 @@ Pane {
                     id: exportAllDialog
 
                     objectName: "exportAllDialog"
-                    title: qsTr("Chọn thư mục xuất các chương")
+                    title: qsTr("Chọn thư mục xuất sách nói")
                     // toLocalPath (not toString().substring(7)): strips the
                     // Windows drive-letter slash and percent-decodes diacritics.
                     onAccepted: exportAllTo(exportAllDialog.selectedFolder)
+                    onRejected: root.pendingExportFormat = ""
                 }
 
                 ColumnLayout {
@@ -670,7 +712,44 @@ Pane {
                                 : qsTr("Xuất âm thanh")
                             enabled: audiobook.chapterCount > 0 && !audiobook.exporting
                             disabledReason: audiobook.exporting ? qsTr("Đang xuất âm thanh — vui lòng đợi.") : ""
-                            onClicked: exportAllDialog.open()
+                            onClicked: audiobookExportMenu.opened
+                                ? audiobookExportMenu.close()
+                                : audiobookExportMenu.open()
+
+                            AppMenu {
+                                id: audiobookExportMenu
+
+                                objectName: "audiobookExportMenu"
+                                y: exportAllButton.height + Theme.spacingXs
+
+                                AppMenuItem {
+                                    objectName: "exportEpub3MenuItem"
+                                    text: qsTr("EPUB 3 Read-Aloud (.epub) — Khuyên dùng cho BooksReader")
+                                    enabled: audiobook.chapterCount > 0 && !audiobook.exporting
+                                    onTriggered: root.chooseExportFormat("epub3")
+                                }
+
+                                AppMenuItem {
+                                    objectName: "exportM4bMenuItem"
+                                    text: qsTr("Sách nói M4B (.m4b) — Một tệp có mục lục chương")
+                                    enabled: audiobook.chapterCount > 0 && !audiobook.exporting
+                                    onTriggered: root.chooseExportFormat("m4b")
+                                }
+
+                                AppMenuItem {
+                                    objectName: "exportMp3MenuItem"
+                                    text: qsTr("Các chương MP3 (.mp3) — Thẻ ID3v2.4 & ảnh bìa")
+                                    enabled: audiobook.chapterCount > 0 && !audiobook.exporting
+                                    onTriggered: root.chooseExportFormat("mp3")
+                                }
+
+                                AppMenuItem {
+                                    objectName: "exportWavMenuItem"
+                                    text: qsTr("Các chương WAV (.wav) — Âm thanh không nén")
+                                    enabled: audiobook.chapterCount > 0 && !audiobook.exporting
+                                    onTriggered: root.chooseExportFormat("wav")
+                                }
+                            }
 
                             Connections {
                                 target: audiobook
@@ -680,6 +759,18 @@ Pane {
                                     exportAllButton.exportTotal = total;
                                 }
                             }
+                        }
+
+                        AppButton {
+                            id: cancelExportButton
+
+                            objectName: "cancelExportButton"
+                            variant: "danger"
+                            size: "sm"
+                            iconKind: "stop"
+                            text: qsTr("Hủy xuất")
+                            visible: audiobook.exporting
+                            onClicked: audiobook.cancelExport()
                         }
 
                         AppButton {

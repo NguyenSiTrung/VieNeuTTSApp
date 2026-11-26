@@ -280,6 +280,7 @@ DRIVER = textwrap.dedent(
         # format setting and the off-thread export flag.
         livePreviewChanged = Signal()
         exportFormatChanged = Signal()
+        m4bBitrateChanged = Signal()
         exportingChanged = Signal()
         # Create inspector (Task 3.4): the active profile's recent voices.
         recentVoicesChanged = Signal()
@@ -347,6 +348,7 @@ DRIVER = textwrap.dedent(
             self.slot_hits = []
             self._live_preview = False
             self._export_format = "wav"
+            self._m4b_bitrate = "96k"
             self._exporting = False
             # exportAudio("" | path) calls — the TransportDock's export seam
             # (main split part, Lưu nhanh, Lưu thành…); export_calls records
@@ -881,6 +883,19 @@ DRIVER = textwrap.dedent(
         def exportFormat(self, value):
             if str(value) in ("wav", "mp3"):
                 self._mutate("_export_format", str(value), self.exportFormatChanged)
+
+        @Property(str, notify=m4bBitrateChanged)
+        def m4bBitrate(self):
+            return self._m4b_bitrate
+
+        @m4bBitrate.setter
+        def m4bBitrate(self, value):
+            if str(value) in ("64k", "96k", "128k"):
+                self._mutate("_m4b_bitrate", str(value), self.m4bBitrateChanged)
+
+        @Slot(str)
+        def setM4bBitrate(self, value):
+            self.m4bBitrate = value
 
         @Property(bool, notify=exportingChanged)
         def exporting(self):
@@ -6485,6 +6500,7 @@ DRIVER = textwrap.dedent(
                 "themeCombo", "languageCombo", "livePreviewToggle",
                 "settingsDefaultVoiceLink", "temperatureSpin", "speedSpin",
                 "silencePSpin", "outputDirLabel", "exportFormatCombo",
+                "m4bBitrateCombo",
                 "engineSummaryCard", "engineProfileCard", "cudaRuntimeCard",
                 "settingsModelSourceCard", "settingsUpdatesCard",
                 "settingsSupportCard", "settingsFilterEmpty",
@@ -6502,9 +6518,18 @@ DRIVER = textwrap.dedent(
                     "checked": checked_buttons(),
                 }
 
+            m4b_combo = settings_tab.findChildren(QObject, "m4bBitrateCombo")[0]
+            out["m4b_bitrate_initial_index"] = int(m4b_combo.property("currentIndex"))
+            m4b_combo.activated.emit(2)
+            app.processEvents()
+            out["m4b_bitrate_after_pick"] = controller.m4bBitrate
+            controller.m4bBitrate = "96k"
+            app.processEvents()
+
             out["filter"] = {
                 "speed": filtered("tốc độ"),
                 "speed_ascii": filtered("toc do"),
+                "m4b": filtered("m4b"),
                 "cuda": filtered("CUDA"),
                 "default_voice": filtered("giọng mặc định"),
                 "updates": filtered("cap nhat"),
@@ -10765,6 +10790,13 @@ class TestSettingsTabSmoke:
         speed = {"sections": ["voice"], "visible": ["speedSpin"], "checked": []}
         assert filt["speed"] == speed
         assert filt["speed_ascii"] == speed
+        assert filt["m4b"] == {
+            "sections": ["export"],
+            "visible": ["m4bBitrateCombo"],
+            "checked": [],
+        }
+        assert result["m4b_bitrate_initial_index"] == 1
+        assert result["m4b_bitrate_after_pick"] == "128k"
         assert filt["cuda"]["sections"] == ["engine"]
         assert "cudaRuntimeCard" in filt["cuda"]["visible"]
         assert filt["default_voice"] == {
@@ -11473,6 +11505,15 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self.hits.append(["exportAllReady", str(dest_dir)])
             return True
 
+        @Slot(str, str, result=bool)
+        def exportAudiobook(self, dest_dir, format_mode):
+            self.hits.append(["exportAudiobook", str(dest_dir), str(format_mode)])
+            return True
+
+        @Slot()
+        def cancelExport(self):
+            self.hits.append(["cancelExport"])
+
         @Slot(int)
         def seekToParagraph(self, index):
             self.hits.append(["seekToParagraph", int(index)])
@@ -11534,7 +11575,10 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             expected = [
                 "audiobookTab", "addEpubButton", "epubDialog", "shelfEmptyLabel",
                 "audiobookBookCard", "chapterList", "renderAllButton",
-                "exportAllButton", "autoAdvanceToggle", "voicePicker",
+                "exportAllButton", "audiobookExportMenu",
+                "exportEpub3MenuItem", "exportM4bMenuItem",
+                "exportMp3MenuItem", "exportWavMenuItem",
+                "cancelExportButton", "autoAdvanceToggle", "voicePicker",
                 "prevChapterButton", "playPauseButton", "nextChapterButton",
                 "readerToggleButton", "readerCard", "readerView",
                 "renderEtaLabel", "renderAllProgressBar", "renderAllProgressLabel",
@@ -11599,16 +11643,58 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             fake_ab.loadingChanged.emit()
             app.processEvents()
             export_button = afind("exportAllButton")[0]
+            cancel_export_btn = afind("cancelExportButton")[0]
             out["export_idle"] = [export_button.property("text"), export_button.property("enabled")]
+            out["cancel_export_idle_visible"] = bool(cancel_export_btn.property("visible"))
             fake_ab._exporting = True
             fake_ab.exportingChanged.emit()
             fake_ab.exportProgress.emit(0, 3)
             fake_ab.exportProgress.emit(2, 3)
             app.processEvents()
             out["export_busy"] = [export_button.property("text"), export_button.property("enabled")]
+            out["cancel_export_busy_visible"] = bool(cancel_export_btn.property("visible"))
+            before_cancel_hits = len(fake_ab.hits)
+            from pathlib import Path
+            from PySide6.QtCore import QMetaObject
+
+            QMetaObject.invokeMethod(cancel_export_btn, "click")
+            app.processEvents()
+            out["cancel_export_hit"] = fake_ab.hits[before_cancel_hits:] == [["cancelExport"]]
             fake_ab._exporting = False
             fake_ab.exportingChanged.emit()
             app.processEvents()
+
+            # Cover tile: initials fallback when coverUrl is absent, Image when valid PNG exists.
+            out["cover_image_hidden_without_url"] = not bool(
+                ifind("shelfCoverImage")[0].property("visible")
+            )
+            out["cover_initials_visible_without_url"] = bool(
+                ifind("shelfCoverInitials")[0].property("visible")
+            )
+            from PySide6.QtGui import QColor, QImage
+            from vienetts_app.core.paths import path_to_file_url
+
+            cover_png = Path(sys.argv[1]) / "shelf_cover.png"
+            img = QImage(16, 20, QImage.Format.Format_RGBA8888)
+            img.fill(QColor("#336699"))
+            img.save(str(cover_png))
+            fake_ab._books = [{
+                "id": "abc123", "title": "Sách thử nghiệm",
+                "author": "Tác Giả A", "chapterCount": 3,
+                "coverUrl": path_to_file_url(cover_png),
+            }]
+            fake_ab.booksChanged.emit()
+            for _ in range(20):
+                app.processEvents()
+                if ifind("shelfCoverImage") and ifind("shelfCoverImage")[0].property("visible"):
+                    break
+                QThread.msleep(25)
+            out["cover_image_visible_with_url"] = bool(
+                ifind("shelfCoverImage")[0].property("visible")
+            )
+            out["cover_initials_hidden_with_url"] = not bool(
+                ifind("shelfCoverInitials")[0].property("visible")
+            )
             out["shelf_empty_hidden"] = not bool(afind("shelfEmptyLabel")[0].property("visible"))
             badges = ifind("chapterStatusBadge")
             out["status_badges"] = len(badges)
@@ -12094,6 +12180,53 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             app.processEvents()
             out["transport_hits_while_focused"] = fake_ab.hits[before:]
             results["ab_dock_reader"] = out
+
+            # Selecting a format item in audiobookExportMenu + accepting exportAllDialog
+            # routes to audiobook.exportAudiobook(path, mode) and resets pendingExportFormat.
+            # Run at the end of ab_group_a so FolderDialog.open() cannot steal focus
+            # from ab_dock_reader's real-mouse drag test.
+            fake_ab.hits = []
+            export_menu = afind("audiobookExportMenu")[0]
+            export_dialog = afind("exportAllDialog")[0]
+            export_dialog.setProperty("options", 0x00000004)  # DontUseNativeDialog offscreen
+            QMetaObject.invokeMethod(afind("exportAllButton")[0], "click")
+            app.processEvents()
+            results["ab_export_url"]["export_menu_opened"] = bool(export_menu.property("opened"))
+            results["ab_export_url"]["export_menu_items"] = [
+                str(afind(name)[0].property("text"))
+                for name in (
+                    "exportEpub3MenuItem",
+                    "exportM4bMenuItem",
+                    "exportMp3MenuItem",
+                    "exportWavMenuItem",
+                )
+            ]
+            QMetaObject.invokeMethod(afind("exportEpub3MenuItem")[0], "click")
+            app.processEvents()
+            results["ab_export_url"]["pending_after_epub3_pick"] = str(
+                ab_tab.property("pendingExportFormat")
+            )
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///home/u/BooksReader%20Out")),
+            )
+            export_dialog.close()
+            app.processEvents()
+            QMetaObject.invokeMethod(afind("exportM4bMenuItem")[0], "click")
+            app.processEvents()
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///home/u/M4B%20Out")),
+            )
+            export_dialog.close()
+            app.processEvents()
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///home/u/Compat%20Out")),
+            )
+            export_menu.close()
+            app.processEvents()
+            results["ab_export_url"]["menu_export_hits"] = [list(h) for h in fake_ab.hits]
 
         elif scenario == "ab_group_b":
             from PySide6.QtCore import QMetaObject
@@ -12588,7 +12721,14 @@ class TestAudiobookTabSmoke:
         assert result["shelf_subtitle_idle"] == "Tác Giả A · 3 chương"
         assert result["shelf_subtitle_loading"] == "Đang mở…"
         assert result["export_idle"] == ["Xuất âm thanh", True]
+        assert result["cancel_export_idle_visible"] is False
         assert result["export_busy"] == ["Đang xuất 2/3", False]
+        assert result["cancel_export_busy_visible"] is True
+        assert result["cancel_export_hit"] is True
+        assert result["cover_image_hidden_without_url"] is True
+        assert result["cover_initials_visible_without_url"] is True
+        assert result["cover_image_visible_with_url"] is True
+        assert result["cover_initials_hidden_with_url"] is True
         assert result["shelf_empty_hidden"] is True
         assert result["status_badges"] == 3
         assert result["error_chips"] == 1
@@ -12660,6 +12800,18 @@ class TestAudiobookTabSmoke:
         assert result["hits"] == [
             ["exportAllReady", "C:/Users/trung/Nhạc"],
             ["exportAllReady", "/home/u/VieNeuTTS Test"],
+        ]
+        assert result["export_menu_opened"] is True
+        assert len(result["export_menu_items"]) == 4
+        assert "EPUB 3" in result["export_menu_items"][0]
+        assert "M4B" in result["export_menu_items"][1]
+        assert "MP3" in result["export_menu_items"][2]
+        assert "WAV" in result["export_menu_items"][3]
+        assert result["pending_after_epub3_pick"] == "epub3"
+        assert result["menu_export_hits"] == [
+            ["exportAudiobook", "/home/u/BooksReader Out", "epub3"],
+            ["exportAudiobook", "/home/u/M4B Out", "m4b"],
+            ["exportAllReady", "/home/u/Compat Out"],
         ]
 
     @pytest.mark.slow

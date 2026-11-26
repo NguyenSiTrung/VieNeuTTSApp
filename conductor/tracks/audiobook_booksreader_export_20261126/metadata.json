@@ -1,0 +1,33 @@
+{
+  "track_id": "audiobook_booksreader_export_20261126",
+  "type": "feature",
+  "status": "completed",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-11-26T12:05:30Z",
+  "updated_at": "2026-11-26T12:59:30Z",
+  "description": "Upgrade VieNeuTTSApp's Audiobook export pipeline for full native BooksReader compatibility: rich EPUB metadata & cover extraction with workspace persistence/legacy fallback, pure-Python ID3v2.4-tagged MP3 chapters with oversize stream-merge and book subfolder layout, Narrated EPUB 3 with Media Overlays (Tier T0) enforcing BooksReader's hard MAX_PARS/MAX_XML_BYTES caps, Single-File M4B Audiobook (Tier T1) via managed ffmpeg with FFMETADATA1 chapters, WebP/GIF cover conversion & configurable AAC bitrate, plus AudiobookTab export menu, cancelExport(), cover thumbnails, and vi/en i18n.",
+  "execution_mode": "parallel",
+  "manual_phase_verification": false,
+  "beads_epic": "VieNeuTTSApp-2qnl",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-2qnl.1",
+    "phase1_task1": "VieNeuTTSApp-2qnl.1.1",
+    "phase1_task2": "VieNeuTTSApp-2qnl.1.2",
+    "phase1_task3": "VieNeuTTSApp-2qnl.1.3",
+    "phase1_task4": "VieNeuTTSApp-2qnl.1.4",
+    "phase2": "VieNeuTTSApp-2qnl.2",
+    "phase2_task1": "VieNeuTTSApp-2qnl.2.1",
+    "phase2_task2": "VieNeuTTSApp-2qnl.2.2",
+    "phase3": "VieNeuTTSApp-2qnl.3",
+    "phase3_task1": "VieNeuTTSApp-2qnl.3.1",
+    "phase3_task2": "VieNeuTTSApp-2qnl.3.2",
+    "phase4": "VieNeuTTSApp-2qnl.4",
+    "phase4_task1": "VieNeuTTSApp-2qnl.4.1",
+    "phase4_task2": "VieNeuTTSApp-2qnl.4.2",
+    "phase5": "VieNeuTTSApp-2qnl.5",
+    "phase5_task1": "VieNeuTTSApp-2qnl.5.1",
+    "phase5_task2": "VieNeuTTSApp-2qnl.5.2"
+  }
+}

@@ -65,7 +65,23 @@ short snippet to a full document, fully offline.
    sub-audios (`ch_XXXX_sYY.wav`, `core/chapter_split.py`) rendered
    sequentially under the same logical chapter with chained playback and
    ordered part-file export (2026-09-29) — mega-chapters stay listenable
-   instead of refusing with zero audio.
+   instead of refusing with zero audio. **BooksReader-compatible export
+   pipeline (track `audiobook_booksreader_export_20261126`, 2026-11-26):**
+   extracts rich OPF metadata (multi-author, BCP 47 language, ISBN, year,
+   description) and EPUB 2/3 cover art (magic-byte sniffed, 32 MiB cap),
+   persists `<book_id>/cover.<ext>` with legacy backfill + on-the-fly
+   `source_path` fallback and renders cover thumbnails in the library shelf;
+   adds an `AudiobookTab` export format menu + cancellable background export
+   (`cancelExport()`) across four formats: **EPUB 3 Read-Aloud** (`.epub`
+   with SMIL 3.0 Media Overlays, DTD-free XHTML 5, adaptive clip coalescing
+   capped at ≤4,000 `<par>` / ≤700 KB XML, `ZIP_STORED` streamed MP3s,
+   partial renders), **Single-File M4B** (`.m4b` via managed/PATH `ffmpeg`
+   with sample-accurate `FFMETADATA1` chapters, WebP/GIF→PNG cover
+   conversion, and configurable `m4b_bitrate` `64k`/`96k`/`128k` in
+   Settings › Export), **ID3v2.4 MP3 chapters** (pure-Python UTF-8 ID3v2.4.0
+   tags + front cover art, oversize multi-part stream-merge into one MP3 per
+   chapter, book subfolder layout for bulk export), and uncompressed **WAV
+   chapters** (preserved unchanged).
 7. **Guided model setup (v0.1.3)** — first-run setup card
    (Download/Cancel/Retry + stored/needed readout), SHA-256-pinned official
    CPU baseline (~330 MB backbone + codec, atomic promote, resume,
@@ -540,6 +556,7 @@ linux-aarch64. Suite at this refresh: 1278 collected / 1261 selected (17
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
 the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites, +9 in the 2026-10-20/21 subtitle burn-in / embed-mode batch `d17a261` + `6e7c747` + `d7b8721` (beads `4kht`, `poph`, `ni2i`, `vxil`), +13 net in the 2026-10-21 diarization hardening `VieNeuTTSApp-2ifr` (`b41caf7..cb0c1e9`) and test-runtime diet `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`, → 1554/1536), +13 in track `asr_hardening_20261021` (`VieNeuTTSApp-7u58`, `b09dd45..d50f43b`, → 1567/1549), +30 in track `subtitles_ux_overhaul_20261023` (`VieNeuTTSApp-weit`, `da92163..42ab565`, → 1597/1579), +17 in track `dub_pacing_alignment_20261026` (`VieNeuTTSApp-o8af`, `765c10a..dfac5b8`, → 1614/1596), +1 in track `video_preview_panel_20261028` (`VieNeuTTSApp-t80a`, `e2d9492..52e4f25`, → 1615/1597), +15 in track `llm_provider_hardening_20261028` (`VieNeuTTSApp-f783`, `d6a5ab0..16f8e28`, → 1630/1612), and -352 collected / -351 selected in the 2026-10-28 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1`, → 1278/1261)).
 
+<!-- refreshed 2026-11-26: track `audiobook_booksreader_export_20261126` (epic `VieNeuTTSApp-2qnl`, closed, commits `4bdcc67..5b907d8`) completed — BooksReader-compatible audiobook export: rich OPF metadata & cover extraction/persistence (`core/epub.py`, `core/audiobook.py`), pure-Python ID3v2.4.0 tagging (`core/id3.py`), streaming multi-part MP3 encoding (`core/audio.py`), EPUB 3 Media Overlays (`core/epub_export.py`), single-file M4B via managed/PATH ffmpeg (`core/m4b_export.py`), configurable `m4b_bitrate` (`64k|96k|128k` in `SettingsExport.qml`), `AudiobookController.exportAudiobook`/`cancelExport`/`coverUrl`, `AudiobookTab.qml` export menu + cancel button + shelf covers, and full vi/en i18n (1301/1301 finished, 0 unfinished). Zero third-party dep drift; `ruff check .` + `ruff format --check .` (210 files) green; suite 1493 collected / 1474 selected (19 benchmark deselected), 311/311 affected unit+smoke tests green, full `pytest -n 4 -q` 1463 passed / 5 skipped / 0 regressions (6 pre-existing linux-aarch64 / host-ffmpeg baselines). -->
 <!-- refreshed 2026-10-28 (4): 5 commits since the 2026-10-28 (3) refresh (`92c0e7d`: `59aa085..6648bf0`) — `v0.4.0` released (`59aa085`, `packaging/release-notes/v0.4.0.md`, bead `snqi` closed in `bd4d06e`), Windows shebang CLI stub dispatch (`ai_models.cli_command` + extensionless CLI lookup) and macOS `SubtitleCueEditor` `ListView` `implicitHeight` / `available_audiocpp_variants` fixes (`8398dd8`, `0d0320a`), deterministic multi-engine `app._teardown_qml()` (`app._retired_qml_anchors` + filter/prebuild detach, `0d0320a`, closing `VieNeuTTSApp-qjkk` in `bd4d06e`), and 3-pass test-suite diet (`6648bf0`, beads `sd4e`/`948h`/`tyk1` closed: -352 collected / -351 selected across 24 removed non-product/redundant test files and trimmed parameter tables). Root package version 0.4.0 (zero third-party dep drift); 16 archived tracks, `conductor/tracks/` empty; suite 1278 collected / 1261 selected (17 benchmark deselected; `-m "not slow"` → 1243, `-m "not slow and not benchmark"` → 1226), ruff check + format --check green (192 files), i18n 1216 messages / 0 unfinished, beads 557 total / 0 open / 1 blocked (`nqx.2.4`) / 39 deferred / 517 closed. -->
 <!-- refreshed 2026-10-28 (3): 13 commits since the 2026-10-28 (2) refresh (`8e4ce55`: `3dfb2b5..4374d0f`) — track `llm_provider_hardening_20261028` (epic `VieNeuTTSApp-f783`, closed) implemented (`d6a5ab0..16f8e28`) and archived in `4374d0f`. Feature 11 gains hardened OpenAI-compatible LLM & Whisper API provider support (`core/llm_client.py`, `core/llm_refine.py`, `core/asr.py`, `core/models.py`, `core/settings.py`, `core/subtitle_project.py`, `ui/controller.py`, `ui/subtitle_controller.py`, `SettingsModels.qml`, `SubtitlePreparePanel.qml`, `README.md`). Zero `pyproject.toml`/`uv.lock` dep drift (stdlib only); 16 archived tracks, `conductor/tracks/` empty; suite 1630 collected / 1612 selected (18 benchmark deselected, +15 items; `-m "not slow"` → 1590, `-m "not slow and not benchmark"` → 1572), ruff check + format --check green (216 files), i18n 1216 messages / 0 unfinished (+26 strings), beads 553 total / 0 open / 1 blocked (`nqx.2.4`) / 40 deferred / 512 closed (+14 issues created and closed for `f783`). -->
 

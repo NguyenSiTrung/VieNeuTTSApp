@@ -38,8 +38,10 @@ Errors mirror :mod:`vienetts_app.core.importers`: actionable
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -51,6 +53,7 @@ from vienetts_app.core.importers import DocumentImportError
 
 CONTAINER_PATH = "META-INF/container.xml"
 ENCRYPTION_PATH = "META-INF/encryption.xml"
+MAX_COVER_BYTES = 32 * 1024 * 1024  # 32 MiB cap for embedded cover images
 
 _OCF_NS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
 _OPF_NS = "{http://www.idpf.org/2007/opf}"
@@ -108,8 +111,43 @@ _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
 # Content whose text is never spoken.
 _SKIPPED_TAGS = frozenset({"script", "style", "head", "title", "svg"})
+_DESC_SKIPPED_TAGS = frozenset({"script", "style"})
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_LANG_PRIMARY_RE = re.compile(r"^[A-Za-z]{2,3}$")
+_LANG_SUBTAG_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+_ISBN_PREFIX_RE = re.compile(r"^(?:urn:isbn:|isbn:)", re.IGNORECASE)
+_ISBN_RE = re.compile(r"^(?:[0-9]{9}[0-9X]|[0-9]{13})$")
+_ISBN_TYPES = frozenset({"15", "02", "isbn"})
+_YEAR_RE = re.compile(r"(?<!\d)([12]\d{3})(?!\d)")
+
+
+def sniff_image_ext(data: bytes) -> str:
+    """Sniff image format from magic bytes: ``jpg``, ``png``, ``gif``, ``webp``, or ``""``."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if len(data) >= 6 and data.startswith(b"GIF8"):
+        return "gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+@dataclass(frozen=True)
+class EpubMetadata:
+    """OPF metadata and optional cover art extracted from an EPUB."""
+
+    title: str
+    author: str = ""
+    authors: tuple[str, ...] = ()
+    language: str = ""
+    isbn: str = ""
+    year: int | None = None
+    description: str = ""
+    cover_bytes: bytes | None = None
+    cover_ext: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +180,13 @@ class EpubBook:
     chapters: list[EpubChapter]
     source_path: str
     content_hash: str  # sha256 hex of the source file bytes
+    authors: tuple[str, ...] = ()
+    language: str = ""
+    isbn: str = ""
+    year: int | None = None
+    description: str = ""
+    cover_bytes: bytes | None = None
+    cover_ext: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.title, str) or not self.title.strip():
@@ -369,10 +414,154 @@ def _normalize_zip_name(name: str) -> str:
 
 
 def _resolve_href(opf_dir: str, href: str) -> str:
-    href = _normalize_zip_name(href)
-    if not opf_dir:
-        return href
-    return f"{opf_dir}/{href}"
+    href = _normalize_zip_name(href.split("#", 1)[0])
+    joined = f"{opf_dir}/{href}" if opf_dir else href
+    if ".." in joined.split("/"):
+        normalized = posixpath.normpath(joined)
+        if normalized in ("", ".", "..") or normalized.startswith("../"):
+            return ""
+        return normalized.lstrip("/")
+    return joined
+
+
+def _collapse_ws(text: str) -> str:
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _normalize_language(raw: str) -> str:
+    """Normalize a BCP 47 language tag; return ``""`` if empty or invalid."""
+    cleaned = raw.strip().replace("_", "-")
+    if not cleaned:
+        return ""
+    parts = cleaned.split("-")
+    if not _LANG_PRIMARY_RE.fullmatch(parts[0]):
+        return ""
+    normalized = [parts[0].lower()]
+    in_extension = False
+    for part in parts[1:]:
+        if not _LANG_SUBTAG_RE.fullmatch(part):
+            return ""
+        if in_extension:
+            normalized.append(part.lower())
+        elif len(part) == 1:
+            in_extension = True
+            normalized.append(part.lower())
+        elif len(part) == 4 and part.isalpha():
+            normalized.append(part.capitalize())
+        elif len(part) == 2 and part.isalpha():
+            normalized.append(part.upper())
+        else:
+            normalized.append(part.lower())
+    return "-".join(normalized)
+
+
+def _normalize_isbn(raw: str) -> str:
+    """Strip ISBN prefix/separators and validate ISBN-10 or ISBN-13 shape."""
+    stripped = _ISBN_PREFIX_RE.sub("", raw.strip())
+    compact = re.sub(r"[-\s]+", "", stripped).upper()
+    return compact if _ISBN_RE.fullmatch(compact) else ""
+
+
+def _extract_year(raw: str) -> int | None:
+    """Extract a 4-digit year in ``1000..2999`` from a ``dc:date`` string."""
+    match = _YEAR_RE.search(raw)
+    return int(match.group(1)) if match else None
+
+
+class _PlainTextExtractor(HTMLParser):
+    """Strip HTML tags to single-space-collapsed plain text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002
+        local = tag.rsplit(":", 1)[-1].lower()
+        if local in _DESC_SKIPPED_TAGS:
+            self._skip_depth += 1
+            return
+        if not self._skip_depth and (local in _BLOCK_TAGS or local in _BREAK_TAGS or local == "hr"):
+            self._parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        local = tag.rsplit(":", 1)[-1].lower()
+        if local in _DESC_SKIPPED_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if not self._skip_depth and local in _BLOCK_TAGS:
+            self._parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth and data:
+            self._parts.append(data)
+
+    def result(self) -> str:
+        return _collapse_ws("".join(self._parts))
+
+
+def _extract_description(element: Any) -> str:
+    """Extract plain text from a ``dc:description`` element (stripping HTML if any)."""
+    if len(element) == 0:
+        raw = element.text or ""
+    else:
+        raw = (element.text or "") + "".join(
+            ElementTree.tostring(child, encoding="unicode") for child in element
+        )
+    if not raw.strip():
+        return ""
+    parser = _PlainTextExtractor()
+    try:
+        parser.feed(raw)
+        parser.close()
+    except Exception:  # noqa: BLE001
+        return _collapse_ws(raw)
+    return parser.result()
+
+
+def _is_remote_href(href: str) -> bool:
+    stripped = href.strip()
+    return not stripped or "://" in stripped or stripped.lower().startswith("data:")
+
+
+def _extract_cover(
+    zf: zipfile.ZipFile,
+    names: set[str],
+    opf_dir: str,
+    candidate_hrefs: list[str],
+) -> tuple[bytes | None, str]:
+    """Locate and sniff cover image bytes; silently return ``(None, "")`` on any problem."""
+    tried: set[str] = set()
+    for href in candidate_hrefs:
+        if _is_remote_href(href):
+            continue
+        zip_name = _resolve_href(opf_dir, href)
+        if not zip_name or zip_name in tried or zip_name not in names:
+            continue
+        tried.add(zip_name)
+        try:
+            info = zf.getinfo(zip_name)
+            if info.file_size <= 0 or info.file_size > MAX_COVER_BYTES:
+                continue
+            with zf.open(info, "r") as stream:
+                data = stream.read(MAX_COVER_BYTES + 1)
+        except (
+            KeyError,
+            zipfile.BadZipFile,
+            zipfile.LargeZipFile,
+            zlib.error,
+            OSError,
+            EOFError,
+            RuntimeError,
+        ):
+            continue
+        if not data or len(data) > MAX_COVER_BYTES:
+            continue
+        ext = sniff_image_ext(data)
+        if ext:
+            return data, ext
+    return None, ""
 
 
 def _find_opf_path(zf: zipfile.ZipFile, path: Path) -> str:
@@ -399,14 +588,37 @@ def _find_opf_path(zf: zipfile.ZipFile, path: Path) -> str:
     )
 
 
-def _parse_opf(
-    zf: zipfile.ZipFile, opf_zip_path: str, path: Path
-) -> tuple[str, str, list[dict[str, str]]]:
-    """OPF → (title, author, ordered spine manifest entries).
+def _validate_epub_path(path: str | Path) -> Path:
+    epub_path = Path(path)
+    if not epub_path.is_file():
+        raise FileNotFoundError(f"no such EPUB file: {epub_path}")
+    if epub_path.suffix.lower() != _EPUB_SUFFIX:
+        raise DocumentImportError(
+            f"Unsupported audiobook type '{epub_path.suffix or epub_path.name}'. "
+            "Audiobooks must be .epub files."
+        )
+    return epub_path
 
-    Spine entries carry ``href``/``media_type``/``properties`` of their
-    manifest item; entries whose idref has no manifest item are skipped.
-    """
+
+def _find_child(parent: Any, local_name: str) -> Any | None:
+    return next((el for el in parent if _local_name(el.tag) == local_name), None)
+
+
+def _iter_metadata_elements(metadata_el: Any) -> list[Any]:
+    elements: list[Any] = []
+    for child in metadata_el:
+        if _local_name(child.tag) in ("dc-metadata", "x-metadata"):
+            elements.extend(child)
+        else:
+            elements.append(child)
+    return elements
+
+
+def _load_opf_package(zf: zipfile.ZipFile, path: Path) -> tuple[set[str], str, Any]:
+    names = set(zf.namelist())
+    if ENCRYPTION_PATH in names:
+        raise DocumentImportError(DRM_MESSAGE)
+    opf_zip_path = _find_opf_path(zf, path)
     try:
         opf_raw = zf.read(opf_zip_path)
     except KeyError as exc:
@@ -420,34 +632,161 @@ def _parse_opf(
         raise DocumentImportError(
             f"Could not read '{path.name}': the OPF package file is corrupt."
         ) from exc
+    return names, opf_zip_path, package
 
-    title = ""
-    author = ""
-    metadata = package.find(f"{_OPF_NS}metadata")
-    if metadata is not None:
-        for element in metadata:
-            if element.tag == f"{_DC_NS}title":
-                title = (element.text or "").strip()
-            elif element.tag == f"{_DC_NS}creator":
-                author = (element.text or "").strip()
 
+def _parse_manifest(package: Any) -> tuple[dict[str, dict[str, str]], list[str]]:
     manifest: dict[str, dict[str, str]] = {}
-    manifest_el = package.find(f"{_OPF_NS}manifest")
+    epub3_cover_hrefs: list[str] = []
+    manifest_el = _find_child(package, "manifest")
     if manifest_el is not None:
         for item in manifest_el:
             if _local_name(item.tag) != "item":
                 continue
+            href = item.get("href", "")
+            properties = item.get("properties", "") or ""
+            if "cover-image" in properties.split() and href:
+                epub3_cover_hrefs.append(href)
             item_id = item.get("id", "")
             if not item_id:
                 continue
             manifest[item_id] = {
-                "href": item.get("href", ""),
+                "href": href,
                 "media_type": item.get("media-type", ""),
-                "properties": item.get("properties", "") or "",
+                "properties": properties,
             }
+    return manifest, epub3_cover_hrefs
 
+
+def _parse_metadata(
+    package: Any,
+    manifest: dict[str, dict[str, str]],
+    epub3_cover_hrefs: list[str],
+    zf: zipfile.ZipFile,
+    names: set[str],
+    opf_dir: str,
+    fallback_title: str,
+) -> EpubMetadata:
+    metadata_el = _find_child(package, "metadata")
+    elements = _iter_metadata_elements(metadata_el) if metadata_el is not None else []
+
+    refinements: dict[tuple[str, str], list[str]] = {}
+    epub2_cover_ids: list[str] = []
+    for el in elements:
+        if _local_name(el.tag) != "meta":
+            continue
+        ref = (el.get("refines") or "").strip()
+        prop = (el.get("property") or "").strip().lower()
+        if ref.startswith("#") and prop:
+            val = _collapse_ws("".join(el.itertext())).lower()
+            if val:
+                refinements.setdefault((ref[1:], prop), []).append(val)
+        if (el.get("name") or "").strip().lower() == "cover":
+            cover_id = (el.get("content") or "").strip()
+            if cover_id:
+                epub2_cover_ids.append(cover_id)
+
+    title = ""
+    authors_list: list[str] = []
+    seen_authors: set[str] = set()
+    language_raw = ""
+    isbn = ""
+    pub_year: int | None = None
+    unset_year: int | None = None
+    other_year: int | None = None
+    description = ""
+
+    for el in elements:
+        tag = el.tag
+        if tag == f"{_DC_NS}title":
+            if not title:
+                candidate = _collapse_ws("".join(el.itertext()))
+                if candidate:
+                    title = candidate
+        elif tag == f"{_DC_NS}creator":
+            name = _collapse_ws("".join(el.itertext()))
+            if not name:
+                continue
+            roles: set[str] = set()
+            for attr_role in (el.get(f"{_OPF_NS}role"), el.get("role")):
+                if attr_role and attr_role.strip():
+                    roles.add(attr_role.strip().lower())
+            el_id = (el.get("id") or "").strip()
+            if el_id:
+                roles.update(refinements.get((el_id, "role"), ()))
+            if roles and "aut" not in roles:
+                continue
+            if name not in seen_authors:
+                seen_authors.add(name)
+                authors_list.append(name)
+        elif tag == f"{_DC_NS}language":
+            if not language_raw:
+                candidate = "".join(el.itertext()).strip()
+                if candidate:
+                    language_raw = candidate
+        elif tag == f"{_DC_NS}identifier":
+            if isbn:
+                continue
+            raw_id = "".join(el.itertext()).strip()
+            if not raw_id:
+                continue
+            scheme = (el.get(f"{_OPF_NS}scheme") or el.get("scheme") or "").strip().lower()
+            el_id = (el.get("id") or "").strip()
+            id_types = refinements.get((el_id, "identifier-type"), ()) if el_id else ()
+            is_isbn = (
+                scheme == "isbn"
+                or bool(_ISBN_PREFIX_RE.match(raw_id))
+                or any(t in _ISBN_TYPES for t in id_types)
+            )
+            if is_isbn:
+                parsed_isbn = _normalize_isbn(raw_id)
+                if parsed_isbn:
+                    isbn = parsed_isbn
+        elif tag == f"{_DC_NS}date":
+            parsed_year = _extract_year("".join(el.itertext()))
+            if parsed_year is None:
+                continue
+            event = (el.get(f"{_OPF_NS}event") or el.get("event") or "").strip().lower()
+            if event == "publication":
+                if pub_year is None:
+                    pub_year = parsed_year
+            elif not event:
+                if unset_year is None:
+                    unset_year = parsed_year
+            elif other_year is None:
+                other_year = parsed_year
+        elif tag == f"{_DC_NS}description" and not description:
+            candidate = _extract_description(el)
+            if candidate:
+                description = candidate
+
+    cover_candidates = list(epub3_cover_hrefs)
+    for cover_id in epub2_cover_ids:
+        item = manifest.get(cover_id)
+        if item and item["href"]:
+            cover_candidates.append(item["href"])
+    cover_bytes, cover_ext = _extract_cover(zf, names, opf_dir, cover_candidates)
+
+    authors = tuple(authors_list)
+    year = (
+        pub_year if pub_year is not None else (unset_year if unset_year is not None else other_year)
+    )
+    return EpubMetadata(
+        title=title or fallback_title,
+        author="; ".join(authors),
+        authors=authors,
+        language=_normalize_language(language_raw) if language_raw else "",
+        isbn=isbn,
+        year=year,
+        description=description,
+        cover_bytes=cover_bytes,
+        cover_ext=cover_ext,
+    )
+
+
+def _parse_spine(package: Any, manifest: dict[str, dict[str, str]]) -> list[dict[str, str]]:
     spine_entries: list[dict[str, str]] = []
-    spine_el = package.find(f"{_OPF_NS}spine")
+    spine_el = _find_child(package, "spine")
     if spine_el is not None:
         for itemref in spine_el:
             if _local_name(itemref.tag) != "itemref":
@@ -455,7 +794,40 @@ def _parse_opf(
             item = manifest.get(itemref.get("idref", ""))
             if item is not None:
                 spine_entries.append(item)
-    return title, author, spine_entries
+    return spine_entries
+
+
+def extract_epub_metadata(path: str | Path) -> EpubMetadata:
+    """Extract OPF metadata and cover image without reading or parsing chapter XHTML.
+
+    Validates path, ``.epub`` suffix, ZIP structure, DRM, ``container.xml``,
+    and OPF package identically to :func:`import_epub`, then returns an
+    :class:`EpubMetadata` instance.
+    """
+    epub_path = _validate_epub_path(path)
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            names, opf_zip_path, package = _load_opf_package(zf, epub_path)
+            manifest, epub3_cover_hrefs = _parse_manifest(package)
+            opf_dir = opf_zip_path.rsplit("/", 1)[0] if "/" in opf_zip_path else ""
+            return _parse_metadata(
+                package,
+                manifest,
+                epub3_cover_hrefs,
+                zf,
+                names,
+                opf_dir,
+                fallback_title=epub_path.stem,
+            )
+    except DocumentImportError:
+        raise
+    except zipfile.BadZipFile as exc:
+        raise DocumentImportError(
+            f"Could not open '{epub_path.name}': it is not a valid EPUB "
+            "(the file is not a readable ZIP archive)."
+        ) from exc
+    except OSError as exc:
+        raise DocumentImportError(f"Could not read '{epub_path.name}': {exc}.") from exc
 
 
 def import_epub(path: str | Path) -> EpubBook:
@@ -466,45 +838,52 @@ def import_epub(path: str | Path) -> EpubBook:
     every other failure: wrong extension, non-zip, DRM, corrupt structure,
     or a book with no readable text chapters.
     """
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"no such EPUB file: {path}")
-    if path.suffix.lower() != _EPUB_SUFFIX:
-        raise DocumentImportError(
-            f"Unsupported audiobook type '{path.suffix or path.name}'. "
-            "Audiobooks must be .epub files."
-        )
-    content_hash = _hash_file(path)
+    epub_path = _validate_epub_path(path)
+    content_hash = _hash_file(epub_path)
     try:
-        with zipfile.ZipFile(path) as zf:
-            names = set(zf.namelist())
-            if ENCRYPTION_PATH in names:
-                raise DocumentImportError(DRM_MESSAGE)
-            opf_zip_path = _find_opf_path(zf, path)
-            title, author, spine_entries = _parse_opf(zf, opf_zip_path, path)
+        with zipfile.ZipFile(epub_path) as zf:
+            names, opf_zip_path, package = _load_opf_package(zf, epub_path)
+            manifest, epub3_cover_hrefs = _parse_manifest(package)
             opf_dir = opf_zip_path.rsplit("/", 1)[0] if "/" in opf_zip_path else ""
+            meta = _parse_metadata(
+                package,
+                manifest,
+                epub3_cover_hrefs,
+                zf,
+                names,
+                opf_dir,
+                fallback_title=epub_path.stem,
+            )
+            spine_entries = _parse_spine(package, manifest)
             chapters = _extract_chapters(zf, names, opf_dir, spine_entries)
     except DocumentImportError:
         raise
     except zipfile.BadZipFile as exc:
         raise DocumentImportError(
-            f"Could not open '{path.name}': it is not a valid EPUB "
+            f"Could not open '{epub_path.name}': it is not a valid EPUB "
             "(the file is not a readable ZIP archive)."
         ) from exc
     except OSError as exc:
-        raise DocumentImportError(f"Could not read '{path.name}': {exc}.") from exc
+        raise DocumentImportError(f"Could not read '{epub_path.name}': {exc}.") from exc
 
     if not chapters:
         raise DocumentImportError(
-            f"'{path.name}' has no readable text chapters (image-only or "
+            f"'{epub_path.name}' has no readable text chapters (image-only or "
             "empty documents). It cannot be turned into an audiobook."
         )
     return EpubBook(
-        title=title or path.stem,
-        author=author,
+        title=meta.title,
+        author=meta.author,
         chapters=chapters,
-        source_path=str(path),
+        source_path=str(epub_path),
         content_hash=content_hash,
+        authors=meta.authors,
+        language=meta.language,
+        isbn=meta.isbn,
+        year=meta.year,
+        description=meta.description,
+        cover_bytes=meta.cover_bytes,
+        cover_ext=meta.cover_ext,
     )
 
 

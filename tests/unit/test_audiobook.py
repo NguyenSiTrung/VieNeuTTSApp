@@ -809,3 +809,243 @@ def test_export_chapter_reuses_a_preloaded_book(
     first = library.export_chapter(book_id, 0, dest, book=book)
     second = library.export_chapter(book_id, 1, dest, book=book)
     assert [p.name for p in first + second] == ["01 - Chương 1.wav", "02 - Chương 2.wav"]
+
+
+_TINY_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+_TINY_JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 24
+
+
+def _write_rich_epub(
+    path: Path,
+    *,
+    title: str = "Đất Rừng Phương Nam",
+    authors: tuple[str, ...] = ("Đoàn Giỏi", "Đồng Tác Giả"),
+    language: str = "vi",
+    isbn: str = "978-604-2-12345-6",
+    year: str = "1957-05-01",
+    description: str = "<p>Tiểu thuyết <b>kinh điển</b> miền Nam.</p>",
+    cover_bytes: bytes | None = _TINY_PNG,
+    cover_name: str = "images/cover.png",
+) -> Path:
+    import zipfile
+
+    creators = "\n".join(f"<dc:creator>{name}</dc:creator>" for name in authors)
+    cover_item = (
+        f'<item id="cov" href="{cover_name}" media-type="image/png" properties="cover-image"/>'
+        if cover_bytes is not None
+        else ""
+    )
+    opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="uid" opf:scheme="ISBN">{isbn}</dc:identifier>
+    <dc:title>{title}</dc:title>
+    {creators}
+    <dc:language>{language}</dc:language>
+    <dc:date opf:event="publication">{year}</dc:date>
+    <dc:description>{description}</dc:description>
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    {cover_item}
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
+    container = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+    ch1 = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<h1>Chương 1</h1><p>Nội dung thử nghiệm.</p>"
+        "</body></html>"
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("OEBPS/content.opf", opf)
+        zf.writestr("OEBPS/c1.xhtml", ch1)
+        if cover_bytes is not None:
+            zf.writestr(f"OEBPS/{cover_name}", cover_bytes)
+    return path
+
+
+class TestRichMetadataAndCoverPersistence:
+    """Task 2.1 (FR-1.2): metadata + cover persistence, backfill & legacy fallback."""
+
+    def test_add_book_persists_metadata_cover_and_index_entry(
+        self, library: AudiobookLibrary
+    ) -> None:
+        book = EpubBook(
+            title="Đất Rừng Phương Nam",
+            author="Đoàn Giỏi; Đồng Tác Giả",
+            chapters=[EpubChapter(0, "Chương 1", "Nội dung chương 1.")],
+            source_path="/books/drpn.epub",
+            content_hash="b" * 64,
+            authors=("Đoàn Giỏi", "Đồng Tác Giả"),
+            language="vi",
+            isbn="9786042123456",
+            year=1957,
+            description="Tiểu thuyết kinh điển miền Nam.",
+            cover_bytes=_TINY_PNG,
+            cover_ext="png",
+        )
+        record = library.add_book(book)
+
+        assert record.authors == ("Đoàn Giỏi", "Đồng Tác Giả")
+        assert record.language == "vi"
+        assert record.isbn == "9786042123456"
+        assert record.year == 1957
+        assert record.description == "Tiểu thuyết kinh điển miền Nam."
+        assert record.cover_file == "cover.png"
+
+        cover_on_disk = library.cover_path(record.id, record.cover_file)
+        assert cover_on_disk is not None and cover_on_disk.is_file()
+        assert cover_on_disk.read_bytes() == _TINY_PNG
+
+        # Path traversal in cover_file must never escape the book workspace.
+        assert library.cover_path(record.id, "") is None
+        assert library.cover_path(record.id, "../escape.png") is None
+        assert library.cover_path(record.id, "sub/cover.png") is None
+
+        # Persisted in both book.json and library.json (cover_file for fast shelf).
+        book_json = json.loads((library.root / record.id / "book.json").read_text(encoding="utf-8"))
+        assert book_json["authors"] == ["Đoàn Giỏi", "Đồng Tác Giả"]
+        assert book_json["language"] == "vi"
+        assert book_json["isbn"] == "9786042123456"
+        assert book_json["year"] == 1957
+        assert book_json["description"] == "Tiểu thuyết kinh điển miền Nam."
+        assert book_json["cover_file"] == "cover.png"
+
+        index_json = json.loads((library.root / "library.json").read_text(encoding="utf-8"))
+        assert index_json["books"][0]["cover_file"] == "cover.png"
+
+        listed = library.list_books()
+        assert listed[0].cover_file == "cover.png"
+        loaded = library.load_book(record.id)
+        assert loaded.record == record
+
+    def test_readd_legacy_book_backfills_metadata_and_cover_without_touching_audio(
+        self, library: AudiobookLibrary
+    ) -> None:
+        # Simulate a legacy workspace written before FR-1.2 existed.
+        legacy_book = make_book(path="/old/path.epub", chapters=2)
+        record = library.add_book(legacy_book)
+        library.save_chapter_audio(record.id, 0, make_audio(0.03))
+        library.set_progress(record.id, 0, 420, "Adam")
+        wav_path = library.chapter_wav_path(record.id, 0)
+        wav_bytes_before = wav_path.read_bytes()
+        state_before = (library.root / record.id / "state.json").read_text(encoding="utf-8")
+
+        # Strip new keys from book.json & library.json to mirror an older build.
+        book_json_path = library.root / record.id / "book.json"
+        raw_book = json.loads(book_json_path.read_text(encoding="utf-8"))
+        for key in ("authors", "language", "isbn", "year", "description", "cover_file"):
+            raw_book.pop(key, None)
+        book_json_path.write_text(json.dumps(raw_book), encoding="utf-8")
+
+        # Re-add the same content hash with enriched metadata + cover.
+        enriched = EpubBook(
+            title=legacy_book.title,
+            author="Tác Giả A; Tác Giả B",
+            chapters=legacy_book.chapters,
+            source_path="/new/path.epub",
+            content_hash=legacy_book.content_hash,
+            authors=("Tác Giả A", "Tác Giả B"),
+            language="vi",
+            isbn="9780123456789",
+            year=2024,
+            description="Mô tả mới.",
+            cover_bytes=_TINY_JPG,
+            cover_ext="jpg",
+        )
+        updated = library.add_book(enriched)
+
+        assert updated.source_path == "/new/path.epub"
+        assert updated.authors == ("Tác Giả A", "Tác Giả B")
+        assert updated.language == "vi"
+        assert updated.isbn == "9780123456789"
+        assert updated.year == 2024
+        assert updated.description == "Mô tả mới."
+        assert updated.cover_file == "cover.jpg"
+        assert (library.root / record.id / "cover.jpg").read_bytes() == _TINY_JPG
+        # Audio, state, and chapters remain untouched.
+        assert wav_path.read_bytes() == wav_bytes_before
+        assert (library.root / record.id / "state.json").read_text(encoding="utf-8") == state_before
+        loaded = library.load_book(record.id)
+        assert loaded.statuses[0] == "ready"
+        assert loaded.progress.position_ms == 420
+
+    def test_legacy_json_loads_cleanly_and_export_recovers_from_source_epub(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        epub_path = _write_rich_epub(tmp_path / "source.epub")
+        # Create a legacy book.json + library.json lacking all FR-1.2 keys.
+        book_id = "c" * 16
+        workspace = library.root / book_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        legacy_payload = {
+            "id": book_id,
+            "title": "Đất Rừng Phương Nam",
+            "author": "Đoàn Giỏi; Đồng Tác Giả",
+            "source_path": str(epub_path),
+            "content_hash": "c" * 64,
+            "added_at": "2026-01-01T00:00:00+00:00",
+            "chapters": [{"index": 0, "title": "Chương 1", "text": "Nội dung thử nghiệm."}],
+        }
+        (workspace / "book.json").write_text(json.dumps(legacy_payload), encoding="utf-8")
+        (library.root / "library.json").write_text(
+            json.dumps(
+                {
+                    "books": [
+                        {
+                            "id": book_id,
+                            "title": "Đất Rừng Phương Nam",
+                            "author": "Đoàn Giỏi; Đồng Tác Giả",
+                            "chapter_count": 1,
+                            "added_at": "2026-01-01T00:00:00+00:00",
+                            "source_path": str(epub_path),
+                            "content_hash": "c" * 64,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        library.save_chapter_audio(book_id, 0, make_audio(0.02))
+        wav_before = library.chapter_wav_path(book_id, 0).read_bytes()
+
+        # Loading legacy files derives authors from author and defaults new fields cleanly.
+        listed = library.list_books()
+        assert listed[0].authors == ("Đoàn Giỏi", "Đồng Tác Giả")
+        assert listed[0].cover_file == ""
+        loaded = library.load_book(book_id)
+        assert loaded.record.authors == ("Đoàn Giỏi", "Đồng Tác Giả")
+        assert loaded.record.language == ""
+        assert loaded.record.isbn == ""
+        assert loaded.record.year is None
+        assert loaded.record.description == ""
+        assert loaded.record.cover_file == ""
+
+        # Export metadata resolution recovers metadata + cover from source_path on-the-fly.
+        meta = library.resolve_book_export_metadata(book_id, book=loaded)
+        assert meta.title == "Đất Rừng Phương Nam"
+        assert meta.authors == ("Đoàn Giỏi", "Đồng Tác Giả")
+        assert meta.language == "vi"
+        assert meta.isbn == "9786042123456"
+        assert meta.year == 1957
+        assert meta.description == "Tiểu thuyết kinh điển miền Nam."
+        assert meta.cover_bytes == _TINY_PNG
+        assert meta.cover_ext == "png"
+        # Audio cache was not mutated.
+        assert library.chapter_wav_path(book_id, 0).read_bytes() == wav_before
+
+        # When source_path vanishes, resolution degrades silently to stored fields.
+        epub_path.unlink()
+        fallback = library.resolve_book_export_metadata(book_id, book=loaded)
+        assert fallback.title == "Đất Rừng Phương Nam"
+        assert fallback.authors == ("Đoàn Giỏi", "Đồng Tác Giả")
+        assert fallback.cover_bytes is None
+        assert fallback.cover_ext == ""

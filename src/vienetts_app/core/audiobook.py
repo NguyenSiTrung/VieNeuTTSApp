@@ -43,7 +43,13 @@ import numpy as np
 
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.chapter_split import ChapterPart, split_chapter_parts
-from vienetts_app.core.epub import EpubBook, EpubChapter
+from vienetts_app.core.epub import (
+    MAX_COVER_BYTES,
+    EpubBook,
+    EpubChapter,
+    extract_epub_metadata,
+    sniff_image_ext,
+)
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.synthesis_context import (
     SynthesisContext,
@@ -118,6 +124,27 @@ class BookRecord:
     added_at: str
     source_path: str
     content_hash: str
+    authors: tuple[str, ...] = ()
+    language: str = ""
+    isbn: str = ""
+    year: int | None = None
+    description: str = ""
+    cover_file: str = ""
+
+
+@dataclass(frozen=True)
+class BookExportMetadata:
+    """Resolved metadata and optional cover art used by audiobook exporters."""
+
+    title: str
+    author: str = ""
+    authors: tuple[str, ...] = ()
+    language: str = ""
+    isbn: str = ""
+    year: int | None = None
+    description: str = ""
+    cover_bytes: bytes | None = None
+    cover_ext: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +205,56 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         raise
 
 
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    suffix = path.suffix or ".bin"
+    temp = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.part{suffix}")
+    try:
+        temp.write_bytes(data)
+        for attempt in range(REPLACE_LOCK_ATTEMPTS):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == REPLACE_LOCK_ATTEMPTS - 1:
+                    raise
+                time.sleep(REPLACE_LOCK_DELAY_S)
+    except Exception:
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        raise
+
+
+def _normalize_authors(raw_authors: Any, author_fallback: str = "") -> tuple[str, ...]:
+    items: list[str] = []
+    if isinstance(raw_authors, list | tuple):
+        candidates = [str(item).strip() for item in raw_authors if isinstance(item, str)]
+    else:
+        candidates = []
+    if not candidates and author_fallback:
+        candidates = [part.strip() for part in str(author_fallback).split(";")]
+    for entry in candidates:
+        if entry and entry not in items:
+            items.append(entry)
+    return tuple(items)
+
+
+def _parse_optional_year(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if 1000 <= value <= 2999 else None
+    return None
+
+
+def _valid_cover_filename(cover_file: str) -> str:
+    name = str(cover_file or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return ""
+    if Path(name).name != name:
+        return ""
+    return name
+
+
 def _sanitize_filename_part(title: str) -> str:
     """Chapter title → cross-platform-safe filename fragment."""
     return sanitize_filename(title, max_len=80, fallback="")
@@ -212,52 +289,176 @@ class AudiobookLibrary:
             records.append(record)
         return records
 
+    def cover_path(self, book_id: str, cover_file: str) -> Path | None:
+        """Safe path to a book's persisted cover file, or ``None`` if invalid/empty."""
+        safe_name = _valid_cover_filename(cover_file)
+        if not safe_name:
+            return None
+        return self.root / book_id / safe_name
+
+    def _persist_cover_if_valid(
+        self, book_id: str, cover_bytes: bytes | None, cover_ext: str = ""
+    ) -> str:
+        if not cover_bytes or len(cover_bytes) > MAX_COVER_BYTES:
+            return ""
+        ext = sniff_image_ext(cover_bytes) or str(cover_ext or "").strip().lower().lstrip(".")
+        if ext not in ("jpg", "png", "gif", "webp"):
+            return ""
+        filename = f"cover.{ext}"
+        target = self.root / book_id / filename
+        _write_bytes_atomic(target, cover_bytes)
+        return filename
+
     def add_book(self, book: EpubBook) -> BookRecord:
         """Register ``book`` (idempotent by content hash); returns the record.
 
-        Re-adding an existing book only refreshes ``source_path`` (the file
-        may have moved) — chapters/state/audio are untouched.
+        Re-adding an existing book refreshes ``source_path`` (the file may have
+        moved) and backfills missing rich metadata/cover fields without touching
+        chapters, state, or cached audio.
         """
         book_id = book.content_hash[:16]
         workspace = self.root / book_id
         workspace.mkdir(parents=True, exist_ok=True)
         book_path = workspace / BOOK_FILENAME
         existing = _read_json(book_path)
+        incoming_authors = _normalize_authors(book.authors, book.author)
         if isinstance(existing, dict):
-            record = self._record_from_book_json(existing, book_id) or self._new_record(
-                book_id, book
-            )
-            if record.source_path != book.source_path:
+            changed = False
+            if str(existing.get("source_path") or "") != book.source_path:
                 existing["source_path"] = book.source_path
+                changed = True
+            if not existing.get("authors") and incoming_authors:
+                existing["authors"] = list(incoming_authors)
+                if book.author:
+                    existing["author"] = book.author
+                elif not str(existing.get("author") or "").strip():
+                    existing["author"] = "; ".join(incoming_authors)
+                changed = True
+            if not str(existing.get("language") or "").strip() and book.language:
+                existing["language"] = book.language
+                changed = True
+            if not str(existing.get("isbn") or "").strip() and book.isbn:
+                existing["isbn"] = book.isbn
+                changed = True
+            if _parse_optional_year(existing.get("year")) is None and book.year is not None:
+                existing["year"] = book.year
+                changed = True
+            if not str(existing.get("description") or "").strip() and book.description:
+                existing["description"] = book.description
+                changed = True
+            existing_cover = _valid_cover_filename(str(existing.get("cover_file") or ""))
+            existing_cover_path = self.cover_path(book_id, existing_cover)
+            if (existing_cover_path is None or not existing_cover_path.is_file()) and (
+                book.cover_bytes
+            ):
+                new_cover = self._persist_cover_if_valid(book_id, book.cover_bytes, book.cover_ext)
+                if new_cover:
+                    existing["cover_file"] = new_cover
+                    changed = True
+            if changed:
                 _write_json_atomic(book_path, existing)
-                record = BookRecord(
-                    id=record.id,
-                    title=record.title,
-                    author=record.author,
-                    chapter_count=record.chapter_count,
-                    added_at=record.added_at,
-                    source_path=book.source_path,
-                    content_hash=record.content_hash,
-                )
-        else:
-            record = self._new_record(book_id, book)
-            _write_json_atomic(
-                book_path,
-                {
-                    "id": record.id,
-                    "title": record.title,
-                    "author": record.author,
-                    "source_path": record.source_path,
-                    "content_hash": record.content_hash,
-                    "added_at": record.added_at,
-                    "chapters": [
-                        {"index": c.index, "title": c.title, "text": c.text} for c in book.chapters
-                    ],
-                },
+            record = self._record_from_book_json(existing, book_id) or self._new_record(
+                book_id, book, cover_file=str(existing.get("cover_file") or "")
             )
+        else:
+            cover_file = self._persist_cover_if_valid(book_id, book.cover_bytes, book.cover_ext)
+            record = self._new_record(book_id, book, cover_file=cover_file)
+            payload: dict[str, Any] = {
+                "id": record.id,
+                "title": record.title,
+                "author": record.author,
+                "authors": list(record.authors),
+                "language": record.language,
+                "isbn": record.isbn,
+                "year": record.year,
+                "description": record.description,
+                "cover_file": record.cover_file,
+                "source_path": record.source_path,
+                "content_hash": record.content_hash,
+                "added_at": record.added_at,
+                "chapters": [
+                    {"index": c.index, "title": c.title, "text": c.text} for c in book.chapters
+                ],
+            }
+            _write_json_atomic(book_path, payload)
         self._upsert_index(record)
         self._chapter_counts[book_id] = len(book.chapters)
         return record
+
+    def resolve_book_export_metadata(
+        self, book_id: str, *, book: BookState | None = None
+    ) -> BookExportMetadata:
+        """Return export metadata & cover bytes, opportunistically backfilling from ``source_path``.
+
+        Legacy workspaces created before rich metadata/cover persistence fall back
+        to lightweight OPF extraction when ``source_path`` still points to an
+        existing ``.epub`` file — without mutating cached chapters or audio.
+        """
+        state = self.load_book(book_id) if book is None else book
+        record = state.record
+        authors = record.authors or _normalize_authors(None, record.author)
+        author = record.author or "; ".join(authors)
+        language = record.language
+        isbn = record.isbn
+        year = record.year
+        description = record.description
+        cover_bytes: bytes | None = None
+        cover_ext = ""
+
+        cpath = self.cover_path(book_id, record.cover_file)
+        if cpath is not None and cpath.is_file():
+            try:
+                if cpath.stat().st_size <= MAX_COVER_BYTES:
+                    raw = cpath.read_bytes()
+                    ext = sniff_image_ext(raw)
+                    if ext and len(raw) <= MAX_COVER_BYTES:
+                        cover_bytes = raw
+                        cover_ext = ext
+            except OSError:
+                pass
+
+        needs_fallback = (
+            not authors
+            or not language
+            or not isbn
+            or year is None
+            or not description
+            or cover_bytes is None
+        )
+        if needs_fallback and record.source_path:
+            source = Path(record.source_path)
+            if source.is_file() and source.suffix.lower() == ".epub":
+                try:
+                    extracted = extract_epub_metadata(source)
+                except Exception:  # noqa: BLE001 - opportunistic legacy fallback must stay silent
+                    extracted = None
+                if extracted is not None:
+                    if not authors and extracted.authors:
+                        authors = extracted.authors
+                        author = extracted.author or "; ".join(authors)
+                    if not language and extracted.language:
+                        language = extracted.language
+                    if not isbn and extracted.isbn:
+                        isbn = extracted.isbn
+                    if year is None and extracted.year is not None:
+                        year = extracted.year
+                    if not description and extracted.description:
+                        description = extracted.description
+                    if cover_bytes is None and extracted.cover_bytes and extracted.cover_ext:
+                        cover_bytes = extracted.cover_bytes
+                        cover_ext = extracted.cover_ext
+
+        return BookExportMetadata(
+            title=record.title,
+            author=author,
+            authors=authors,
+            language=language,
+            isbn=isbn,
+            year=year,
+            description=description,
+            cover_bytes=cover_bytes,
+            cover_ext=cover_ext,
+        )
 
     def remove_book(self, book_id: str) -> None:
         """Delete a book's workspace + shelf entry; unknown ids are a no-op."""
@@ -746,29 +947,45 @@ class AudiobookLibrary:
 
     # ── internals ────────────────────────────────────────────────────────────
 
-    def _new_record(self, book_id: str, book: EpubBook) -> BookRecord:
+    def _new_record(self, book_id: str, book: EpubBook, *, cover_file: str = "") -> BookRecord:
+        authors = _normalize_authors(book.authors, book.author)
+        author = book.author or "; ".join(authors)
         return BookRecord(
             id=book_id,
             title=book.title,
-            author=book.author,
+            author=author,
             chapter_count=len(book.chapters),
             added_at=_utc_now_iso(),
             source_path=book.source_path,
             content_hash=book.content_hash,
+            authors=authors,
+            language=book.language,
+            isbn=book.isbn,
+            year=_parse_optional_year(book.year),
+            description=book.description,
+            cover_file=_valid_cover_filename(cover_file),
         )
 
     def _record_from_book_json(self, data: dict[str, Any], book_id: str) -> BookRecord | None:
         title = str(data.get("title") or "").strip()
         if not title:
             return None
+        author = str(data.get("author") or "")
+        authors = _normalize_authors(data.get("authors"), author)
         return BookRecord(
             id=book_id,
             title=title,
-            author=str(data.get("author") or ""),
+            author=author or "; ".join(authors),
             chapter_count=len(data.get("chapters") or []),
             added_at=str(data.get("added_at") or ""),
             source_path=str(data.get("source_path") or ""),
             content_hash=str(data.get("content_hash") or ""),
+            authors=authors,
+            language=str(data.get("language") or ""),
+            isbn=str(data.get("isbn") or ""),
+            year=_parse_optional_year(data.get("year")),
+            description=str(data.get("description") or ""),
+            cover_file=_valid_cover_filename(str(data.get("cover_file") or "")),
         )
 
     def _record_from_index(self, entry: dict[str, Any]) -> BookRecord | None:
@@ -776,14 +993,18 @@ class AudiobookLibrary:
         title = str(entry.get("title") or "").strip()
         if not book_id or not title:
             return None
+        author = str(entry.get("author") or "")
+        authors = _normalize_authors(entry.get("authors"), author)
         return BookRecord(
             id=book_id,
             title=title,
-            author=str(entry.get("author") or ""),
+            author=author or "; ".join(authors),
             chapter_count=int(entry.get("chapter_count") or 0),
             added_at=str(entry.get("added_at") or ""),
             source_path=str(entry.get("source_path") or ""),
             content_hash=str(entry.get("content_hash") or ""),
+            authors=authors,
+            cover_file=_valid_cover_filename(str(entry.get("cover_file") or "")),
         )
 
     def _read_index(self) -> list[Any]:
@@ -799,17 +1020,18 @@ class AudiobookLibrary:
     def _upsert_index(self, record: BookRecord) -> None:
         index = self._read_index()
         kept = [e for e in index if not (isinstance(e, dict) and e.get("id") == record.id)]
-        kept.append(
-            {
-                "id": record.id,
-                "title": record.title,
-                "author": record.author,
-                "chapter_count": record.chapter_count,
-                "added_at": record.added_at,
-                "source_path": record.source_path,
-                "content_hash": record.content_hash,
-            }
-        )
+        entry: dict[str, Any] = {
+            "id": record.id,
+            "title": record.title,
+            "author": record.author,
+            "chapter_count": record.chapter_count,
+            "added_at": record.added_at,
+            "source_path": record.source_path,
+            "content_hash": record.content_hash,
+        }
+        if record.cover_file:
+            entry["cover_file"] = record.cover_file
+        kept.append(entry)
         self._write_index(kept)
 
     def read_state(self, book_id: str) -> Mapping[str, Any]:

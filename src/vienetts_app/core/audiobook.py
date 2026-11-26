@@ -34,14 +34,19 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.audio import (
+    ExportCancelled,
+    export_audio_file,
+    export_mp3_parts,
+    write_wav_file,
+)
 from vienetts_app.core.chapter_split import ChapterPart, split_chapter_parts
 from vienetts_app.core.epub import (
     MAX_COVER_BYTES,
@@ -49,6 +54,12 @@ from vienetts_app.core.epub import (
     EpubChapter,
     extract_epub_metadata,
     sniff_image_ext,
+)
+from vienetts_app.core.id3 import (
+    Id3Metadata,
+    build_id3v24_tag,
+    mime_for_image_ext,
+    should_embed_cover,
 )
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.synthesis_context import (
@@ -887,6 +898,23 @@ class AudiobookLibrary:
 
     # ── export (FR-A6) ───────────────────────────────────────────────────────
 
+    def _resolve_chapter_sources(
+        self, book_id: str, chapter: EpubChapter, chapter_state: Mapping[str, Any]
+    ) -> list[Path]:
+        paths = self.chapter_audio_paths(book_id, chapter.index, state=chapter_state)
+        sources = [p for p in paths if p.is_file()]
+        if not sources:
+            raise AudiobookError(
+                f"Chapter {chapter.index + 1} ('{chapter.title}') has not been rendered yet — "
+                "render it first, then export."
+            )
+        if len(sources) != len(paths):
+            raise AudiobookError(
+                f"Chapter {chapter.index + 1} ('{chapter.title}') is only partially rendered — "
+                "render every part, then export."
+            )
+        return sources
+
     def export_chapter(
         self,
         book_id: str,
@@ -895,39 +923,66 @@ class AudiobookLibrary:
         format: str = "wav",
         *,
         book: BookState | None = None,
+        narrator: str = "",
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[Path]:
-        """Copy a rendered chapter into ``dest_dir``.
+        """Export a rendered chapter into ``dest_dir``.
 
-        Single-part chapters → ``[NN - Title.wav]``. Oversize chapters export
-        ordered parts ``NN - Title - 01.wav``, ``… - 02.wav``, … (never a
-        full-chapter concat — that would re-materialize the RAM bomb the
-        split exists to avoid). ``book`` is an already-loaded
-        :meth:`load_book` result: a multi-chapter export passes it so
-        book.json (every chapter's text) is parsed once, not per chapter.
+        WAV export stays flat in ``dest_dir`` and preserves split part files
+        (``NN - Title - 01.wav``, ``… - 02.wav``) for oversize chapters.
+        MP3 export stream-merges all parts of a chapter into one ID3v2.4-tagged
+        ``NN - Title.mp3`` file flat in ``dest_dir``.
         """
         state = self.load_book(book_id) if book is None else book
         chapter = self._chapter(state, index)
         chapter_state = self.read_state(book_id)
-        paths = self.chapter_audio_paths(book_id, index, state=chapter_state)
-        sources = [p for p in paths if p.is_file()]
-        if not sources:
-            raise AudiobookError(
-                f"Chapter {index + 1} ('{chapter.title}') has not been rendered yet — "
-                "render it first, then export."
-            )
-        if len(sources) != len(paths):
-            raise AudiobookError(
-                f"Chapter {index + 1} ('{chapter.title}') is only partially rendered — "
-                "render every part, then export."
-            )
+        sources = self._resolve_chapter_sources(book_id, chapter, chapter_state)
         ext = "mp3" if str(format).lower() == "mp3" else "wav"
         dest = normalize_local_path(dest_dir)
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
-        multi = len(sources) > 1
-        from vienetts_app.core.audio import export_audio_file
 
+        if ext == "mp3":
+            if cancel_check is not None and cancel_check():
+                raise ExportCancelled("Audio export cancelled.")
+            total_chapters = max(1, len(state.chapters))
+            pad = max(2, len(str(total_chapters)))
+            target = dest / f"{index + 1:0{pad}d} - {name_part}.mp3"
+            meta = self.resolve_book_export_metadata(book_id, book=state)
+            track_num = index + 1
+            cover_bytes = (
+                meta.cover_bytes if should_embed_cover(meta.cover_bytes, track_num) else None
+            )
+            tag = build_id3v24_tag(
+                Id3Metadata(
+                    album=meta.title,
+                    title=chapter.title,
+                    artists=meta.authors,
+                    track_number=track_num,
+                    total_tracks=total_chapters,
+                    narrator=narrator,
+                    cover_bytes=cover_bytes,
+                    cover_mime=mime_for_image_ext(meta.cover_ext) if cover_bytes else "",
+                )
+            )
+            try:
+                export_mp3_parts(sources, target, id3_bytes=tag, cancel_check=cancel_check)
+            except ExportCancelled:
+                raise
+            except PermissionError as exc:
+                raise AudiobookError(
+                    f"Could not export the chapter (file locked by another program): {exc}"
+                ) from exc
+            except OSError as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            except Exception as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            return [target]
+
+        multi = len(sources) > 1
         targets: list[Path] = []
         for i, source in enumerate(sources):
+            if cancel_check is not None and cancel_check():
+                raise ExportCancelled("Audio export cancelled.")
             if multi:
                 target = dest / f"{index + 1:02d} - {name_part} - {i + 1:02d}.{ext}"
             else:
@@ -943,6 +998,77 @@ class AudiobookLibrary:
             except Exception as exc:
                 raise AudiobookError(f"Could not export the chapter: {exc}") from exc
             targets.append(target)
+        return targets
+
+    def export_mp3_chapters(
+        self,
+        book_id: str,
+        indices: Sequence[int],
+        dest_dir: str | Path,
+        *,
+        narrator: str = "",
+        book: BookState | None = None,
+        progress: Callable[[int, int], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[Path]:
+        """Bulk-export rendered chapters as ID3v2.4-tagged MP3s into ``<dest>/<Book Title>/``.
+
+        Oversize multi-part chapters stream-merge into one MP3 per chapter,
+        filenames zero-pad to ``max(2, len(str(chapter_count)))``, and ID3
+        ``TRCK`` numbers stay contiguous ``1/N..N/N`` across exported tracks.
+        """
+        if cancel_check is not None and cancel_check():
+            raise ExportCancelled("Audio export cancelled.")
+        ordered = list(indices)
+        if not ordered:
+            return []
+        state = self.load_book(book_id) if book is None else book
+        meta = self.resolve_book_export_metadata(book_id, book=state)
+        chapter_state = self.read_state(book_id)
+        folder_name = sanitize_filename(meta.title, max_len=80, fallback=f"audiobook-{book_id}")
+        out_dir = normalize_local_path(dest_dir) / folder_name
+        pad = max(2, len(str(max(1, len(state.chapters)))))
+        total_tracks = len(ordered)
+        cover_mime = mime_for_image_ext(meta.cover_ext)
+
+        targets: list[Path] = []
+        for track_num, ch_index in enumerate(ordered, start=1):
+            if cancel_check is not None and cancel_check():
+                raise ExportCancelled("Audio export cancelled.")
+            chapter = self._chapter(state, ch_index)
+            sources = self._resolve_chapter_sources(book_id, chapter, chapter_state)
+            name_part = _sanitize_filename_part(chapter.title) or f"chuong-{ch_index + 1}"
+            target = out_dir / f"{ch_index + 1:0{pad}d} - {name_part}.mp3"
+            cover_bytes = (
+                meta.cover_bytes if should_embed_cover(meta.cover_bytes, track_num) else None
+            )
+            tag = build_id3v24_tag(
+                Id3Metadata(
+                    album=meta.title,
+                    title=chapter.title,
+                    artists=meta.authors,
+                    track_number=track_num,
+                    total_tracks=total_tracks,
+                    narrator=narrator,
+                    cover_bytes=cover_bytes,
+                    cover_mime=cover_mime if cover_bytes else "",
+                )
+            )
+            try:
+                export_mp3_parts(sources, target, id3_bytes=tag, cancel_check=cancel_check)
+            except ExportCancelled:
+                raise
+            except PermissionError as exc:
+                raise AudiobookError(
+                    f"Could not export the chapter (file locked by another program): {exc}"
+                ) from exc
+            except OSError as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            except Exception as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            targets.append(target)
+            if progress is not None:
+                progress(track_num, total_tracks)
         return targets
 
     # ── internals ────────────────────────────────────────────────────────────

@@ -1049,3 +1049,201 @@ class TestRichMetadataAndCoverPersistence:
         assert fallback.authors == ("Đoàn Giỏi", "Đồng Tác Giả")
         assert fallback.cover_bytes is None
         assert fallback.cover_ext == ""
+
+
+def _parse_id3v24_frames(data: bytes) -> dict[str, list[bytes]]:
+    assert data[:6] == b"ID3\x04\x00\x00"
+    b0, b1, b2, b3 = data[6:10]
+    total_size = (b0 << 21) | (b1 << 14) | (b2 << 7) | b3
+    pos = 10
+    end = 10 + total_size
+    frames: dict[str, list[bytes]] = {}
+    while pos + 10 <= end:
+        fid = data[pos : pos + 4].decode("ascii")
+        f0, f1, f2, f3 = data[pos + 4 : pos + 8]
+        fsize = (f0 << 21) | (f1 << 14) | (f2 << 7) | f3
+        payload = data[pos + 10 : pos + 10 + fsize]
+        frames.setdefault(fid, []).append(payload)
+        pos += 10 + fsize
+    return frames
+
+
+class TestUpgradedMp3Export:
+    """Task 2.2 (FR-2.3): ID3v2.4 tagging, oversize MP3 stream-merge & bulk subfolder layout."""
+
+    def test_single_chapter_mp3_writes_flat_with_id3v24_tags_and_cover(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        book = EpubBook(
+            title="Đất Rừng Phương Nam",
+            author="Đoàn Giỏi; Đồng Tác Giả",
+            chapters=[
+                EpubChapter(0, "Chương 1: Khởi hành", "Nội dung chương một."),
+                EpubChapter(1, "Chương 2: Vào rừng", "Nội dung chương hai."),
+            ],
+            source_path="/books/drpn.epub",
+            content_hash="d" * 64,
+            authors=("Đoàn Giỏi", "Đồng Tác Giả"),
+            language="vi",
+            cover_bytes=_TINY_PNG,
+            cover_ext="png",
+        )
+        record = library.add_book(book)
+        library.save_chapter_audio(record.id, 0, make_audio(0.25))
+
+        dest = tmp_path / "flat_out"
+        exported = library.export_chapter(record.id, 0, dest, "mp3", narrator="Ngọc Anh")
+        assert exported == [dest / "01 - Chương 1 Khởi hành.mp3"]
+        assert exported[0].is_file()
+
+        frames = _parse_id3v24_frames(exported[0].read_bytes())
+        assert frames["TALB"] == [b"\x03" + "Đất Rừng Phương Nam".encode()]
+        assert frames["TIT2"] == [b"\x03" + "Chương 1: Khởi hành".encode()]
+        assert frames["TPE1"] == [b"\x03" + "Đoàn Giỏi; Đồng Tác Giả".encode()]
+        assert frames["TPE2"] == [b"\x03" + "Đoàn Giỏi; Đồng Tác Giả".encode()]
+        assert frames["TRCK"] == [b"\x031/2"]
+        assert frames["TPOS"] == [b"\x031/1"]
+        assert frames["TXXX"] == [b"\x03narrator\x00" + "Ngọc Anh".encode()]
+        assert frames["TCOM"] == [b"\x03" + "Ngọc Anh".encode()]
+        assert frames["APIC"] == [b"\x03image/png\x00\x03\x00" + _TINY_PNG]
+
+    def test_oversize_chapter_merges_into_one_mp3_while_wav_stays_split(
+        self, library: AudiobookLibrary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import soundfile as sf
+
+        import vienetts_app.core.audiobook as ab
+        from vienetts_app.core.audio import write_wav_file
+
+        monkeypatch.setattr(ab, "CHAPTER_CHAR_LIMIT", 80)
+        text = "\n\n".join(f"Phần {i}. " + ("abcdef " * 8) for i in range(6))
+        book = EpubBook(
+            title="Sách Dài",
+            author="Tác Giả",
+            chapters=[EpubChapter(0, "Chương dài", text)],
+            source_path="/books/long.epub",
+            content_hash="e" * 64,
+            authors=("Tác Giả",),
+            cover_bytes=_TINY_PNG,
+            cover_ext="png",
+        )
+        record = library.add_book(book)
+        parts = library.chapter_parts(record.id, 0, text)
+        assert len(parts) >= 2
+        for i in range(len(parts)):
+            write_wav_file(make_audio(0.3), library.segment_wav_path(record.id, 0, i))
+
+        wav_out = library.export_chapter(record.id, 0, tmp_path / "wav_out", "wav")
+        assert len(wav_out) == len(parts)
+        assert wav_out[0].name == "01 - Chương dài - 01.wav"
+        assert wav_out[1].name == "01 - Chương dài - 02.wav"
+
+        mp3_out = library.export_chapter(record.id, 0, tmp_path / "mp3_out", "mp3")
+        assert len(mp3_out) == 1
+        assert mp3_out[0] == tmp_path / "mp3_out" / "01 - Chương dài.mp3"
+        info = sf.info(str(mp3_out[0]))
+        assert info.format == "MP3"
+        expected_s = 0.3 * len(parts)
+        assert abs(info.duration - expected_s) <= 0.2
+        frames = _parse_id3v24_frames(mp3_out[0].read_bytes())
+        assert frames["TRCK"] == [b"\x031/1"]
+        assert "APIC" in frames
+
+    def test_bulk_mp3_chapters_subfolder_padding_track_order_cover_policy_and_cancel(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.audio import ExportCancelled
+
+        # Large cover (> 512 KiB) verifies track-1-only APIC embedding on bulk export.
+        big_cover = _TINY_PNG + (b"\x01" * (600 * 1024))
+        book = EpubBook(
+            title='Sách: "Tiêu Đề" / Đặc Biệt',
+            author="Tác Giả Một",
+            chapters=[EpubChapter(i, f"Chương {i + 1}", f"Nội dung {i + 1}.") for i in range(105)],
+            source_path="/books/bulk.epub",
+            content_hash="9" * 64,
+            authors=("Tác Giả Một",),
+            cover_bytes=big_cover,
+            cover_ext="png",
+        )
+        record = library.add_book(book)
+        library.save_chapter_audio(record.id, 0, make_audio(0.2))
+        library.save_chapter_audio(record.id, 2, make_audio(0.2))
+        library.save_chapter_audio(record.id, 99, make_audio(0.2))
+
+        ticks: list[tuple[int, int]] = []
+        dest = tmp_path / "bulk_out"
+        exported = library.export_mp3_chapters(
+            record.id,
+            [0, 2, 99],
+            dest,
+            narrator="Hà Vy",
+            progress=lambda done, total: ticks.append((done, total)),
+        )
+
+        # Output lands in <dest>/<Sanitized Book Title>/ with 3-digit zero-padding (105 chapters).
+        assert len(exported) == 3
+        book_dir = exported[0].parent
+        assert book_dir.parent == dest
+        assert "/" not in book_dir.name and ":" not in book_dir.name
+        assert [p.name for p in exported] == [
+            "001 - Chương 1.mp3",
+            "003 - Chương 3.mp3",
+            "100 - Chương 100.mp3",
+        ]
+        assert ticks == [(1, 3), (2, 3), (3, 3)]
+
+        # Contiguous TRCK 1/3..3/3 across exported ready tracks; big cover on track 1 only.
+        f1 = _parse_id3v24_frames(exported[0].read_bytes())
+        f2 = _parse_id3v24_frames(exported[1].read_bytes())
+        f3 = _parse_id3v24_frames(exported[2].read_bytes())
+        assert f1["TRCK"] == [b"\x031/3"]
+        assert f2["TRCK"] == [b"\x032/3"]
+        assert f3["TRCK"] == [b"\x033/3"]
+        assert f1["TXXX"] == [b"\x03narrator\x00" + "Hà Vy".encode()]
+        assert "APIC" in f1
+        assert "APIC" not in f2
+        assert "APIC" not in f3
+
+        # Small cover (<= 512 KiB) embeds on every exported track.
+        small_book = EpubBook(
+            title="Sách Nhỏ",
+            author="Tác Giả",
+            chapters=[
+                EpubChapter(0, "Chương 1", "Nội dung 1."),
+                EpubChapter(1, "Chương 2", "Nội dung 2."),
+            ],
+            source_path="/books/small.epub",
+            content_hash="8" * 64,
+            authors=("Tác Giả",),
+            cover_bytes=_TINY_PNG,
+            cover_ext="png",
+        )
+        small_rec = library.add_book(small_book)
+        library.save_chapter_audio(small_rec.id, 0, make_audio(0.15))
+        library.save_chapter_audio(small_rec.id, 1, make_audio(0.15))
+        small_out = library.export_mp3_chapters(small_rec.id, [0, 1], tmp_path / "small_out")
+        assert len(small_out) == 2
+        assert "APIC" in _parse_id3v24_frames(small_out[0].read_bytes())
+        assert "APIC" in _parse_id3v24_frames(small_out[1].read_bytes())
+
+        # Cancellation mid-bulk raises ExportCancelled and leaves no .part.mp3 files.
+        cancel_dest = tmp_path / "cancel_out"
+        done_seen = 0
+
+        def cancel_after_first() -> bool:
+            return done_seen >= 1
+
+        def on_step(done: int, _total: int) -> None:
+            nonlocal done_seen
+            done_seen = done
+
+        with pytest.raises(ExportCancelled):
+            library.export_mp3_chapters(
+                record.id,
+                [0, 2, 99],
+                cancel_dest,
+                progress=on_step,
+                cancel_check=cancel_after_first,
+            )
+        assert not list(cancel_dest.rglob("*.part.mp3"))

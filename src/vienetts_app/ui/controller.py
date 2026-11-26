@@ -730,6 +730,7 @@ class AppController(QObject):
     defaultVoiceChanged = Signal()
     outputDirChanged = Signal()
     exportFormatChanged = Signal()
+    m4bBitrateChanged = Signal()
     temperatureChanged = Signal()
     speedChanged = Signal()
     silencePChanged = Signal()
@@ -9562,6 +9563,23 @@ class AppController(QObject):
             return
         self._set_setting("export_format", value.strip().lower(), allowed={"wav", "mp3"})
 
+    @Property(str, notify=m4bBitrateChanged)
+    def m4bBitrate(self) -> str:
+        """AAC bitrate for M4B audiobook export ("64k" | "96k" | "128k")."""
+        return self._settings.m4b_bitrate
+
+    @m4bBitrate.setter
+    def m4bBitrate(self, value: str) -> None:
+        if not isinstance(value, str):
+            self._set_error(self.tr("m4bBitrate phải là chuỗi ký tự."))
+            return
+        self._set_setting("m4b_bitrate", value.strip().lower(), allowed={"64k", "96k", "128k"})
+
+    @Slot(str)
+    def setM4bBitrate(self, value: str) -> None:
+        """Slot mirror of ``m4bBitrate`` for QML callers."""
+        self.m4bBitrate = value
+
     @Property(float, notify=temperatureChanged)
     def temperature(self) -> float:
         return float(self._settings.temperature)
@@ -9691,6 +9709,7 @@ class AppController(QObject):
             ("default_voice", self.defaultVoiceChanged),
             ("output_dir", self.outputDirChanged),
             ("export_format", self.exportFormatChanged),
+            ("m4b_bitrate", self.m4bBitrateChanged),
             ("speed", self.speedChanged),
             ("live_preview", self.livePreviewChanged),
             ("silence_p", self.silencePChanged),

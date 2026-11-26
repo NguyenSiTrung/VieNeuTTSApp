@@ -1247,6 +1247,49 @@ class TestSettingsSeam:
         harness.controller.language = "vi"
         assert harness.controller.appliedLanguage == "en"
 
+    def test_m4b_bitrate_setting_persists_emits_and_rejects_invalid(self, harness: Harness) -> None:
+        assert harness.controller.m4bBitrate == "96k"
+        emitted: list[str] = []
+        harness.controller.m4bBitrateChanged.connect(
+            lambda: emitted.append(harness.controller.m4bBitrate)
+        )
+
+        # Property setter persists, emits, and clears errorText.
+        harness.controller.m4bBitrate = "128k"
+        assert harness.controller.m4bBitrate == "128k"
+        assert harness.controller.errorText == ""
+        assert emitted == ["128k"]
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["m4b_bitrate"] == "128k"
+
+        # Writing the same value is a no-op (no duplicate signal).
+        harness.controller.m4bBitrate = "128k"
+        assert emitted == ["128k"]
+
+        # QML slot setter updates, persists, and survives controller reload.
+        harness.controller.setM4bBitrate("64k")
+        assert harness.controller.m4bBitrate == "64k"
+        assert emitted == ["128k", "64k"]
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["m4b_bitrate"] == "64k"
+        reloaded = AppController(data_dir=harness.tmp_path, bg_runner=run_sync)
+        try:
+            assert reloaded.m4bBitrate == "64k"
+        finally:
+            reloaded.shutdown()
+
+        # Invalid values (unknown string or non-string) do not mutate or emit
+        # and surface feedback on errorText.
+        harness.controller.m4bBitrate = "320k"
+        assert harness.controller.m4bBitrate == "64k"
+        assert emitted == ["128k", "64k"]
+        assert "m4b_bitrate" in harness.controller.errorText
+
+        harness.controller.m4bBitrate = 96  # type: ignore[assignment]
+        assert harness.controller.m4bBitrate == "64k"
+        assert emitted == ["128k", "64k"]
+        assert "m4bBitrate" in harness.controller.errorText
+
 
 class TestNeedsRestart:
     """Engine-affecting writes never diverge from the serving engine.

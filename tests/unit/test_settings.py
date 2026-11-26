@@ -688,3 +688,56 @@ class TestAiDubbingSettings:
             assert 10 <= counts["progress"] <= 105
         finally:
             ctrl.shutdown()
+
+
+class TestM4bBitrate:
+    """M4B AAC bitrate setting: defaults, validation, round-trip, per-field clamping."""
+
+    def test_default_validation_and_round_trip(self, tmp_path: Path) -> None:
+        assert Settings().m4b_bitrate == "96k"
+
+        for bitrate in ("64k", "96k", "128k"):
+            saved = Settings(m4b_bitrate=bitrate)
+            assert saved.m4b_bitrate == bitrate
+            save_settings(saved, data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).m4b_bitrate == bitrate
+
+        for bad in ("320k", "", "96K", 96, None, True, ["96k"]):
+            with pytest.raises(ValueError):
+                Settings(m4b_bitrate=bad)  # type: ignore[arg-type]
+
+    def test_legacy_and_invalid_m4b_bitrate_clamped_preserving_other_fields(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        # Missing field in older settings.json falls back to default "96k".
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"export_format": "mp3", "default_voice": "Minh Đức"}),
+            encoding="utf-8",
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.m4b_bitrate == "96k"
+        assert loaded.export_format == "mp3"
+        assert loaded.default_voice == "Minh Đức"
+
+        # Invalid, null, or non-string values clamp individually without
+        # resetting unrelated saved settings.
+        for bad in ("320k", None, 128, True, ["64k"]):
+            caplog.clear()
+            (tmp_path / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "m4b_bitrate": bad,
+                        "export_format": "mp3",
+                        "default_voice": "Minh Đức",
+                        "output_dir": "/tmp/keep",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with caplog.at_level(logging.WARNING):
+                clamped = load_settings(data_dir=tmp_path)
+            assert clamped.m4b_bitrate == "96k", bad
+            assert clamped.export_format == "mp3", bad
+            assert clamped.default_voice == "Minh Đức", bad
+            assert clamped.output_dir == "/tmp/keep", bad
+            assert any("m4b_bitrate" in r.message for r in caplog.records), bad

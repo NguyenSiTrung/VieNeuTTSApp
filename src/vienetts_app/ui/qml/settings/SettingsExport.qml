@@ -9,13 +9,14 @@ import ".."
 // tested seam for a chosen folder is SettingsTab.setOutputDir(path).
 //
 // objectNames (tested contract): settingsSection_export, outputDirLabel,
-// outputDirBrowseButton, outputDirResetButton, exportFormatCombo.
+// outputDirBrowseButton, outputDirResetButton, exportFormatCombo,
+// m4bBitrateRow, m4bBitrateCombo.
 SettingsSection {
     id: section
 
     sectionId: "export"
     title: qsTr("Xuất tệp")
-    hasMatch: anyMatch([outputRow, formatRow])
+    hasMatch: anyMatch([outputRow, formatRow, m4bBitrateRow])
 
     AppCard {
         Layout.fillWidth: true
@@ -109,6 +110,51 @@ SettingsSection {
                     : 0
                 onActivated: function (index) {
                     controller.exportFormat = section.page.exportFormatOptions[index].value;
+                }
+            }
+        }
+
+        // M4B audiobook AAC bitrate (FR-5.1).
+        SettingRow {
+            id: m4bBitrateRow
+
+            objectName: "m4bBitrateRow"
+            filter: section.filter
+            compact: section.compact
+            divider: true
+            label: qsTr("Chất lượng âm thanh M4B")
+            description: qsTr("Tốc độ bit AAC khi xuất sách nói M4B (.m4b).")
+            keywords: "m4b aac bitrate audio quality audiobook"
+
+            AppCombo {
+                id: m4bBitrateCombo
+
+                objectName: "m4bBitrateCombo"
+                Layout.fillWidth: section.compact
+                Layout.preferredWidth: section.compact ? 0 : 280
+                comboWidth: 280
+                accessibleLabel: qsTr("Chất lượng âm thanh M4B")
+                textRole: "label"
+                model: section.page ? section.page.m4bBitrateOptions : []
+                currentIndex: section.page
+                    ? section.page.valueIndex(
+                        section.page.m4bBitrateOptions,
+                        controller ? controller.m4bBitrate : "96k"
+                    )
+                    : 0
+                onActivated: function (index) {
+                    if (controller && section.page && section.page.m4bBitrateOptions[index]) {
+                        controller.setM4bBitrate(section.page.m4bBitrateOptions[index].value);
+                    }
+                    // A user pick assigns currentIndex; re-bind it so controller updates stay synced.
+                    currentIndex = Qt.binding(function () {
+                        return section.page
+                            ? section.page.valueIndex(
+                                section.page.m4bBitrateOptions,
+                                controller ? controller.m4bBitrate : "96k"
+                            )
+                            : 0;
+                    });
                 }
             }
         }

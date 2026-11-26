@@ -120,6 +120,14 @@ Pane {
         { value: "mp3", label: qsTr("MP3 — gọn nhẹ") }
     ]
 
+    // M4B audiobook AAC bitrate choices mirror Settings._M4B_BITRATES in
+    // core/models.py (FR-5.1).
+    readonly property var m4bBitrateOptions: [
+        { value: "64k", label: qsTr("64 kbps") },
+        { value: "96k", label: qsTr("96 kbps (mặc định)") },
+        { value: "128k", label: qsTr("128 kbps") }
+    ]
+
     // Short labels: they sit side by side in the Color mode segmented control.
     readonly property var themeOptions: [
         { value: "system", label: qsTr("Hệ thống") },

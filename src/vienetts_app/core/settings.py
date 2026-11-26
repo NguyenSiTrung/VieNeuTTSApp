@@ -94,6 +94,11 @@ def _clamp_engine_fields(data: dict) -> dict:
     )
 
     clamped = dict(data)
+    if "m4b_bitrate" in clamped and clamped["m4b_bitrate"] not in ("64k", "96k", "128k"):
+        logger.warning(
+            "Ignoring invalid m4b_bitrate %r; falling back to 96k",
+            clamped.pop("m4b_bitrate"),
+        )
     profile = clamped.get("engine_profile")
     if profile is not None and profile not in list_profiles():
         logger.warning("Ignoring unknown engine_profile %r; falling back to VieNeu", profile)

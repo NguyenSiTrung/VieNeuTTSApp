@@ -341,6 +341,38 @@ class TestFinished:
         harness.fake.emit_end_of_media()
         assert released == ["first", "second"]
 
+    def test_end_of_media_clears_player_source_before_release_and_preserves_auto_advance(
+        self, harness, tmp_path
+    ) -> None:
+        events: list[str] = []
+        orig_set_source = harness.fake.setSource
+
+        def record_set_source(url: QUrl) -> None:
+            orig_set_source(url)
+            events.append(f"setSource:{url.toLocalFile()}")
+
+        harness.fake.setSource = record_set_source
+        harness.controller.finished.connect(lambda: events.append("finished"))
+
+        wav = tmp_path / "one.wav"
+        harness.controller.play(str(wav), on_released=lambda: events.append("released"))
+        events.clear()
+
+        harness.fake.emit_end_of_media()
+        assert harness.fake.sources[-1] == QUrl()
+        assert events == ["finished", "setSource:", "released"]
+
+        # If a finished listener chains directly into another track (auto-advance),
+        # EndOfMedia must not clobber the new source with an empty QUrl().
+        harness2 = PlaybackHarness()
+        next_wav = tmp_path / "two.wav"
+        harness2.controller.finished.connect(lambda: harness2.controller.play(str(next_wav)))
+        harness2.controller.play(str(wav))
+        harness2.fake.playbackStateChanged.emit("StoppedState")
+        harness2.fake.emit_end_of_media()
+        assert Path(harness2.fake.sources[-1].toLocalFile()) == next_wav
+        assert harness2.controller.state == "playing"
+
 
 class TestErrors:
     def test_backend_errors_surface_and_release_once(self, harness, tmp_path) -> None:
@@ -426,6 +458,8 @@ class TestRealPlayerSmoke:
         wav = write_wav_file(np.zeros(3 * 48_000, dtype=np.float32), tmp_path / "smoke.wav")
         controller = PlaybackController()
         controller.play(str(wav))
+        assert controller._player is not None
+        assert controller._player.parent() is controller
         reached = wait_until(
             lambda: controller.state == "playing" or controller.errorText != "", timeout=8.0
         )

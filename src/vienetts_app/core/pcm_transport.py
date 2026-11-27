@@ -62,7 +62,11 @@ class BoundedPcmTransport:
             return self._available()
 
     def ready_for_prebuffer(self, minimum_bytes: int = PREBUFFER_BYTES) -> bool:
-        return self.available_bytes() >= minimum_bytes
+        with self._condition:
+            available = self._available()
+            return available >= minimum_bytes or (
+                self._closed and not self._discarded and available > 0
+            )
 
     def put(self, payload: memoryview, *, cancelled: Callable[[], bool] = lambda: False) -> None:
         remaining = memoryview(payload)
@@ -190,9 +194,25 @@ class BoundedPcmTransport:
             self._condition.notify_all()
             return count
 
+    def discard_available(self) -> int:
+        """Drop all currently buffered bytes without closing the transport."""
+        with self._condition:
+            dropped = self._available()
+            if dropped:
+                self._buffer.clear()
+                self._offset = 0
+                self._condition.notify_all()
+            return dropped
+
     def take(self, maximum_bytes: int) -> bytes:
         with self._condition:
-            count = min(max(0, maximum_bytes), self._available())
+            available = self._available()
+            if available == 0 and self._closed:
+                raise TransportClosed("transport closed")
+            bounded = max(0, maximum_bytes)
+            aligned_max = bounded - (bounded % FRAME_BYTES)
+            count = min(aligned_max, available)
+            count -= count % FRAME_BYTES
             if count:
                 start = self._offset
                 # One copy: slicing a bytearray copies, and bytes() would copy
@@ -206,7 +226,7 @@ class BoundedPcmTransport:
                     self._offset = 0
                 self._condition.notify_all()
                 return data
-            if self._closed:
+            if self._closed and available < FRAME_BYTES:
                 raise TransportClosed("transport closed")
             return b""
 

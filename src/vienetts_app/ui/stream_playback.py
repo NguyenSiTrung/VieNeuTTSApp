@@ -69,7 +69,11 @@ from typing import Any
 
 from PySide6.QtCore import Property, QIODevice, QObject, QTimer, Signal
 
-from vienetts_app.core.pcm_transport import BoundedPcmTransport, TransportClosed
+from vienetts_app.core.pcm_transport import (
+    FRAME_BYTES,
+    BoundedPcmTransport,
+    TransportClosed,
+)
 from vienetts_app.core.performance import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
@@ -219,7 +223,9 @@ class TransportIODevice(QIODevice):
 
     def _output_bytes(self) -> int:
         available = self._transport.available_bytes()
-        return (available // 4) * 2 if self._int16 else available
+        if self._int16:
+            return (available // FRAME_BYTES) * 2
+        return (available // FRAME_BYTES) * FRAME_BYTES
 
     def bytesAvailable(self) -> int:  # noqa: N802 - Qt naming
         return self._output_bytes() + super().bytesAvailable()
@@ -232,8 +238,14 @@ class TransportIODevice(QIODevice):
 
     def _take(self, max_size: int) -> bytes:
         if not self._int16:
-            return self._transport.take(max_size)
-        data = self._transport.take((max_size // 2) * 4)
+            aligned = (max_size // FRAME_BYTES) * FRAME_BYTES
+            if aligned <= 0:
+                return b""
+            return self._transport.take(aligned)
+        aligned_float_bytes = (max_size // 2) * FRAME_BYTES
+        if aligned_float_bytes <= 0:
+            return b""
+        data = self._transport.take(aligned_float_bytes)
         return _float32_to_int16(data) if data else b""
 
     def readData(self, maxSize: int) -> bytes:  # noqa: N802 - Qt naming
@@ -315,9 +327,12 @@ class StreamPlaybackController(QObject):
     def start(self, transport: BoundedPcmTransport, job_id: str | None = None) -> None:
         """Open playback; the sink starts once the transport holds its prebuffer."""
         self._transport_timer.stop()
-        if self._active:
+        if self._active or self._io is not None:
+            was_active = self._active
             self._shutdown_session()
-            logger.debug("stream restarted mid-session")
+            if was_active:
+                logger.debug("stream restarted mid-session")
+        self._set_error("")
         self._transport = transport
         self._sink_started = False
         self._discard_transport = False
@@ -392,7 +407,6 @@ class StreamPlaybackController(QObject):
             return  # never started — idempotent no-op
         self._performance.mark(self._trace_job_id, "audio_session_stopped")
         self._shutdown_session(discard=discard)
-        self._io = None
         self._set_active(False)
 
     def buffered_drain_ms(self) -> int:
@@ -456,9 +470,39 @@ class StreamPlaybackController(QObject):
             return True
         except Exception:  # noqa: BLE001 - a dead backend must not kill the UI
             logger.exception("starting audio sink failed")
-            self._sink = None
+            self._teardown_sink(stop=False)
             self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
             return False
+
+    def _teardown_sink(self, *, stop: bool) -> None:
+        """Disconnect, optionally stop, schedule deletion, and drop the sink."""
+        sink = self._sink
+        state_handler = self._sink_state_handler
+        self._sink = None
+        self._sink_state_handler = None
+        if sink is None:
+            return
+        state_changed = getattr(sink, "stateChanged", None)
+        if (
+            state_handler is not None
+            and state_changed is not None
+            and hasattr(state_changed, "disconnect")
+        ):
+            with contextlib.suppress(RuntimeError, TypeError, ValueError):
+                state_changed.disconnect(state_handler)
+        error_occurred = getattr(sink, "errorOccurred", None)
+        if error_occurred is not None and hasattr(error_occurred, "disconnect"):
+            with contextlib.suppress(RuntimeError, TypeError, ValueError):
+                error_occurred.disconnect(self._on_sink_error)
+        if stop:
+            try:
+                sink.stop()
+            except Exception:  # noqa: BLE001 - stopping must never raise into the UI
+                logger.exception("stopping audio sink failed")
+        delete_later = getattr(sink, "deleteLater", None)
+        if callable(delete_later):
+            with contextlib.suppress(RuntimeError):
+                delete_later()
 
     def _stop_sink_quietly(self) -> None:
         if self._sink is None:
@@ -479,11 +523,21 @@ class StreamPlaybackController(QObject):
         return name in _RESTART_STATE_NAMES
 
     def _shutdown_session(self, *, discard: bool = True) -> None:
-        """Stop the sink and discard buffered bytes (hard stop, FR-4.2 cancel)."""
+        """Stop the sink, close the transport, and release the session IO device."""
+        self._transport_timer.stop()
         self._stop_sink_quietly()
         if self._transport is not None:
             self._transport.close(discard=discard)
             self._transport = None
+        io = self._io
+        self._io = None
+        if io is not None:
+            with contextlib.suppress(RuntimeError):
+                io.close()
+            with contextlib.suppress(RuntimeError):
+                io.setParent(None)
+            with contextlib.suppress(RuntimeError):
+                io.deleteLater()
         self._sink_started = False
         self._discard_transport = False
         self._consecutive_restarts = 0
@@ -494,19 +548,24 @@ class StreamPlaybackController(QObject):
             return
         # The backlog is never read back once live playback gave up.
         transport.drop_backlog()
+        discard_available = getattr(transport, "discard_available", None)
+        if callable(discard_available):
+            discard_available()
+            return
         while transport.available_bytes():
             try:
-                transport.take(transport.available_bytes())
+                if not transport.take(transport.available_bytes()):
+                    return
             except TransportClosed:
                 return
 
     def _enter_transport_fallback(self) -> None:
         """Keep the producer alive while discarding failed live playback bytes."""
+        self._sink_started = False
+        self._teardown_sink(stop=True)
         if self._transport is None or self._discard_transport:
             return
         self._discard_transport = True
-        self._sink_started = False
-        self._stop_sink_quietly()
         self._discard_available_transport()
         self.livePlaybackFailed.emit()
 

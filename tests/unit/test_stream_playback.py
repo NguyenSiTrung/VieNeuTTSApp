@@ -46,13 +46,16 @@ def wait_until(cond, timeout: float = 3.0, interval: float = 0.01) -> bool:
 
 
 class SignalStub:
-    """Minimal Qt Signal duck-type: connect/emit with synchronous delivery."""
+    """Minimal Qt Signal duck-type: connect/disconnect/emit with synchronous delivery."""
 
     def __init__(self) -> None:
         self._slots: list = []
 
     def connect(self, slot) -> None:
         self._slots.append(slot)
+
+    def disconnect(self, slot) -> None:
+        self._slots.remove(slot)
 
     def emit(self, *args) -> None:
         for slot in list(self._slots):
@@ -99,6 +102,10 @@ class FakeSink:
         self._state = "StoppedState"
         self.stateChanged = StateSignalStub()
         self.errorOccurred = SignalStub()
+        self.delete_later_calls = 0
+
+    def deleteLater(self) -> None:  # noqa: N802 - Qt naming
+        self.delete_later_calls += 1
 
     def start(self, device) -> None:
         self.calls.append("start")
@@ -464,6 +471,113 @@ class TestStartLifecycle:
         harness.fake.stateChanged.emit("SuspendedState")
         assert c.active is True
 
+    def test_short_utterance_under_prebuffer_starts_sink_on_begin_drain(
+        self, harness: Harness
+    ) -> None:
+        samples = np.linspace(-0.5, 0.5, 2_400, dtype=np.float32)  # 50 ms < 150 ms prebuffer
+        raw = samples.astype("<f4").tobytes()
+        assert len(raw) < PREBUFFER_BYTES
+
+        transport = BoundedPcmTransport()
+        harness.controller.start(transport, "s" * 32)
+        transport.put(memoryview(raw))
+        harness.controller.notify_transport_available()
+        assert harness.fake.calls == []  # still waiting for prebuffer
+
+        harness.controller.begin_drain()
+        assert harness.fake.calls == ["start"]
+        assert harness.fake.device is not None
+        assert harness.fake.device.readData(len(raw) + 16) == raw
+        harness.controller.stop()
+
+    def test_transient_sink_error_tears_down_sink_and_recovers_on_next_start(
+        self, qcoreapp
+    ) -> None:
+        sinks: list[FakeSink] = []
+
+        def sink_factory(_fmt):
+            sink = FakeSink()
+            sinks.append(sink)
+            return sink
+
+        controller = StreamPlaybackController(
+            sink_factory=sink_factory,
+            format_factory=FakeFormat,
+        )
+        errors: list[str] = []
+        controller.errorTextChanged.connect(lambda: errors.append(controller.errorText))
+
+        # Session 1 fails mid-stream via errorOccurred → sink disconnected,
+        # scheduled for deletion, and dropped so the next session recovers.
+        t1 = BoundedPcmTransport()
+        controller.start(t1, "1" * 32)
+        t1.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
+        assert len(sinks) == 1
+        sink1 = sinks[0]
+
+        sink1.errorOccurred.emit("FatalError")
+        assert AUDIO_PLAYBACK_UNAVAILABLE in controller.errorText
+        assert controller._sink is None
+        assert sink1.stateChanged._slots == []
+        assert sink1.errorOccurred._slots == []
+        assert sink1.delete_later_calls == 1
+
+        # Session 2 clears stale errorText at start() and builds a fresh sink.
+        t2 = BoundedPcmTransport()
+        controller.start(t2, "2" * 32)
+        assert controller.errorText == ""
+        assert errors[-1] == ""
+        assert len(sinks) == 2
+        sink2 = sinks[1]
+        assert sink2 is not sink1
+
+        # Session 2 fails inside _start_sink(): failed sink is also torn down.
+        sink2.start = lambda _dev: (_ for _ in ()).throw(RuntimeError("device lost"))
+        t2.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
+        assert AUDIO_PLAYBACK_UNAVAILABLE in controller.errorText
+        assert controller._sink is None
+        assert sink2.stateChanged._slots == []
+        assert sink2.errorOccurred._slots == []
+        assert sink2.delete_later_calls == 1
+
+        # Session 3 constructs a healthy sink and plays cleanly.
+        t3 = BoundedPcmTransport()
+        controller.start(t3, "3" * 32)
+        assert controller.errorText == ""
+        assert len(sinks) == 3
+        t3.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
+        assert sinks[2].calls == ["start"]
+        assert sinks[2].device is not None
+        assert sinks[2].device.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
+        controller.stop()
+
+    def test_repeated_sessions_leak_zero_transport_io_devices(self, harness: Harness) -> None:
+        c = harness.controller
+        retired: list[TransportIODevice] = []
+
+        for idx in range(5):
+            harness.open(f"{idx}" * 32)
+            assert len(c.findChildren(TransportIODevice)) == 1
+            assert c._io is not None
+            retired.append(c._io)
+            c.stop()
+            assert c.findChildren(TransportIODevice) == []
+
+        # Mid-session restarts (start() while active) must also clean up the old IO.
+        for idx in range(3):
+            harness.open(f"r{idx}" + "0" * 30)
+            assert len(c.findChildren(TransportIODevice)) == 1
+            assert c._io is not None
+            retired.append(c._io)
+        c.stop()
+        assert c.findChildren(TransportIODevice) == []
+        for io in retired:
+            assert io.isOpen() is False
+            assert io.parent() is None
+
 
 class TestTransportDevice:
     def test_float32_bytes_pass_through_in_order_little_endian(self, harness: Harness) -> None:
@@ -502,6 +616,27 @@ class TestTransportDevice:
         transport.close(discard=True)
         assert device.readData(16) == b""  # closed transport reads empty
 
+    def test_float32_reads_align_to_four_byte_frames(self, qcoreapp) -> None:
+        samples = np.array([1.5, -0.25, 256.75], dtype="<f4")
+        raw = samples.tobytes()
+        transport = BoundedPcmTransport()
+        device = TransportIODevice(transport, int16=False)
+        transport.put(memoryview(raw))
+
+        # Requests smaller than 4 bytes never split a float32 sample.
+        for size in (0, 1, 2, 3):
+            assert device.readData(size) == b""
+        assert device.bytesAvailable() == len(raw)
+
+        # Unaligned requests floor to whole 4-byte float32 frames.
+        first = device.readData(5)
+        second = device.readData(7)
+        third = device.readData(1024)
+        assert len(first) == 4
+        assert len(second) == 4
+        assert len(third) == 4
+        assert first + second + third == raw
+
 
 class FakeInt16Format(FakeFormat):
     """Negotiated Int16 format: sampleFormat() reports Int16, not Float."""
@@ -523,6 +658,7 @@ class TestInt16Fallback:
         assert device.bytesAvailable() == self.RAMP.size * 2
         assert len(device) == self.RAMP.size * 2
         # Odd request sizes round down to whole int16 samples (never half one).
+        assert device.readData(1) == b""
         first = device.readData(5)
         assert first == self.EXPECTED[:2].tobytes()
         rest = device.readData(1024)

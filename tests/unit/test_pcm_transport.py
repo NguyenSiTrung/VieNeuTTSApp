@@ -6,6 +6,7 @@ import tracemalloc
 import pytest
 
 from vienetts_app.core.pcm_transport import (
+    FRAME_BYTES,
     MAX_PCM_BYTES,
     PREBUFFER_BYTES,
     BoundedPcmTransport,
@@ -36,27 +37,27 @@ def test_transport_never_exceeds_capacity_and_cancel_unblocks() -> None:
 
 
 def test_take_wakes_blocked_producer_without_losing_order() -> None:
-    transport = BoundedPcmTransport(capacity_bytes=4)
-    transport.put(memoryview(b"abcd"))
+    transport = BoundedPcmTransport(capacity_bytes=8)
+    transport.put(memoryview(b"abcd1234"))
     complete = threading.Event()
 
     def producer() -> None:
-        transport.put(memoryview(b"ef"))
+        transport.put(memoryview(b"efgh"))
         complete.set()
 
     thread = threading.Thread(target=producer)
     thread.start()
-    assert transport.take(2) == b"ab"
+    assert transport.take(4) == b"abcd"
     assert complete.wait(1)
-    assert transport.take(10) == b"cdef"
+    assert transport.take(10) == b"1234efgh"
     thread.join(1)
 
 
 def test_graceful_close_drains_then_raises() -> None:
     transport = BoundedPcmTransport(capacity_bytes=8)
-    transport.put(memoryview(b"abc"))
+    transport.put(memoryview(b"abcd"))
     transport.close(discard=False)
-    assert transport.take(8) == b"abc"
+    assert transport.take(8) == b"abcd"
     with pytest.raises(TransportClosed):
         transport.take(1)
 
@@ -67,6 +68,47 @@ def test_prebuffer_threshold_is_exact() -> None:
     assert not transport.ready_for_prebuffer()
     transport.put(memoryview(b"x"))
     assert transport.ready_for_prebuffer()
+
+
+def test_ready_for_prebuffer_accepts_gracefully_closed_short_audio() -> None:
+    short = BoundedPcmTransport()
+    short.put(memoryview(b"\x00" * (FRAME_BYTES * 10)))
+    assert not short.ready_for_prebuffer()
+    short.close(discard=False)
+    assert short.ready_for_prebuffer()
+
+    # Empty graceful close has nothing to play; discarded close drops audio.
+    empty = BoundedPcmTransport()
+    empty.close(discard=False)
+    assert not empty.ready_for_prebuffer()
+
+    discarded = BoundedPcmTransport()
+    discarded.put(memoryview(b"\x00" * (FRAME_BYTES * 10)))
+    discarded.close(discard=True)
+    assert not discarded.ready_for_prebuffer()
+
+
+def test_take_aligns_reads_to_float32_frame_bytes() -> None:
+    transport = BoundedPcmTransport(capacity_bytes=32)
+    transport.put(memoryview(b"AAAABBBBCCCC"))
+
+    # Requests smaller than one 4-byte float32 frame never split a sample.
+    for size in (0, 1, 2, 3):
+        assert transport.take(size) == b""
+    assert transport.available_bytes() == 12
+
+    # Unaligned requests floor to a multiple of FRAME_BYTES.
+    assert transport.take(5) == b"AAAA"
+    assert transport.take(7) == b"BBBB"
+    assert transport.available_bytes() == 4
+
+    # On a gracefully closed transport with whole frames left, sub-frame reads
+    # return b"" instead of splitting or raising early.
+    transport.close(discard=False)
+    assert transport.take(3) == b""
+    assert transport.take(6) == b"CCCC"
+    with pytest.raises(TransportClosed):
+        transport.take(1)
 
 
 def test_invalid_capacity_rejected() -> None:
@@ -123,8 +165,8 @@ def test_offer_accepts_up_to_free_capacity_without_blocking() -> None:
     assert transport.max_available_bytes == 8
     assert transport.take(8) == b"12345abc"
     assert transport.offer(memoryview(b"")) == 0
-    assert transport.offer(memoryview(b"zz")) == 2
-    assert transport.take(8) == b"zz"
+    assert transport.offer(memoryview(b"zzzz")) == 4
+    assert transport.take(8) == b"zzzz"
 
 
 class _Stream:
@@ -146,25 +188,25 @@ class _Stream:
 
 
 def test_publish_never_waits_and_backlog_refills_in_order() -> None:
-    transport = BoundedPcmTransport(capacity_bytes=8)
+    transport = BoundedPcmTransport(capacity_bytes=10)
     stream = _Stream(transport)
     assert stream.produce(b"AAAABBBB") == 8
-    assert stream.produce(b"CCCC") == 0  # full: backlogged, the producer moves on
+    assert stream.produce(b"CCCC") == 0  # only 2 free bytes < FRAME_BYTES: backlogged
     assert transport.pending_bytes() == 4
-    assert transport.take(6) == b"AAAABB"
-    # Room exists, but a backlog does: a newer chunk never jumps the queue.
+    assert transport.take(6) == b"AAAA"  # take floors 6 -> 4 whole float32 bytes
+    # Room exists (6 free bytes), but a backlog does: newer chunks never jump the queue.
     assert stream.produce(b"DDDD") == 0
     assert transport.pending_bytes() == 8
-    # Refills move whole frames only (6 free bytes → one 4-byte frame).
+    # Refills move whole frames only (6 free bytes -> one 4-byte frame).
     assert transport.refill() == 4
-    assert transport.take(8) == b"BBCCCC"
+    assert transport.take(8) == b"BBBBCCCC"
     assert transport.refill() == 4
     assert transport.pending_bytes() == 0
     assert transport.refill() == 0
     # Backlog drained: direct delivery resumes.
     assert stream.produce(b"EEEE") == 4
     assert transport.take(16) == b"DDDDEEEE"
-    assert transport.max_available_bytes <= 8
+    assert transport.max_available_bytes <= 10
 
 
 def test_a_graceful_close_waits_for_the_backlog() -> None:

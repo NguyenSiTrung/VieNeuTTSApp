@@ -72,13 +72,13 @@ STATE_PAUSED = "paused"
 BLANK_PATH_MESSAGE = "No audio file to play"
 
 
-def _default_player_factory() -> Any:
+def _default_player_factory(parent: QObject | None = None) -> Any:
     """Production seam: real QMediaPlayer + attached QAudioOutput."""
     # Imported here (not at module top) so merely importing this module and
     # constructing the controller never loads QtMultimedia/backend plugins.
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
-    player = QMediaPlayer()
+    player = QMediaPlayer(parent)
     player.setAudioOutput(QAudioOutput(player))  # child: output dies with player
     return player
 
@@ -138,7 +138,7 @@ class PlaybackController(QObject):
 
     def __init__(self, player_factory: Any | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._player_factory = _default_player_factory if player_factory is None else player_factory
+        self._player_factory = player_factory
         self._player: Any | None = None  # built lazily on first play
         self._state = STATE_STOPPED
         self._source_path = ""
@@ -294,7 +294,11 @@ class PlaybackController(QObject):
         if self._player is not None:
             return self._player
         try:
-            player = self._player_factory()
+            player = (
+                _default_player_factory(self)
+                if self._player_factory is None
+                else self._player_factory()
+            )
         except Exception:  # noqa: BLE001 - playback must never crash the app
             logger.exception("audio player construction failed")
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
@@ -337,8 +341,19 @@ class PlaybackController(QObject):
         if play_id != self._play_id:
             return
         if _enum_name(status) == "EndOfMedia":
+            callback = self._on_released
+            self._on_released = None
             self.finished.emit()
-            self._release_playback()
+            if play_id == self._play_id:
+                self._play_id += 1
+                if self._player is not None:
+                    was_stopped = self._state == STATE_STOPPED
+                    with contextlib.suppress(Exception):
+                        self._player.setSource(QUrl())
+                    if was_stopped and self._state != STATE_STOPPED:
+                        self._state = STATE_STOPPED
+                        self.stateChanged.emit()
+            self._release_callback(callback)
 
     def _on_error_occurred(self, error: Any, error_text: Any, play_id: int) -> None:
         if play_id != self._play_id:

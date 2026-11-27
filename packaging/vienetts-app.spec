@@ -91,6 +91,11 @@ datas = [
     # (source, dest-inside-bundle) — keep the in-package layout app.py expects
     (str(REPO / "src/vienetts_app/ui/qml"), "vienetts_app/ui/qml"),
     (str(REPO / "src/vienetts_app/ui/assets"), "vienetts_app/ui/assets"),
+    # English UI catalog loaded beside ui/i18n/__init__.py
+    # (``QM_PATH = Path(__file__).parent / "vienetts_en.qm"``): collect_submodules
+    # only reaches Python modules, so without this frozen builds silently fall
+    # back to Vietnamese even when English is selected.
+    (str(REPO / "src/vienetts_app/ui/i18n/vienetts_en.qm"), "vienetts_app/ui/i18n"),
     # The managed-install manifests are data files loaded via
     # ``Path(__file__).with_name(...)`` — collect_submodules does NOT reach
     # them, and a frozen app without them cannot resolve ANY managed Qwen

@@ -148,6 +148,33 @@ jobs:
             exit 1
           fi
 
+      - name: Assert the bundle ships the English translation catalog
+        # FR-8.1: ui/i18n/__init__.py loads vienetts_en.qm beside itself;
+        # without it frozen builds silently fall back to Vietnamese.
+        shell: bash
+        run: |
+          if [ -d dist/VieNeuTTS.app ]; then
+            target=dist/VieNeuTTS.app
+          elif [ -d dist/VieNeuTTS ]; then
+            target=dist/VieNeuTTS
+          else
+            echo "no dist/ bundle tree to inspect — the build step must run first"
+            exit 1
+          fi
+          matches=$(find "$target" -path '*vienetts_app/ui/i18n/vienetts_en.qm' -print)
+          if [ -z "$matches" ]; then
+            echo "the frozen bundle is missing vienetts_app/ui/i18n/vienetts_en.qm under $target"
+            exit 1
+          fi
+          while IFS= read -r qm; do
+            [ -z "$qm" ] && continue
+            if [ ! -f "$qm" ] || [ ! -s "$qm" ]; then
+              echo "bundled English catalog is empty or unreadable: $qm"
+              exit 1
+            fi
+            echo "bundled English catalog: $qm"
+          done <<< "$matches"
+
       - name: Assert the frozen host re-dispatch (no runtime needed)
         # The packaged app must be able to become the Qwen model host by
         # re-dispatching ITSELF (`--qwen-host`): a frozen build has no

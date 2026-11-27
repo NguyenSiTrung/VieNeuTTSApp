@@ -455,17 +455,30 @@ the 2026-10-28 OpenAI-compatible LLM & Whisper API provider hardening track
 (`llm_provider_hardening_20261028`, feature 11), the 2026-10-29 dubbing &
 subtitles hardening track (`dub_asr_diar_hardening_20261029`, feature 11), the
 2026-11-26 BooksReader-compatible audiobook export track
-(`audiobook_booksreader_export_20261126`, feature 6), and bead-driven
+(`audiobook_booksreader_export_20261126`, feature 6), the 2026-11-27 codebase
+hardening/reliability/security/performance audit remediation track
+(`audit_hardening_perf_20261127`, epic `VieNeuTTSApp-tjbm`, 6 phases / 24 tasks
+`1773614..fbc1614`, remediating all 74 verified audit findings and closing
+`VieNeuTTSApp-02pc`, `VieNeuTTSApp-c64z`, and `VieNeuTTSApp-73r3`: native GGUF
+ABI & Qwen IPC/engine/worker safety, `<150 ms` live playback + sink recovery,
+managed-install disk-leak cleanup + legacy pruning + inline SHA-256 + stamped
+`ModelManager`, HTTP redirect/scheme/size-cap/crash/clone security, frozen
+`vienetts_en.qm` packaging & i18n parity gate, WSOLA slow-rate tail & EPUB
+container recursion & multi-part audiobook/batch/Studio hardening, single-pass
+Silero VAD & O(N log N) diarization/ASR sweeps & portrait Display Matrix burn-in,
+partitioned `QThreadPool` lanes + `AppController` offloads/shutdown cancellation,
+and QML lazy Canvases / `StudioTab` `ListView` virtualization / Canvas timeline /
+`QwenInstallCards` `DictListModel` / lazy `SubtitleVideoPreview`), and bead-driven
 batches (incl. `VieNeuTTSApp-2ifr` diarization hardening and `VieNeuTTSApp-4mqj`
-test-runtime reduction). All 18 conductor tracks are complete and archived under
-`conductor/archive/`. Current app version 0.4.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1493
-items collected / 1474 selected (19 benchmarks deselected via
-`-m 'not benchmark'`; `-m "not slow"` → 1458, `-m "not slow and not benchmark"`
-→ 1439; verified live 2026-11-27 with `pytest --collect-only -q`). Latest gate
-(2026-11-27 refresh): `ruff check .` passes, `ruff format --check .` passes
-(210 files), and `scripts/update_i18n.sh` is 100% clean (1301/1301 finished, 0
-unfinished). Full `pytest` on this 18-core host runs in ~24–43 s wall under
+test-runtime reduction). 18 archived tracks + 1 completed track (`audit_hardening_perf_20261127`). Current app version 0.4.0; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1709
+items collected / 1690 selected (19 benchmarks deselected via
+`-m 'not benchmark'`; `-m "not slow"` → 1674, `-m "not slow and not benchmark"`
+→ 1655; verified live 2026-11-27 with `pytest --collect-only -q`). Latest gate
+(2026-11-27 post-`audit_hardening_perf_20261127`): `ruff check .` passes,
+`ruff format --check .` passes (211 files), `scripts/update_i18n.sh` is 100%
+clean (1303/1303 finished, 0 unfinished), `pytest -m benchmark` passes 19/19,
+and full `pytest -n 4` passes 1679 / 5 skipped / 0 regressions. Full `pytest` on this 18-core host runs in ~24–43 s wall under
 `-n auto --dist worksteal` after `VieNeuTTSApp-4mqj` (`1542053` + `5eb6f85`)
 split the 12 giant smoke items (`test_ui_tabs.py`, `test_ui_shell.py`,
 `test_ui_studio.py`) into smaller scenario-group fixtures and fixed the

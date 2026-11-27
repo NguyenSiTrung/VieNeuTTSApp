@@ -52,3 +52,9 @@ under `conductor/archive/`.
 ---
 
 <!-- Archived: audiobook_booksreader_export_20261126 (BooksReader-Compatible Audiobook Export — rich OPF metadata & EPUB 2/3 cover extraction/persistence/legacy fallback, pure-Python ID3v2.4.0 tagging + streaming multi-part MP3 chapter merge & book subfolder layout while keeping WAV unchanged, Narrated EPUB 3 Media Overlays Tier T0 enforcing ≤4,000 <par> / ≤700 KB XML caps with DTD-free XHTML 5 / SMIL 3.0 & ZIP_STORED MP3s, Single-File M4B Tier T1 via managed/PATH ffmpeg + FFMETADATA1 chapters + WebP/GIF→PNG cover conversion + configurable m4b_bitrate 64k/96k/128k, AudiobookTab export menu + cancelExport() + shelf cover thumbnails, and full vi/en i18n 1301/1301; 5 phases / 12 tasks complete 2026-11-26, commits 4bdcc67..5b907d8; beads epic VieNeuTTSApp-2qnl closed; 9 patterns elevated), archived 2026-11-27 → ./archive/audiobook_booksreader_export_20261126/ -->
+
+---
+
+## [x] Track: Codebase Hardening, Reliability, Security & Performance — Audit Remediation
+*Link: [./conductor/tracks/audit_hardening_perf_20261127/](./conductor/tracks/audit_hardening_perf_20261127/)*
+*Priority: High · Execution: Parallel · Beads Epic: `VieNeuTTSApp-tjbm` (closed; 6 phases, 24 tasks complete `1773614..fbc1614`; closed `VieNeuTTSApp-02pc`, `VieNeuTTSApp-c64z`, `VieNeuTTSApp-73r3`)*

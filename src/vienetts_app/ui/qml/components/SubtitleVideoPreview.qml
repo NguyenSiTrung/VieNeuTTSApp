@@ -54,21 +54,32 @@ AppCard {
     property bool userCollapseOverride: false
     property bool collapsed: false
     property bool forceFallbackError: false
+    readonly property var _player: mediaPlayerLoader.item
+    readonly property bool playerMounted: Boolean(mediaPlayerLoader.item)
     readonly property bool hasDecodeError: root.forceFallbackError
-        || mediaPlayer.error !== MediaPlayer.NoError
+        || Boolean(root._player && root._player.error !== MediaPlayer.NoError)
 
     property int _lastRequestedPositionMs: 0
-    property int _cueRevision: 0
+    property int _cuesRevision: 0
+    property int _activeCueRevision: 0
+    // Non-notifying cache paired with _activeCueRevision so activeCueChanged
+    // triggers exactly one activeCueRow evaluation (and zero cue-list duration
+    // recomputations).
+    property var _activeCueCache: ({ index: -1 })
     property bool _released: false
     property bool _audioOutputRequested: false
+    readonly property int _dubSyncDriftThresholdMs: 300
+    readonly property int _dubSyncSeekCooldownMs: 400
+    property double _lastDubSeekAtMs: 0
 
-    readonly property string mediaSourceString: mediaPlayer.source.toString()
+    readonly property string mediaSourceString: root._player
+        ? root._player.source.toString() : ""
     readonly property bool isPlaying: root.audioMode === "dub"
         ? root.dubPlayerState === "playing"
-        : mediaPlayer.playbackState === MediaPlayer.PlayingState
+        : Boolean(root._player && root._player.playbackState === MediaPlayer.PlayingState)
 
     readonly property int _inferredCuesDurationMs: {
-        const _rev = root._cueRevision;
+        const _rev = root._cuesRevision;
         if (!root.available)
             return 0;
         const m = subtitleController.cueModel;
@@ -89,15 +100,15 @@ AppCard {
         return 0;
     }
 
-    readonly property int effectiveDurationMs: mediaPlayer.duration > 0
-        ? mediaPlayer.duration
+    readonly property int effectiveDurationMs: (root._player && root._player.duration > 0)
+        ? root._player.duration
         : (root.dubDurationMs > 0 ? root.dubDurationMs : root._inferredCuesDurationMs)
 
     readonly property int displayPositionMs: (root.audioMode === "dub"
         && root.dubPlayerState === "playing")
         ? root.dubPositionMs
-        : (mediaPlayer.duration > 0 && mediaPlayer.position > 0
-            ? mediaPlayer.position : root._lastRequestedPositionMs)
+        : (root._player && root._player.duration > 0 && root._player.position > 0
+            ? root._player.position : root._lastRequestedPositionMs)
 
     function syncAutoCollapse() {
         if (!root.userCollapseOverride)
@@ -108,13 +119,29 @@ AppCard {
     onStageNameChanged: syncAutoCollapse()
     onVideoUrlChanged: syncSourceFromUrl()
     onHasVideoChanged: syncSourceFromUrl()
+    onAvailableChanged: syncActiveCueIndex()
+    onVisibleChanged: {
+        if (!visible)
+            pauseVideo();
+    }
+
+    function syncActiveCueIndex() {
+        root._activeCueCache.index = root.available ? Number(subtitleController.activeCue) : -1;
+        root._activeCueRevision += 1;
+    }
 
     onDubPositionMsChanged: {
         if (root.audioMode === "dub" && root.dubPlayerState === "playing") {
             root._lastRequestedPositionMs = root.dubPositionMs;
-            if (mediaPlayer.source.toString() !== ""
-                    && Math.abs(mediaPlayer.position - root.dubPositionMs) > 120) {
-                mediaPlayer.position = root.dubPositionMs;
+            const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+            if (player && player.source.toString() !== ""
+                    && Math.abs(player.position - root.dubPositionMs)
+                        > root._dubSyncDriftThresholdMs) {
+                const now = Date.now();
+                if (now - root._lastDubSeekAtMs >= root._dubSyncSeekCooldownMs) {
+                    root._lastDubSeekAtMs = now;
+                    player.position = root.dubPositionMs;
+                }
             }
         }
     }
@@ -122,7 +149,10 @@ AppCard {
     Component.onCompleted: {
         syncAutoCollapse();
         syncSourceFromUrl();
+        syncActiveCueIndex();
     }
+
+    Component.onDestruction: releaseVideo()
 
     function cueAt(idx) {
         if (!root.available || idx < 0)
@@ -150,10 +180,11 @@ AppCard {
     }
 
     readonly property var activeCueRow: {
-        const _rev = root._cueRevision;
+        const _cuesRev = root._cuesRevision;
+        const _activeRev = root._activeCueRevision;
         if (!root.available)
             return null;
-        const idx = subtitleController.activeCue;
+        const idx = root._activeCueCache.index;
         if (idx >= 0) {
             const direct = root.cueAt(idx);
             if (direct)
@@ -176,62 +207,98 @@ AppCard {
         return mm + ":" + ss;
     }
 
+    function pauseVideo() {
+        const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+        if (player && player.playbackState === MediaPlayer.PlayingState)
+            player.pause();
+    }
+
     function seekVideoTo(ms) {
         const target = Math.max(0, Math.round(Number(ms || 0)));
         root._lastRequestedPositionMs = target;
-        if (mediaPlayer.source.toString() !== "")
-            mediaPlayer.position = target;
+        const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+        if (player && player.source.toString() !== "")
+            player.position = target;
     }
 
     function releaseVideo() {
+        const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+        if (player) {
+            player.stop();
+            player.source = "";
+        }
         root._released = true;
-        mediaPlayer.stop();
-        mediaPlayer.source = "";
+        root._audioOutputRequested = false;
+        root._lastDubSeekAtMs = 0;
     }
 
     function syncSourceFromUrl() {
-        if (!root.hasVideo || root.videoUrl === "") {
-            mediaPlayer.stop();
-            mediaPlayer.source = "";
+        if (!root.hasVideo) {
+            const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+            if (player) {
+                player.stop();
+                player.source = "";
+            }
+            root._lastDubSeekAtMs = 0;
             return;
         }
         root._released = false;
-        if (mediaPlayer.source.toString() !== root.videoUrl)
-            mediaPlayer.source = root.videoUrl;
+        root._lastDubSeekAtMs = 0;
+        const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+        if (!player)
+            return;
+        if (root.videoUrl === "") {
+            player.stop();
+            player.source = "";
+        } else if (player.source.toString() !== root.videoUrl) {
+            player.source = root.videoUrl;
+        }
     }
 
     Loader {
         id: audioOutputLoader
 
-        active: root._audioOutputRequested && !root.audioMuted
+        active: mediaPlayerLoader.active && root._audioOutputRequested && !root.audioMuted
         sourceComponent: AudioOutput {
             muted: root.audioMuted
         }
     }
 
-    MediaPlayer {
-        id: mediaPlayer
+    Loader {
+        id: mediaPlayerLoader
 
-        audioOutput: audioOutputLoader.item
-        videoOutput: videoOutput
+        objectName: "subtitleVideoPlayerLoader"
+        active: root.hasVideo && !root._released
+        sourceComponent: MediaPlayer {
+            id: mediaPlayer
 
-        onMediaStatusChanged: {
-            if (mediaPlayer.mediaStatus === MediaPlayer.LoadedMedia
-                    || mediaPlayer.mediaStatus === MediaPlayer.BufferedMedia) {
-                if (root._lastRequestedPositionMs > 0
-                        && Math.abs(mediaPlayer.position - root._lastRequestedPositionMs) > 50) {
-                    mediaPlayer.position = root._lastRequestedPositionMs;
+            audioOutput: audioOutputLoader.item
+            videoOutput: videoOutput
+            source: root.hasVideo && !root._released ? root.videoUrl : ""
+
+            Component.onDestruction: {
+                stop();
+                source = "";
+            }
+
+            onMediaStatusChanged: {
+                if (mediaStatus === MediaPlayer.LoadedMedia
+                        || mediaStatus === MediaPlayer.BufferedMedia) {
+                    if (root._lastRequestedPositionMs > 0
+                            && Math.abs(position - root._lastRequestedPositionMs) > 50) {
+                        position = root._lastRequestedPositionMs;
+                    }
                 }
             }
-        }
 
-        onPositionChanged: {
-            if (root.audioMode === "source"
-                    && mediaPlayer.playbackState === MediaPlayer.PlayingState) {
-                root._lastRequestedPositionMs = mediaPlayer.position;
-                if (root.available
-                        && typeof subtitleController.syncActiveCueFromVideo === "function") {
-                    subtitleController.syncActiveCueFromVideo(mediaPlayer.position);
+            onPositionChanged: {
+                if (root.audioMode === "source"
+                        && playbackState === MediaPlayer.PlayingState) {
+                    root._lastRequestedPositionMs = position;
+                    if (root.available
+                            && typeof subtitleController.syncActiveCueFromVideo === "function") {
+                        subtitleController.syncActiveCueFromVideo(position);
+                    }
                 }
             }
         }
@@ -275,8 +342,7 @@ AppCard {
                             subtitleController.pause();
                     } else if (root.hasTrack) {
                         root.preferredAudioMode = "dub";
-                        if (mediaPlayer.playbackState === MediaPlayer.PlayingState)
-                            mediaPlayer.pause();
+                        root.pauseVideo();
                     }
                 }
             }
@@ -436,16 +502,20 @@ AppCard {
                             subtitleController.play();
                         return;
                     }
-                    if (mediaPlayer.playbackState === MediaPlayer.PlayingState) {
-                        mediaPlayer.pause();
+                    let player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+                    if (player && player.playbackState === MediaPlayer.PlayingState) {
+                        player.pause();
                     } else {
                         if (typeof subtitleController.notifyVideoPreviewPlaying === "function")
                             subtitleController.notifyVideoPreviewPlaying();
                         root.preferredAudioMode = "source";
                         root._audioOutputRequested = true;
-                        if (mediaPlayer.source.toString() === "" && root.videoUrl !== "")
-                            root.syncSourceFromUrl();
-                        mediaPlayer.play();
+                        if (root.hasVideo && root._released)
+                            root._released = false;
+                        root.syncSourceFromUrl();
+                        player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+                        if (player)
+                            player.play();
                     }
                 }
             }
@@ -461,7 +531,6 @@ AppCard {
                 disabledReason: root.busyReason
                 from: 0
                 to: Math.max(1000, root.effectiveDurationMs)
-                value: pressed ? value : Math.min(to, Math.max(0, root.displayPositionMs))
                 onMoved: {
                     const target = Math.round(value);
                     root.seekVideoTo(target);
@@ -471,6 +540,14 @@ AppCard {
                         else if (typeof subtitleController.syncActiveCueFromVideo === "function")
                             subtitleController.syncActiveCueFromVideo(target);
                     }
+                }
+
+                Binding {
+                    target: scrubSlider
+                    property: "value"
+                    value: Math.min(scrubSlider.to, Math.max(0, root.displayPositionMs))
+                    when: !scrubSlider.pressed
+                    restoreMode: Binding.RestoreNone
                 }
             }
 
@@ -504,7 +581,7 @@ AppCard {
 
         function onVideoSeekRequested(ms) {
             root.seekVideoTo(ms);
-            root._cueRevision += 1;
+            root._activeCueRevision += 1;
         }
 
         function onVideoReleaseRequested() {
@@ -527,24 +604,46 @@ AppCard {
             if (subtitleController.playerState === "playing") {
                 if (root.hasTrack) {
                     root.preferredAudioMode = "dub";
+                    if (root.hasVideo && root._released)
+                        root._released = false;
+                    root._lastDubSeekAtMs = 0;
                     root.seekVideoTo(root.dubPositionMs);
-                    if (mediaPlayer.source.toString() !== "" && !root.hasDecodeError)
-                        mediaPlayer.play();
-                } else if (mediaPlayer.playbackState === MediaPlayer.PlayingState) {
-                    mediaPlayer.pause();
+                    const player = mediaPlayerLoader ? mediaPlayerLoader.item : null;
+                    if (player && player.source.toString() !== "" && !root.hasDecodeError)
+                        player.play();
+                } else {
+                    root.pauseVideo();
                 }
-            } else if (root.audioMode === "dub"
-                    && mediaPlayer.playbackState === MediaPlayer.PlayingState) {
-                mediaPlayer.pause();
+            } else {
+                root._lastDubSeekAtMs = 0;
+                if (root.audioMode === "dub")
+                    root.pauseVideo();
             }
         }
 
         function onActiveCueChanged() {
-            root._cueRevision += 1;
+            root.syncActiveCueIndex();
         }
 
         function onCuesChanged() {
-            root._cueRevision += 1;
+            root._cuesRevision += 1;
+        }
+
+        function onCueModelChanged() {
+            root._cuesRevision += 1;
+        }
+    }
+
+    Connections {
+        target: typeof bridge !== "undefined" && bridge !== null ? bridge : null
+        ignoreUnknownSignals: true
+
+        function onCurrentTabChanged() {
+            if (typeof bridge !== "undefined" && bridge !== null
+                    && typeof bridge.currentTab === "string"
+                    && bridge.currentTab !== "subtitles") {
+                root.pauseVideo();
+            }
         }
     }
 }

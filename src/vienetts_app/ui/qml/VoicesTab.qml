@@ -70,6 +70,14 @@ Item {
     readonly property bool filtering: genderFilter !== "all" || styleFilter !== ""
         || searchKey !== ""
 
+    Timer {
+        id: searchDebounce
+
+        objectName: "voicesSearchDebounce"
+        interval: 150
+        onTriggered: root.searchText = searchField.text
+    }
+
     // ── catalog ───────────────────────────────────────────────────────────
     readonly property var presetGroups: {
         const groups = EngineState.voiceGroups;
@@ -241,9 +249,11 @@ Item {
     }
 
     function clearFilters() {
+        searchDebounce.stop();
         genderFilter = "all";
         styleFilter = "";
         searchField.text = "";
+        searchText = "";
     }
 
     function initials(name) {
@@ -540,7 +550,23 @@ Item {
                                     padding: 0
                                     background: null
                                     Accessible.name: qsTr("Tìm giọng đọc")
-                                    onTextChanged: root.searchText = text
+                                    onTextChanged: {
+                                        if (text === "") {
+                                            searchDebounce.stop();
+                                            root.searchText = "";
+                                        } else if (activeFocus) {
+                                            searchDebounce.restart();
+                                        } else {
+                                            searchDebounce.stop();
+                                            root.searchText = text;
+                                        }
+                                    }
+                                    onEditingFinished: {
+                                        if (searchDebounce.running) {
+                                            searchDebounce.stop();
+                                            root.searchText = text;
+                                        }
+                                    }
                                 }
 
                                 AppIconButton {
@@ -549,7 +575,11 @@ Item {
                                     iconKind: "close"
                                     tooltipText: qsTr("Xóa tìm kiếm")
                                     accessibleLabel: tooltipText
-                                    onClicked: searchField.text = ""
+                                    onClicked: {
+                                        searchDebounce.stop();
+                                        searchField.text = "";
+                                        root.searchText = "";
+                                    }
                                 }
                             }
                         }

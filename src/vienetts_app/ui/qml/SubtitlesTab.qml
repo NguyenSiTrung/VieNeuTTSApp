@@ -174,11 +174,19 @@ Pane {
         id: projectsDialog
 
         objectName: "subtitleProjectsDialog"
+        readonly property real maxDialogHeight: Math.max(
+            240,
+            (Overlay.overlay ? Overlay.overlay.height : 420) - Theme.spacingXxl * 2
+        )
         modal: true
         focus: true
         anchors.centerIn: Overlay.overlay
         width: Math.min((Overlay.overlay ? Overlay.overlay.width : 560) - Theme.spacingXl * 2, 560)
-        padding: Theme.spacingLg
+        height: Math.min(implicitHeight, maxDialogHeight)
+        leftPadding: Theme.spacingLg
+        rightPadding: Theme.spacingLg
+        topPadding: Theme.spacingMd
+        bottomPadding: Theme.spacingMd
 
         // FR-6.1: the rows are a cache keyed by each project.json's stat;
         // opening the picker rescans on a worker (only changed files parse).
@@ -219,77 +227,134 @@ Pane {
                 wrapMode: Text.Wrap
             }
 
-            Repeater {
-                model: root.subtitleAvailable ? subtitleController.projects : []
+            ScrollView {
+                id: projectsScrollView
 
-                delegate: RowLayout {
-                    required property var modelData
+                objectName: "subtitleProjectsScrollView"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredHeight: projectsListCol.implicitHeight
+                Layout.minimumHeight: 0
+                visible: !root.subtitleAvailable || subtitleController.projectCount > 0
+                contentWidth: availableWidth
+                clip: true
 
-                    objectName: "subtitleProjectRow"
-                    Layout.fillWidth: true
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ScrollBar.vertical: ScrollBar {
+                    id: projectsScrollBar
+
+                    objectName: "subtitleProjectsScrollBar"
+                    implicitWidth: 8
+                    policy: projectsScrollView.contentHeight > projectsScrollView.height + 1
+                        ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                    contentItem: Rectangle {
+                        radius: 4
+                        color: Theme.border
+                        opacity: 0.7
+                    }
+                    background: Rectangle {
+                        radius: 4
+                        color: "transparent"
+                    }
+                }
+
+                ColumnLayout {
+                    id: projectsListCol
+
+                    width: Math.max(
+                        1,
+                        projectsScrollView.availableWidth
+                            - (projectsScrollBar.visible
+                                ? projectsScrollBar.width + Theme.spacingXs : 0)
+                    )
                     spacing: Theme.spacingSm
 
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
+                    Repeater {
+                        model: root.subtitleAvailable ? subtitleController.projects : []
 
-                        Label {
+                        delegate: RowLayout {
+                            required property var modelData
+
+                            objectName: "subtitleProjectRow"
                             Layout.fillWidth: true
-                            text: modelData.title || modelData.id
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: modelData.active ? Theme.fontWeightMedium
-                                : Theme.fontWeightRegular
-                            elide: Text.ElideRight
-                        }
+                            spacing: Theme.spacingSm
 
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("%1 phụ đề · %2").arg(modelData.cueCount).arg(
-                                modelData.rendered ? qsTr("đã tạo âm thanh")
-                                    : qsTr("chưa tạo âm thanh"))
-                                + (modelData.modifiedAt ? " · " + modelData.modifiedAt.slice(0, 10) : "")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-                    }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 1
 
-                    AppButton {
-                        objectName: "subtitleOpenProjectButton"
-                        variant: modelData.active ? "secondary" : "quiet"
-                        size: "sm"
-                        text: modelData.active ? qsTr("Đang mở") : qsTr("Mở")
-                        enabled: !modelData.active
-                        onClicked: {
-                            if (root.subtitleAvailable
-                                    && subtitleController.openProject(modelData.id))
-                                projectsDialog.close();
-                        }
-                    }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: modelData.title || modelData.id
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: modelData.active ? Theme.fontWeightMedium
+                                        : Theme.fontWeightRegular
+                                    elide: Text.ElideRight
+                                }
 
-                    AppIconButton {
-                        objectName: "subtitleDeleteProjectButton"
-                        size: "sm"
-                        iconKind: "close"
-                        tooltipText: qsTr("Xóa dự án này")
-                        accessibleLabel: tooltipText
-                        // FR-1.1: never delete under a running AI op, render
-                        // or export (busyOwner is "" only while idle).
-                        enabled: !root.subtitleAvailable || !subtitleController.busyOwner
-                        onClicked: {
-                            root.pendingDeleteProjectId = modelData.id;
-                            deleteProjectDialog.title = qsTr("Xóa '%1'?").arg(
-                                modelData.title || modelData.id);
-                            deleteProjectDialog.open();
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: qsTr("%1 phụ đề · %2").arg(modelData.cueCount).arg(
+                                        modelData.rendered ? qsTr("đã tạo âm thanh")
+                                            : qsTr("chưa tạo âm thanh"))
+                                        + (modelData.modifiedAt ? " · " + modelData.modifiedAt.slice(0, 10) : "")
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                            }
+
+                            AppButton {
+                                objectName: "subtitleOpenProjectButton"
+                                variant: modelData.active ? "secondary" : "quiet"
+                                size: "sm"
+                                text: modelData.active ? qsTr("Đang mở") : qsTr("Mở")
+                                enabled: !modelData.active
+                                onClicked: {
+                                    if (root.subtitleAvailable
+                                            && subtitleController.openProject(modelData.id))
+                                        projectsDialog.close();
+                                }
+                            }
+
+                            AppIconButton {
+                                objectName: "subtitleDeleteProjectButton"
+                                size: "sm"
+                                iconKind: "close"
+                                tooltipText: qsTr("Xóa dự án này")
+                                accessibleLabel: tooltipText
+                                // FR-1.1: never delete under a running AI op, render
+                                // or export (busyOwner is "" only while idle).
+                                enabled: !root.subtitleAvailable || !subtitleController.busyOwner
+                                onClicked: {
+                                    root.pendingDeleteProjectId = modelData.id;
+                                    deleteProjectDialog.title = qsTr("Xóa '%1'?").arg(
+                                        modelData.title || modelData.id);
+                                    deleteProjectDialog.open();
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+
+        footer: Item {
+            implicitHeight: projectsFooterRow.implicitHeight + Theme.spacingLg
 
             RowLayout {
-                Layout.fillWidth: true
+                id: projectsFooterRow
+
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                    leftMargin: Theme.spacingLg
+                    rightMargin: Theme.spacingLg
+                    bottomMargin: Theme.spacingLg
+                }
                 spacing: Theme.spacingSm
 
                 Item { Layout.fillWidth: true }

@@ -730,6 +730,7 @@ Pane {
                 spacing: Theme.spacingMd
 
                 Label {
+                    id: cloneBusyLabel
                     objectName: "cloneBusyLabel"
                     text: qsTr("Đang xử lý…")
                     visible: controller.busy
@@ -739,29 +740,14 @@ Pane {
                     font.weight: Theme.fontWeightMedium
                 }
 
-                ProgressBar {
+                AppProgressBar {
                     id: progressBar
                     objectName: "progressBar"
                     visible: controller.busy
                     Layout.fillWidth: true
+                    accessibleLabel: cloneBusyLabel.text
                     value: controller.progress
                     indeterminate: controller.progress === 0.0
-
-                    background: Rectangle {
-                        implicitHeight: 6
-                        radius: 3
-                        color: Theme.surfaceAlt
-                    }
-                    contentItem: Item {
-                        clip: true
-                        Rectangle {
-                            visible: !progressBar.indeterminate
-                            width: progressBar.visualPosition * parent.width
-                            height: parent.height
-                            radius: 3
-                            color: Theme.accent
-                        }
-                    }
                 }
             }
 

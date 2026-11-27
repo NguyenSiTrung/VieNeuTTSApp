@@ -850,32 +850,16 @@ Pane {
                             visible: audiobook.chapterCount > 1
                         }
 
-                        ProgressBar {
+                        AppProgressBar {
                             id: renderProgressBar
 
                             objectName: "renderProgressBar"
                             Layout.fillWidth: true
-                            from: 0
-                            to: 1
+                            accessibleLabel: renderBusyLabel.text
                             value: audiobook.renderProgress
                             // 0% while the model loads / before the first
                             // segment lands — animate so it never looks frozen.
                             indeterminate: audiobook.renderProgress <= 0
-
-                            background: Rectangle {
-                                implicitHeight: 6
-                                radius: 3
-                                color: Theme.surfaceAlt
-                            }
-                            contentItem: Item {
-                                clip: true
-                                Rectangle {
-                                    width: renderProgressBar.visualPosition * parent.width
-                                    height: parent.height
-                                    radius: 3
-                                    color: Theme.accent
-                                }
-                            }
                         }
 
                         Label {
@@ -935,30 +919,14 @@ Pane {
                             font.pixelSize: Theme.fontSizeSm
                         }
 
-                        ProgressBar {
+                        AppProgressBar {
                             id: renderAllProgressBar
 
                             objectName: "renderAllProgressBar"
                             Layout.fillWidth: true
-                            from: 0
-                            to: 1
+                            accessibleLabel: renderAllProgressLabel.text
                             value: audiobook.renderAllTotal > 0
                                 ? audiobook.renderAllDone / audiobook.renderAllTotal : 0
-
-                            background: Rectangle {
-                                implicitHeight: 6
-                                radius: 3
-                                color: Theme.surfaceAlt
-                            }
-                            contentItem: Item {
-                                clip: true
-                                Rectangle {
-                                    width: renderAllProgressBar.visualPosition * parent.width
-                                    height: parent.height
-                                    radius: 3
-                                    color: Theme.accent
-                                }
-                            }
                         }
                     }
 
@@ -1125,30 +1093,14 @@ Pane {
                                     spacing: Theme.spacingSm
                                     visible: chapterRow.isRendering
 
-                                    ProgressBar {
+                                    AppProgressBar {
                                         id: chapterProgressBar
 
                                         objectName: "chapterProgressBar"
                                         Layout.fillWidth: true
-                                        from: 0
-                                        to: 1
+                                        accessibleLabel: chapterRow.modelData.title || renderBusyLabel.text
                                         value: audiobook.renderProgress
                                         indeterminate: audiobook.renderProgress <= 0
-
-                                        background: Rectangle {
-                                            implicitHeight: 4
-                                            radius: 2
-                                            color: Theme.surfaceAlt
-                                        }
-                                        contentItem: Item {
-                                            clip: true
-                                            Rectangle {
-                                                width: chapterProgressBar.visualPosition * parent.width
-                                                height: parent.height
-                                                radius: 2
-                                                color: Theme.accent
-                                            }
-                                        }
                                     }
 
                                     Label {

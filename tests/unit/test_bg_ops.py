@@ -10,11 +10,26 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, QThreadPool  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QRunnable,
+    QThread,
+    QThreadPool,
+)
 
 from vienetts_app.ui.bg_ops import (  # noqa: E402
+    POOL_DOWNLOADS,
+    POOL_EXPORTS,
+    POOL_INTERACTIVE,
     ProgressRelay,
     _OneShotBridge,
+    _OrderedJob,
+    drain_thread_pool,
+    get_thread_pool,
+    run_on_downloads_pool,
+    run_on_exports_pool,
     run_on_thread_pool,
     run_sync,
 )
@@ -130,7 +145,7 @@ def test_bridges_release_work_and_delete_themselves_after_delivery(parent: QObje
     run_sync(_captured_work(1001, refs), done.append, parent, on_error=on_error)
     run_sync(_captured_work(1004, refs), done.append, parent, on_error=on_error)
 
-    assert QThreadPool.globalInstance().waitForDone(10_000)
+    assert drain_thread_pool(10_000) is True
     QCoreApplication.sendPostedEvents()  # deliver every queued completion
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)  # run deleteLater()
 
@@ -219,3 +234,136 @@ def test_sync_ordered_executor_runs_inline() -> None:
     executor.submit(lambda: 1 / 0, seen.append, lambda exc: seen.append(type(exc)))
     assert seen == [7, ZeroDivisionError]
     executor.flush()
+
+
+def test_partitioned_pools_isolate_interactive_from_blocked_downloads_and_exports(
+    parent: QObject,
+) -> None:
+    """FR-5.1 / AC-7: dedicated interactive/downloads/exports pools prevent
+    multi-GB downloads or long ffmpeg muxes from starving fast UI ops."""
+    interactive = get_thread_pool(POOL_INTERACTIVE)
+    downloads = get_thread_pool(POOL_DOWNLOADS)
+    exports = get_thread_pool(POOL_EXPORTS)
+    global_pool = QThreadPool.globalInstance()
+
+    assert len({interactive, downloads, exports, global_pool}) == 4
+    assert get_thread_pool() is interactive
+    assert get_thread_pool(POOL_DOWNLOADS) is downloads
+    assert get_thread_pool(POOL_EXPORTS) is exports
+    assert interactive.maxThreadCount() >= 2
+    assert downloads.maxThreadCount() == 2
+    assert exports.maxThreadCount() == 2
+
+    with pytest.raises(ValueError, match="pool"):
+        get_thread_pool("unknown")
+
+    release = threading.Event()
+    started = threading.Barrier(downloads.maxThreadCount() + exports.maxThreadCount() + 1)
+    bg_done: list[str] = []
+
+    def make_blocker(tag: str) -> Callable[[], str]:
+        def work() -> str:
+            started.wait(timeout=5.0)
+            release.wait(timeout=5.0)
+            return tag
+
+        return work
+
+    for idx in range(downloads.maxThreadCount()):
+        run_on_downloads_pool(make_blocker(f"dl-{idx}"), bg_done.append, parent)
+    for idx in range(exports.maxThreadCount()):
+        run_on_exports_pool(make_blocker(f"exp-{idx}"), bg_done.append, parent)
+
+    try:
+        started.wait(timeout=5.0)  # all download + export threads are saturated
+        interactive_done: list[str] = []
+        run_on_thread_pool(lambda: "fast-default", interactive_done.append, parent)
+        run_on_thread_pool(
+            lambda: "fast-explicit",
+            interactive_done.append,
+            parent,
+            pool=POOL_INTERACTIVE,
+        )
+        assert wait_until(lambda: len(interactive_done) == 2, timeout=2.0, interval=0.005)
+        assert set(interactive_done) == {"fast-default", "fast-explicit"}
+        assert bg_done == []
+    finally:
+        release.set()
+
+    assert drain_thread_pool(5_000) is True
+    QCoreApplication.sendPostedEvents()
+    assert len(bg_done) == downloads.maxThreadCount() + exports.maxThreadCount()
+
+
+def test_drain_thread_pool_waits_for_all_lanes_and_bounds_timeout(parent: QObject) -> None:
+    """FR-5.1: drain_thread_pool drains interactive/downloads/exports within one budget."""
+    gate = threading.Event()
+    completed: list[str] = []
+
+    def wait_tag(tag: str) -> Callable[[], str]:
+        def work() -> str:
+            gate.wait(timeout=5.0)
+            completed.append(tag)
+            return tag
+
+        return work
+
+    run_on_thread_pool(wait_tag("interactive"), lambda _v: None, parent, pool=POOL_INTERACTIVE)
+    run_on_downloads_pool(wait_tag("downloads"), lambda _v: None, parent)
+    run_on_exports_pool(wait_tag("exports"), lambda _v: None, parent)
+
+    t0 = time.monotonic()
+    try:
+        assert drain_thread_pool(120) is False
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0, f"drain exceeded shared budget: {elapsed:.3f}s"
+    finally:
+        gate.set()
+
+    assert drain_thread_pool(5_000) is True
+    assert set(completed) == {"interactive", "downloads", "exports"}
+
+
+def test_run_sync_accepts_pool_lane_and_validates_unknown(parent: QObject) -> None:
+    seen: list[str] = []
+    run_sync(lambda: "dl", seen.append, parent, pool=POOL_DOWNLOADS)
+    run_sync(lambda: "exp", seen.append, parent, pool=POOL_EXPORTS)
+    assert seen == ["dl", "exp"]
+    with pytest.raises(ValueError, match="pool"):
+        run_sync(lambda: "bad", seen.append, parent, pool="invalid-lane")
+
+
+def test_ordered_executor_reuses_module_level_ordered_job_class(qcoreapp) -> None:
+    """FR-5.1: OrderedExecutor.submit() uses module-level _OrderedJob without
+    creating a new QRunnable subclass per submit."""
+    from vienetts_app.ui.bg_ops import OrderedExecutor
+
+    assert issubclass(_OrderedJob, QRunnable)
+    executor = OrderedExecutor()
+    submitted_types: list[type] = []
+    real_start = executor._pool.start
+
+    def spy_start(runnable, *args, **kwargs):
+        submitted_types.append(type(runnable))
+        return real_start(runnable, *args, **kwargs)
+
+    executor._pool.start = spy_start  # type: ignore[method-assign]
+    subclasses_before = len(QRunnable.__subclasses__())
+    refs: list[weakref.ref[_Captured]] = []
+    done: list[int] = []
+    errors: list[str] = []
+
+    for n in range(12):
+        executor.submit(
+            _captured_work(n, refs),
+            done.append,
+            lambda exc: errors.append(str(exc)),
+        )
+
+    executor.flush(5_000)
+    QCoreApplication.sendPostedEvents()
+
+    assert len(done) + len(errors) == 12
+    assert submitted_types == [_OrderedJob] * 12
+    assert len(QRunnable.__subclasses__()) == subclasses_before
+    assert sum(ref() is not None for ref in refs) == 0

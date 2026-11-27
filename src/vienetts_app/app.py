@@ -11,6 +11,7 @@ until the first play — so startup stays model-free (NFR-2.1/NFR-3.1).
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 import signal
 import sys
@@ -215,18 +216,47 @@ class TabPrebuild(QObject):
 
     def __init__(self, win: QQuickWindow) -> None:
         super().__init__(win)
-        self._win = win
+        self._win: QQuickWindow | None = win
+        self._cancelled = False
+        self._connected = True
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(0)
+        self._timer.timeout.connect(self._start)
         win.frameSwapped.connect(self._on_first_frame, Qt.ConnectionType.QueuedConnection)
+
+    def _disconnect_frame_swapped(self, win: QQuickWindow | None) -> None:
+        if not self._connected or win is None:
+            return
+        self._connected = False
+        with contextlib.suppress(RuntimeError, TypeError, AttributeError):
+            win.frameSwapped.disconnect(self._on_first_frame)
+
+    @Slot()
+    def cancel(self) -> None:
+        """Stop any pending prebuild timer and detach from the window."""
+        self._cancelled = True
+        win, self._win = self._win, None
+        self._disconnect_frame_swapped(win)
+        with contextlib.suppress(RuntimeError):
+            self._timer.stop()
 
     @Slot()
     def _on_first_frame(self) -> None:
-        with contextlib.suppress(RuntimeError, TypeError):
-            self._win.frameSwapped.disconnect(self._on_first_frame)
-        QTimer.singleShot(0, self._start)
+        win = self._win
+        if self._cancelled or win is None:
+            return
+        self._disconnect_frame_swapped(win)
+        with contextlib.suppress(RuntimeError):
+            self._timer.start()
 
     @Slot()
     def _start(self) -> None:
-        self._win.setProperty("prebuildTabs", True)
+        win = self._win
+        if self._cancelled or win is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            win.setProperty("prebuildTabs", True)
 
 
 def wait_for_tabs(app: QCoreApplication, window: QObject, timeout_s: float = 20.0) -> bool:
@@ -388,7 +418,125 @@ def _sigint_quit(app: QGuiApplication) -> Iterator[None]:
         yield
     finally:
         signal.signal(signal.SIGINT, previous_handler)
-        wakeup.stop()
+        with contextlib.suppress(RuntimeError):
+            wakeup.stop()
+            wakeup.deleteLater()
+
+
+def _schedule_startup_timer(
+    app: Any,
+    engine: Any,
+    delay_ms: int,
+    callback: Callable[[], Any],
+) -> Any:
+    """Create a tracked single-shot startup timer cancelled on teardown."""
+    timer = QTimer(app)
+    timer.setSingleShot(True)
+    timer.setInterval(delay_ms)
+    timer.timeout.connect(callback)
+    timers: list[Any] | None = getattr(engine, "_startup_timers", None)
+    if timers is None:
+        timers = []
+        engine._startup_timers = timers  # noqa: SLF001 — lifetime anchor for teardown
+    timers.append(timer)
+    timer.start()
+    return timer
+
+
+def _stop_engine_timers(engine: Any, *, delete: bool = False) -> None:
+    """Stop tracked startup/periodic timers and pending tab prebuilds."""
+    timers: list[Any] | None = getattr(engine, "_startup_timers", None)
+    if timers:
+        snapshot = list(timers)
+        if delete:
+            timers.clear()
+        for timer in snapshot:
+            if hasattr(timer, "stop"):
+                with contextlib.suppress(Exception):
+                    timer.stop()
+            if delete and hasattr(timer, "deleteLater"):
+                with contextlib.suppress(Exception):
+                    timer.deleteLater()
+    update_timer = getattr(engine, "_update_timer", None)
+    if update_timer is not None:
+        if hasattr(update_timer, "stop"):
+            with contextlib.suppress(Exception):
+                update_timer.stop()
+        if delete:
+            if hasattr(update_timer, "deleteLater"):
+                with contextlib.suppress(Exception):
+                    update_timer.deleteLater()
+            with contextlib.suppress(Exception):
+                engine._update_timer = None  # noqa: SLF001
+    root_objects_fn = getattr(engine, "rootObjects", None)
+    if callable(root_objects_fn):
+        with contextlib.suppress(Exception):
+            for root in root_objects_fn():
+                prebuild = getattr(root, "_tab_prebuild", None)
+                if prebuild is not None and hasattr(prebuild, "cancel"):
+                    with contextlib.suppress(Exception):
+                        prebuild.cancel()
+
+
+def _shutdown_batch(batch: Any) -> None:
+    """Stop any in-flight batch queue render or preview playback."""
+    if batch is None:
+        return
+    shutdown_fn = getattr(batch, "shutdown", None)
+    if callable(shutdown_fn):
+        with contextlib.suppress(Exception):
+            shutdown_fn()
+        return
+    for method_name in ("cancel", "stopPlay"):
+        fn = getattr(batch, method_name, None)
+        if callable(fn):
+            with contextlib.suppress(Exception):
+                fn()
+
+
+def _shutdown_controller(controller: Any) -> None:
+    """Call ``controller.shutdown(drain_pool=True)`` when supported, else zero-arg."""
+    shutdown_fn = getattr(controller, "shutdown", None)
+    if not callable(shutdown_fn):
+        return
+    accepts_drain_pool = False
+    with contextlib.suppress(ValueError, TypeError):
+        params = inspect.signature(shutdown_fn).parameters
+        accepts_drain_pool = "drain_pool" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    with contextlib.suppress(Exception):
+        if accepts_drain_pool:
+            shutdown_fn(drain_pool=True)
+        else:
+            shutdown_fn()
+
+
+def _release_onnx_sessions() -> None:
+    """Release cached ONNX Runtime audio sessions on teardown."""
+    with contextlib.suppress(Exception):
+        from vienetts_app.core import onnx_audio
+
+        onnx_audio.release_onnx_sessions()
+
+
+def _shutdown_components(engine: Any, *, delete_timers: bool = False) -> None:
+    """Stop startup timers, stop playback/batch, shut down controllers, release ONNX."""
+    _stop_engine_timers(engine, delete=delete_timers)
+    playback = getattr(engine, "_playback", None)
+    stop_playback = getattr(playback, "stop", None)
+    if callable(stop_playback):
+        with contextlib.suppress(Exception):
+            stop_playback()
+    _shutdown_batch(getattr(engine, "_batch", None))
+    for attr in ("_subtitle", "_audiobook"):
+        component = getattr(engine, attr, None)
+        shutdown_fn = getattr(component, "shutdown", None)
+        if callable(shutdown_fn):
+            with contextlib.suppress(Exception):
+                shutdown_fn()
+    _shutdown_controller(getattr(engine, "_controller", None))
+    _release_onnx_sessions()
 
 
 def run_gui() -> int:
@@ -418,12 +566,12 @@ def run_gui() -> int:
     # Dropping the lock releases it: anchor it for the process lifetime.
     app._single_instance_lock = lock  # noqa: SLF001 — lifetime anchor, see comment
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
-    audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
-    subtitle = engine._subtitle  # noqa: SLF001 — anchored by create_app
-    # Clean engine/worker teardown on quit (FR-3 lifecycle).
-    app.aboutToQuit.connect(subtitle.shutdown)
-    app.aboutToQuit.connect(audiobook.shutdown)
-    app.aboutToQuit.connect(controller.shutdown)
+
+    # Clean engine/worker/timer/playback/batch/ONNX teardown on quit (FR-1.5, FR-2.3).
+    def _on_about_to_quit() -> None:
+        _shutdown_components(engine, delete_timers=False)
+
+    app.aboutToQuit.connect(_on_about_to_quit)
 
     # "system" theme tracks the OS palette live (dark↔light without restart):
     # colorSchemeChanged fires on macOS appearance flips, Windows app-mode
@@ -442,30 +590,30 @@ def run_gui() -> int:
     # Hardware detect runs off-thread after first paint: the production
     # detector probes package metadata and nvidia-smi (never a torch import),
     # which must never sit between app launch and the first window.
-    QTimer.singleShot(100, bridge.resolve_engine_note_async)
+    _schedule_startup_timer(app, engine, 100, bridge.resolve_engine_note_async)
     # Torch availability prewarm: same off-thread discipline — the probe
     # behind controller.torchAvailable must never block the GUI thread.
-    QTimer.singleShot(110, controller.resolveTorchAvailabilityAsync)
+    _schedule_startup_timer(app, engine, 110, controller.resolveTorchAvailabilityAsync)
     # Truthful model readiness (Phase 1 Task 4): filesystem-only inspect runs
     # after first paint, alongside the hardware note. create_app itself stays
     # model-free (NFR-3.1) — offscreen tests never see this.
-    QTimer.singleShot(120, controller.refreshModelState)
+    _schedule_startup_timer(app, engine, 120, controller.refreshModelState)
     # Engine-profile readiness (Phase 5 Task 5.1): resolves the ACTIVE
     # profile's device + its model/runtime readiness, off the GUI thread and
     # after first paint. For VieNeu this mirrors the status the line above
     # publishes (the official inspect re-hashes every model file, so it is
     # never run twice); a Qwen profile gets its own install + runtime inspected.
-    QTimer.singleShot(125, controller.refreshProfileState)
+    _schedule_startup_timer(app, engine, 125, controller.refreshProfileState)
     # Managed CUDA readiness is likewise a filesystem-only, post-paint
     # inspection. Local diagnostics, downloads, activation, and torch imports
     # are all explicit user actions and never happen during startup.
-    QTimer.singleShot(130, controller.refreshCudaRuntimeState)
+    _schedule_startup_timer(app, engine, 130, controller.refreshCudaRuntimeState)
     # Silent update check (GitHub Releases, stdlib urllib, ~1 small GET):
     # announces nothing on failure or when current — a dot badge on the
     # Settings nav item + the Settings card surface a newer release.
     # First check 3 s after first paint, then hourly while the app stays
     # open (long studio sessions). Offscreen tests skip this (no net).
-    QTimer.singleShot(3000, controller.checkForUpdatesStartup)
+    _schedule_startup_timer(app, engine, 3000, controller.checkForUpdatesStartup)
     _update_timer = QTimer(app)
     _update_timer.setInterval(3600_000)
     _update_timer.timeout.connect(controller.checkForUpdatesStartup)
@@ -475,11 +623,13 @@ def run_gui() -> int:
     # painted, load the model on the worker thread so the FIRST synthesis
     # click is warm instead of eating the 1.4–1.6 s cold load. create_app
     # itself stays model-free (NFR-3.1) — offscreen tests never see this.
-    QTimer.singleShot(500, controller.prewarm_engine)
+    _schedule_startup_timer(app, engine, 500, controller.prewarm_engine)
     with _sigint_quit(app):
         try:
             return app.exec()
         finally:
+            with contextlib.suppress(Exception):
+                app.aboutToQuit.disconnect(_on_about_to_quit)
             _teardown_qml(app, engine)
 
 
@@ -493,18 +643,7 @@ def _teardown_qml(app: QGuiApplication, engine: QQmlApplicationEngine) -> None:
     "Cannot read property 'x' of null" on every close. Deleting the tree here,
     while every anchor still holds a live object, keeps shutdown silent.
     """
-    for component in (
-        getattr(engine, "_subtitle", None),
-        getattr(engine, "_audiobook", None),
-        getattr(engine, "_controller", None),
-    ):
-        if component is not None and hasattr(component, "shutdown"):
-            with contextlib.suppress(Exception):
-                component.shutdown()
-    timer = getattr(engine, "_update_timer", None)
-    if timer is not None and hasattr(timer, "stop"):
-        with contextlib.suppress(Exception):
-            timer.stop()
+    _shutdown_components(engine, delete_timers=True)
     translator = getattr(engine, "_translator", None)
     if translator is not None:
         with contextlib.suppress(Exception):
@@ -535,6 +674,9 @@ def _teardown_qml(app: QGuiApplication, engine: QQmlApplicationEngine) -> None:
             root._focus_clear_filter = None  # noqa: SLF001
         prebuild = getattr(root, "_tab_prebuild", None)
         if prebuild is not None:
+            if hasattr(prebuild, "cancel"):
+                with contextlib.suppress(Exception):
+                    prebuild.cancel()
             prebuild._win = None  # noqa: SLF001
             root._tab_prebuild = None  # noqa: SLF001
         with contextlib.suppress(Exception):

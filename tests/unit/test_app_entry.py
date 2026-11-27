@@ -255,24 +255,52 @@ class TestCudaRuntimeStartup:
         import vienetts_app.app as app_module
 
         scheduled: list[tuple[int, object]] = []
+        created_timers: list[object] = []
 
         class Signal:
-            def connect(self, _callback) -> None:
-                pass
+            def __init__(self) -> None:
+                self.callbacks: list[object] = []
+
+            def connect(self, callback) -> None:
+                self.callbacks.append(callback)
+
+            def disconnect(self, callback) -> None:
+                if callback in self.callbacks:
+                    self.callbacks.remove(callback)
 
         class Timer:
             def __init__(self, _parent=None) -> None:
                 self.timeout = Signal()
+                self.interval = 0
+                self.single_shot = False
+                self.started = False
+                self.stopped = False
+                self.deleted = False
+                created_timers.append(self)
 
             @staticmethod
-            def singleShot(delay: int, callback) -> None:
-                scheduled.append((delay, callback))
+            def singleShot(_delay: int, _callback) -> None:
+                raise AssertionError("run_gui must track startup timers, not anonymous singleShot")
 
-            def setInterval(self, _milliseconds: int) -> None:
-                pass
+            def setSingleShot(self, single_shot: bool) -> None:
+                self.single_shot = single_shot
 
-            def start(self) -> None:
-                pass
+            def setInterval(self, milliseconds: int) -> None:
+                self.interval = milliseconds
+
+            def start(self, milliseconds: int | None = None) -> None:
+                if milliseconds is not None:
+                    self.interval = milliseconds
+                self.started = True
+                if self.single_shot:
+                    for cb in self.timeout.callbacks:
+                        scheduled.append((self.interval, cb))
+
+            def stop(self) -> None:
+                self.stopped = True
+
+            def deleteLater(self) -> None:
+                self.deleted = True
 
         class App:
             aboutToQuit = Signal()
@@ -340,6 +368,319 @@ class TestCudaRuntimeStartup:
         # Task 5.1: the active engine profile's device + readiness resolve
         # after first paint too — never between launch and the first window.
         assert (125, "refreshProfileState") in callbacks
+        # Every deferred startup timer is tracked on the engine for teardown.
+        startup_timers = getattr(engine, "_startup_timers", None)
+        assert isinstance(startup_timers, list)
+        assert len(startup_timers) == len(scheduled) == 7
+
+
+class TestDeterministicTeardownAndStartupTimers:
+    """FR-1.5 / FR-2.3 / AC-7: tracked startup timers stop before QML teardown
+    and shutdown wires playback, batch, subtitle, audiobook, controller, and ONNX release."""
+
+    def test_tracked_startup_timers_never_fire_after_teardown_qml(self, qcoreapp) -> None:
+        import time as _time
+
+        import vienetts_app.app as app_module
+
+        fired: list[str] = []
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.deleted = False
+
+            def rootObjects(self) -> list[object]:
+                return []
+
+            def deleteLater(self) -> None:
+                self.deleted = True
+
+        engine = FakeEngine()
+        app_module._schedule_startup_timer(qcoreapp, engine, 20, lambda: fired.append("startup"))
+        update_timer = app_module.QTimer(qcoreapp)
+        update_timer.setInterval(20)
+        update_timer.timeout.connect(lambda: fired.append("update"))
+        update_timer.start()
+        engine._update_timer = update_timer
+
+        app_module._teardown_qml(qcoreapp, engine)
+
+        deadline = _time.monotonic() + 0.08
+        while _time.monotonic() < deadline:
+            qcoreapp.processEvents()
+            _time.sleep(0.005)
+
+        assert fired == []
+        assert engine.deleted is True
+        assert getattr(engine, "_startup_timers", []) == []
+
+    def test_tab_prebuild_cancel_stops_pending_timer_before_teardown(self, qcoreapp) -> None:
+        import time as _time
+
+        from PySide6.QtCore import QObject, Signal
+
+        from vienetts_app.app import TabPrebuild
+
+        class FakeWindow(QObject):
+            frameSwapped = Signal()
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.props: list[tuple[str, object]] = []
+
+            def setProperty(self, name: str, value: object) -> bool:
+                self.props.append((name, value))
+                return True
+
+        win = FakeWindow()
+        prebuild = TabPrebuild(win)
+        prebuild._on_first_frame()
+        prebuild.cancel()
+        # Late queued calls after cancel must stay no-ops.
+        prebuild._on_first_frame()
+        prebuild._start()
+
+        deadline = _time.monotonic() + 0.05
+        while _time.monotonic() < deadline:
+            qcoreapp.processEvents()
+            _time.sleep(0.005)
+
+        assert win.props == []
+
+    def test_run_gui_and_teardown_wire_full_shutdown_and_release_onnx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.app as app_module
+        import vienetts_app.core.onnx_audio as onnx_audio_module
+
+        events: list[str] = []
+        stopped_timers: list[int] = []
+        deleted_timers: list[int] = []
+
+        class FakeSignal:
+            def __init__(self) -> None:
+                self._slots: list[object] = []
+
+            def connect(self, fn) -> None:
+                self._slots.append(fn)
+
+            def disconnect(self, fn) -> None:
+                if fn in self._slots:
+                    self._slots.remove(fn)
+
+            def emit(self) -> None:
+                for fn in list(self._slots):
+                    fn()
+
+        class FakeTimer:
+            def __init__(self, _parent=None) -> None:
+                self.timeout = FakeSignal()
+                self.interval = 0
+                self.single_shot = False
+
+            def setSingleShot(self, value: bool) -> None:
+                self.single_shot = value
+
+            def setInterval(self, ms: int) -> None:
+                self.interval = ms
+
+            def start(self, ms: int | None = None) -> None:
+                if ms is not None:
+                    self.interval = ms
+
+            def stop(self) -> None:
+                stopped_timers.append(self.interval)
+                events.append(f"timer.stop:{self.interval}")
+
+            def deleteLater(self) -> None:
+                deleted_timers.append(self.interval)
+
+        class FakeApp:
+            def __init__(self) -> None:
+                self.aboutToQuit = FakeSignal()
+                self._hints = type("Hints", (), {"colorSchemeChanged": FakeSignal()})()
+
+            def styleHints(self):
+                return self._hints
+
+            def exec(self) -> int:
+                self.aboutToQuit.emit()
+                return 0
+
+            def removeTranslator(self, _t) -> None:
+                pass
+
+            def processEvents(self) -> None:
+                pass
+
+        class FakePlayback:
+            def stop(self) -> None:
+                events.append("playback.stop")
+
+        class FakeBatch:
+            def cancel(self) -> None:
+                events.append("batch.cancel")
+
+            def stopPlay(self) -> None:
+                events.append("batch.stopPlay")
+
+        class FakeSubtitle:
+            def shutdown(self) -> None:
+                events.append("subtitle.shutdown")
+
+        class FakeAudiobook:
+            def shutdown(self) -> None:
+                events.append("audiobook.shutdown")
+
+        class FakeController:
+            def shutdown(self, *, drain_pool: bool = True) -> None:
+                events.append(f"controller.shutdown:drain={drain_pool}")
+
+            def resolveTorchAvailabilityAsync(self) -> None:
+                pass
+
+            def refreshModelState(self) -> None:
+                pass
+
+            def refreshProfileState(self) -> None:
+                pass
+
+            def refreshCudaRuntimeState(self) -> None:
+                pass
+
+            def checkForUpdatesStartup(self) -> None:
+                pass
+
+            def prewarm_engine(self) -> None:
+                pass
+
+        class FakeBridge:
+            effectiveTheme = "dark"
+
+            def refreshSystemTheme(self) -> None:
+                pass
+
+            def resolve_engine_note_async(self) -> None:
+                pass
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self._bridge = FakeBridge()
+                self._controller = FakeController()
+                self._playback = FakePlayback()
+                self._batch = FakeBatch()
+                self._audiobook = FakeAudiobook()
+                self._subtitle = FakeSubtitle()
+                self._translator = object()
+                self._focus_clear_filter = object()
+                self.deleted = False
+
+            def rootObjects(self) -> list[object]:
+                return []
+
+            def deleteLater(self) -> None:
+                self.deleted = True
+
+        fake_app = FakeApp()
+        fake_engine = FakeEngine()
+        monkeypatch.setattr(app_module, "QTimer", FakeTimer)
+        monkeypatch.setattr(app_module, "create_app", lambda: (fake_app, fake_engine))
+        monkeypatch.setattr(app_module, "_sigint_quit", lambda _app: nullcontext())
+        monkeypatch.setattr(app_module, "apply_dark_titlebars", lambda _dark: None)
+        monkeypatch.setattr(
+            app_module.QCoreApplication, "sendPostedEvents", staticmethod(lambda *a, **k: None)
+        )
+        monkeypatch.setattr(
+            onnx_audio_module,
+            "release_onnx_sessions",
+            lambda: events.append("onnx.release"),
+        )
+
+        assert app_module.run_gui() == 0
+        assert fake_engine.deleted is True
+        # All 7 startup single-shot timers + 1 hourly update timer were stopped & deleted.
+        assert len(deleted_timers) == 8
+        assert events[0].startswith("timer.stop:")
+        # Order within shutdown: playback + batch + domain controllers ->
+        # controller(drain_pool=True) -> onnx release.
+        first_playback = events.index("playback.stop")
+        first_batch_cancel = events.index("batch.cancel")
+        first_batch_stop = events.index("batch.stopPlay")
+        first_subtitle = events.index("subtitle.shutdown")
+        first_audiobook = events.index("audiobook.shutdown")
+        first_controller = events.index("controller.shutdown:drain=True")
+        first_onnx = events.index("onnx.release")
+        assert first_playback < first_controller < first_onnx
+        assert first_batch_cancel < first_controller
+        assert first_batch_stop < first_controller
+        assert first_subtitle < first_controller
+        assert first_audiobook < first_controller
+        # Retired anchors preserved across teardown (patterns.md line 15).
+        retired = getattr(fake_app, "_retired_qml_anchors", [])
+        for attr in (
+            "_bridge",
+            "_controller",
+            "_playback",
+            "_audiobook",
+            "_batch",
+            "_subtitle",
+            "_translator",
+            "_focus_clear_filter",
+        ):
+            assert getattr(fake_engine, attr) in retired
+
+    def test_teardown_qml_tolerates_minimal_fake_controllers_and_batch_shutdown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.app as app_module
+        import vienetts_app.core.onnx_audio as onnx_audio_module
+
+        calls: list[str] = []
+
+        class MinimalPlayback:
+            pass  # no stop()
+
+        class ShutdownBatch:
+            def shutdown(self) -> None:
+                calls.append("batch.shutdown")
+
+        class ZeroArgController:
+            def shutdown(self) -> None:
+                calls.append("controller.shutdown")
+
+        class MinimalApp:
+            def removeTranslator(self, _t) -> None:
+                pass
+
+            def processEvents(self) -> None:
+                pass
+
+        class MinimalEngine:
+            def __init__(self) -> None:
+                self._playback = MinimalPlayback()
+                self._batch = ShutdownBatch()
+                self._controller = ZeroArgController()
+
+            def rootObjects(self) -> list[object]:
+                return []
+
+            def deleteLater(self) -> None:
+                calls.append("engine.deleteLater")
+
+        monkeypatch.setattr(
+            app_module.QCoreApplication, "sendPostedEvents", staticmethod(lambda *a, **k: None)
+        )
+        monkeypatch.setattr(
+            onnx_audio_module, "release_onnx_sessions", lambda: calls.append("onnx.release")
+        )
+
+        app_module._teardown_qml(MinimalApp(), MinimalEngine())
+        assert calls == [
+            "batch.shutdown",
+            "controller.shutdown",
+            "onnx.release",
+            "engine.deleteLater",
+        ]
 
 
 class TestLanguageBootstrap:

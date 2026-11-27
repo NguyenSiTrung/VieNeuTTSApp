@@ -415,10 +415,14 @@ class NativeQwenSession:
         """Free the native context and detach the log hook; idempotent."""
         self._release_ctx()
         if self._log_cb is not None:
-            # Detach so the library can't call into a torn-down session.
+            # Detach with a typed NULL pointer (ctypes rejects bare None after
+            # _bind_signatures). Keep self._log_cb rooted until detachment
+            # succeeds so native code cannot invoke a freed callback.
+            prev = self._log_cb
             with contextlib.suppress(Exception):
-                self._lib.qt_log_set(None, None)  # type: ignore[arg-type]
-            self._log_cb = None
+                self._lib.qt_log_set(_QtLogCb(0), None)
+                self._log_cb = None
+            del prev
 
     def __enter__(self) -> NativeQwenSession:
         return self
@@ -437,15 +441,23 @@ class NativeQwenSession:
 
     # -- logging ------------------------------------------------------------ #
 
-    def set_log_callback(self, sink: Callable[[str], None]) -> None:
-        """Route native log lines to ``sink``; the callback is session-retained."""
+    def set_log_callback(self, sink: Callable[[str], None] | None) -> None:
+        """Route native log lines to ``sink`` (or detach if ``None``); session-retained."""
+        prev = self._log_cb
+        if sink is None:
+            self._lib.qt_log_set(_QtLogCb(0), None)
+            self._log_cb = None
+            del prev
+            return
 
         def _relay(_level: int, msg: bytes | None, _ud: Any) -> None:
             with contextlib.suppress(Exception):  # a log sink must not break the lib
                 sink(_decode(msg))
 
-        self._log_cb = _QtLogCb(_relay)
-        self._lib.qt_log_set(self._log_cb, None)
+        new_cb = _QtLogCb(_relay)
+        self._lib.qt_log_set(new_cb, None)
+        self._log_cb = new_cb
+        del prev
 
     # -- synthesis ------------------------------------------------------------ #
 
@@ -494,12 +506,21 @@ class NativeQwenSession:
             params.ref_n_samples = int(pcm.size)
         if ref is not None:
             emb = np.ascontiguousarray(ref.spk_emb, dtype=np.float32)
+            if emb.size > 0:
+                keep.append(emb)
+                params.ref_spk_emb = emb.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                params.ref_spk_dim = int(emb.size)
+            else:
+                params.ref_spk_emb = None
+                params.ref_spk_dim = 0
             codes = np.ascontiguousarray(ref.codes, dtype=np.int32)
-            keep += [emb, codes]
-            params.ref_spk_emb = emb.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            params.ref_spk_dim = int(emb.size)
-            params.ref_codes = codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
-            params.ref_T = int(codes.shape[1] if codes.ndim == 2 else codes.size)
+            if codes.size > 0:
+                keep.append(codes)
+                params.ref_codes = codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+                params.ref_T = int(codes.shape[1] if codes.ndim == 2 else codes.size)
+            else:
+                params.ref_codes = None
+                params.ref_T = 0
         params.ref_text = ref_text.encode("utf-8") if ref_text else None
         if seed is not None:
             params.seed = int(seed)
@@ -521,9 +542,13 @@ class NativeQwenSession:
 
         def _chunk_relay(samples: Any, n_samples: int, _ud: Any) -> bool:
             try:
-                chunk = np.ctypeslib.as_array(samples, shape=(int(n_samples),)).copy()
-                verdict = on_chunk(chunk) if on_chunk is not None else True
-                return verdict is not False
+                count = int(n_samples)
+                if not samples or count <= 0:
+                    return True
+                if on_chunk is None:
+                    return True
+                chunk = np.ctypeslib.as_array(samples, shape=(count,)).copy()
+                return on_chunk(chunk) is not False
             except BaseException as exc:  # noqa: BLE001 — cannot cross ctypes
                 callback_errors.append(exc)
                 return False  # stop the native call; the error is raised below
@@ -578,15 +603,16 @@ class NativeQwenSession:
                     "qt_extract_voice_ref returned no speaker embedding",
                 )
             emb = np.ctypeslib.as_array(ref.ref_spk_emb, shape=(int(ref.ref_spk_dim),)).copy()
-            count = int(ref.num_codebooks) * int(ref.ref_T)
-            if count > 0:
+            num_codebooks = int(ref.num_codebooks)
+            ref_t = int(ref.ref_T)
+            if num_codebooks > 0 and ref_t > 0:
                 if not ref.ref_codes:
                     raise NativeCallError(
                         QT_STATUS_GENERATE_FAILED,
                         "qt_extract_voice_ref reported codes but returned a NULL buffer",
                     )
-                codes = np.ctypeslib.as_array(ref.ref_codes, shape=(count,)).copy()
-                codes = codes.reshape(int(ref.num_codebooks), int(ref.ref_T))
+                codes = np.ctypeslib.as_array(ref.ref_codes, shape=(num_codebooks * ref_t,)).copy()
+                codes = codes.reshape(num_codebooks, ref_t)
             else:
                 codes = np.zeros((0, 0), dtype=np.int32)
         finally:

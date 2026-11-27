@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import struct
+import threading
 import time
 
 import numpy as np
@@ -94,6 +96,94 @@ def test_frame_round_trips() -> None:
 
     with pytest.raises(qp.ProtocolError, match="whole float32"):
         qp.pcm_from_bytes(b"\x00\x01\x02")
+
+
+def test_write_frame_handles_short_writes_and_zero_progress() -> None:
+    samples = np.linspace(-1.0, 1.0, 24_000, dtype="<f4")  # 96 KiB payload (>64 KiB pipe buffer)
+    large_frame = qp.Frame(
+        "pcm",
+        job="job-short-write",
+        payload=samples.tobytes(),
+        fields={"sampleRate": 24_000, "seq": 0, "final": True},
+    )
+    expected_wire = qp.encode_frame(large_frame)
+    assert len(expected_wire) > 64 * 1024
+
+    class ShortWriteRawStream(io.RawIOBase):
+        """Simulates an unbuffered raw stream accepting at most ``limit`` bytes per write."""
+
+        def __init__(self, limit: int) -> None:
+            self._limit = limit
+            self._buf = bytearray()
+            self.write_calls = 0
+            self.flushed = False
+
+        def writable(self) -> bool:
+            return True
+
+        def write(self, b: bytes | bytearray | memoryview) -> int:
+            self.write_calls += 1
+            chunk = memoryview(b)[: self._limit]
+            self._buf.extend(chunk)
+            return len(chunk)
+
+        def flush(self) -> None:
+            self.flushed = True
+
+        def getvalue(self) -> bytes:
+            return bytes(self._buf)
+
+    short_stream = ShortWriteRawStream(limit=4_096)
+    qp.write_frame(short_stream, large_frame)
+
+    assert short_stream.write_calls >= 24
+    assert short_stream.flushed is True
+    assert short_stream.getvalue() == expected_wire
+    decoded = qp.read_frame(io.BytesIO(short_stream.getvalue()))
+    assert np.array_equal(qp.pcm_from_bytes(decoded.payload), samples)
+
+    # Real unbuffered io.FileIO over an OS pipe (>64 KiB exceeds Linux pipe buffer).
+    r_fd, w_fd = os.pipe()
+    reader = io.FileIO(r_fd, "rb")
+    writer = io.FileIO(w_fd, "wb")
+    read_out: list[qp.Frame] = []
+    read_err: list[BaseException] = []
+
+    def _read_pipe() -> None:
+        try:
+            read_out.append(qp.read_frame(reader))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            read_err.append(exc)
+
+    thread = threading.Thread(target=_read_pipe, daemon=True)
+    thread.start()
+    try:
+        qp.write_frame(writer, large_frame)
+    finally:
+        writer.close()
+        thread.join(timeout=5.0)
+        reader.close()
+
+    assert not thread.is_alive()
+    assert not read_err
+    assert len(read_out) == 1
+    assert np.array_equal(qp.pcm_from_bytes(read_out[0].payload), samples)
+
+    # Zero-progress writes (0, None, negative, or stalling mid-frame) must raise OSError.
+    class StallingRawStream(io.RawIOBase):
+        def __init__(self, returns: list[int | None]) -> None:
+            self._returns = iter(returns)
+
+        def writable(self) -> bool:
+            return True
+
+        def write(self, _b: bytes | bytearray | memoryview) -> int | None:
+            return next(self._returns, 0)
+
+    small_frame = VALID_FRAMES["progress"]
+    for returns in ([0], [None], [-1], [4, 0], [4, None]):
+        with pytest.raises(OSError, match="short write"):
+            qp.write_frame(StallingRawStream(returns), small_frame)
 
 
 _STRUCT_SAMPLE = struct.Struct("<f")

@@ -397,8 +397,15 @@ def read_frame(stream: IO[bytes]) -> Frame:
 
 
 def write_frame(stream: IO[bytes], frame: Frame) -> None:
-    """Write one frame and flush it, so the peer never waits on a buffer."""
-    stream.write(encode_frame(frame))
+    """Write one frame completely and flush it, tolerating short raw writes."""
+    with memoryview(encode_frame(frame)) as view:
+        total = 0
+        length = len(view)
+        while total < length:
+            written = stream.write(view[total:])
+            if written is None or written <= 0:
+                raise OSError("short write: zero bytes written")
+            total += written
     flush = getattr(stream, "flush", None)
     if callable(flush):
         flush()

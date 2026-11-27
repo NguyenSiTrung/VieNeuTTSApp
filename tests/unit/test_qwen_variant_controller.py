@@ -431,10 +431,12 @@ class TestStaleResults:
         controller.installQwenModel("customvoice")
         assert len(harness.pending) == 1
         controller.cancelQwenModelDownload("customvoice")
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        # Lane stays locked ("cancelling") until the unwinding worker finishes.
+        assert controller.setQwenVariant("gguf", "Q8_0") is False
         harness.run_pending(0)  # the cancelled install's result lands late
         status = controller._qwen_model_statuses.get("customvoice")
         assert status is None or status.state != "ready"
+        assert controller.setQwenVariant("gguf", "Q8_0") is True
         harness.run_pending(0)  # the GGUF inspection still lands
         assert controller.qwenRuntimePlatformKey == "linux-x64-cpu"
 

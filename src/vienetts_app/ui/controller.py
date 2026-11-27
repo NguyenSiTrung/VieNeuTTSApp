@@ -915,6 +915,9 @@ class AppController(QObject):
         # tests) — a multi-second PDF parse or a large WAV write must never
         # freeze the shell (bead 12k).
         self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
+        # Permanent app-quit latch set by shutdown(drain_pool=True): stops late
+        # timers, callbacks, inspections, and downloads after quit begins.
+        self._shutting_down = False
         self._importing = False
         self._exporting = False
         self._srt_keep_timestamps = False
@@ -1082,6 +1085,7 @@ class AppController(QObject):
         # QML playhead glides at audio pace (the sink offers no position API).
         # The temp-file path instead mirrors the player's positionChanged.
         self._replay_clock = QElapsedTimer()
+        self._replay_player_clock = False
         self._replay_pos_timer = QTimer(self)
         self._replay_pos_timer.setInterval(REPLAY_POSITION_TICK_MS)
         self._replay_pos_timer.timeout.connect(self._on_replay_position_tick)
@@ -1106,7 +1110,8 @@ class AppController(QObject):
         self._model_status: ModelStatus = ModelStatus(
             state="checking", installed_bytes=0, required_bytes=0, progress=0.0, error=""
         )
-        self._model_generation = 0
+        self._model_inspect_generation = 0
+        self._model_download_generation = 0
         self._model_cancel = threading.Event()
         self._model_downloading = False
         self._model_status_signal.connect(self._on_model_status_signal)
@@ -1590,7 +1595,7 @@ class AppController(QObject):
             self.updateCheckingChanged.emit()
 
     def _start_update_check(self, *, announce_errors: bool) -> None:
-        if self._update_checking:
+        if self._shutting_down or self._update_checking:
             return
         self._update_generation += 1
         generation = self._update_generation
@@ -1604,13 +1609,13 @@ class AppController(QObject):
 
         def on_done(result: tuple[int, UpdateInfo]) -> None:
             gen, info = _unwrap_bg_result(result)
-            if gen != self._update_generation:
+            if self._shutting_down or gen != self._update_generation:
                 return
             self._set_update_checking(False)
             self._publish_update_info(info, announce_errors=announce_errors)
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._update_generation:
+            if self._shutting_down or generation != self._update_generation:
                 return
             self._set_update_checking(False)
             logger.warning("update check failed: %s", exc)
@@ -2101,6 +2106,8 @@ class AppController(QObject):
         probes the machine once and publishes the active profile's device plus
         the Qwen runtime/model cards.
         """
+        if self._shutting_down:
+            return
         self._profile_generation += 1
         generation = self._profile_generation
         profile = self._active_profile
@@ -2291,15 +2298,16 @@ class AppController(QObject):
                 )
             )
             return
-        if self._model_downloading:
+        if self._shutting_down or self._model_downloading:
             return
         # Internal teardown: the import itself is a pool task, so draining
         # the pool here would stall the GUI behind it.
         self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         self._model_downloading = True
         self._model_cancel.clear()
-        self._model_generation += 1
-        generation = self._model_generation
+        self._model_inspect_generation += 1
+        self._model_download_generation += 1
+        generation = self._model_download_generation
         src = Path(raw)
         self._publish_model_status(
             ModelStatus(
@@ -2316,18 +2324,25 @@ class AppController(QObject):
             return install_offline(src)
 
         def on_done(status: ModelStatus) -> None:
-            if generation != self._model_generation:
+            if generation != self._model_download_generation:
+                return
+            self._model_downloading = False
+            if self._shutting_down:
                 return
             self._publish_model_status(status)
-            self._model_downloading = False
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._model_generation:
+            if generation != self._model_download_generation:
+                return
+            self._model_downloading = False
+            if self._shutting_down:
                 return
             self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
-            self._model_downloading = False
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not wedge downloading
+            on_error(exc)
 
     def _publish_model_status(self, status: ModelStatus) -> None:
         previous = self._model_status
@@ -2353,7 +2368,7 @@ class AppController(QObject):
             generation, status = payload  # type: ignore[misc]
         except (TypeError, ValueError):
             return
-        if generation != self._model_generation:
+        if self._shutting_down or generation != self._model_download_generation:
             return
         if not isinstance(status, ModelStatus):
             return
@@ -2508,6 +2523,8 @@ class AppController(QObject):
     @Slot()
     def refreshCudaRuntimeState(self) -> None:
         """Inspect CUDA driver and managed runtime off-thread; never imports torch."""
+        if self._shutting_down:
+            return
         manager = self._cuda_runtime_manager
         if manager is None:
             self._publish_cuda_runtime_status(self._unsupported_cuda_status())
@@ -2555,6 +2572,8 @@ class AppController(QObject):
     @Slot()
     def discoverLocalCudaRuntimes(self) -> None:
         """Run the explicit, diagnostic-only local scan off the GUI thread."""
+        if self._shutting_down:
+            return
         self._local_cuda_generation += 1
         generation = self._local_cuda_generation
 
@@ -2583,6 +2602,8 @@ class AppController(QObject):
     @Slot()
     def installCudaRuntime(self) -> None:
         """Start the explicit managed-runtime install without blocking QML."""
+        if self._shutting_down:
+            return
         manager = self._cuda_runtime_manager
         if manager is None:
             self._publish_cuda_runtime_status(self._unsupported_cuda_status())
@@ -2771,15 +2792,14 @@ class AppController(QObject):
             return self._qwen_gguf_runtime_manager_factory(self._data_dir, self._qwen_runtime_key)
         return self._qwen_runtime_manager_factory(self._data_dir)
 
-    def _qwen_model_manager(self, key: str) -> Any:
-        """The model manager a row key names — either keyspace.
-
-        A GGUF variant key (``{profile}-{quantization}``) is dispatched to the
-        managed-GGUF manager built for that exact variant; a bare profile key
-        (``base``/``customvoice``) goes to the official checkpoint manager.
-        The key — not the current selection — decides, so a row action always
-        addresses the install it names.
-        """
+    @staticmethod
+    def _build_qwen_model_manager(
+        key: str,
+        data_dir: Path,
+        official_factory: Callable[[Path, str], Any],
+        gguf_factory: Callable[[Path, Any], Any],
+    ) -> Any:
+        """Pure factory helper safe to invoke from background worker threads."""
         parsed = qwen_gguf_models_manifest.parse_variant_key(key)
         if parsed is not None:
             profile_key, quantization = parsed
@@ -2789,8 +2809,24 @@ class AppController(QObject):
             variant = qwen_variants.variant_for(
                 engine_id, qwen_variants.MODEL_FORMAT_GGUF, quantization
             )
-            return self._qwen_gguf_model_manager_factory(self._data_dir, variant)
-        return self._qwen_model_manager_factory(self._data_dir, key)
+            return gguf_factory(data_dir, variant)
+        return official_factory(data_dir, key)
+
+    def _qwen_model_manager(self, key: str) -> Any:
+        """The model manager a row key names — either keyspace.
+
+        A GGUF variant key (``{profile}-{quantization}``) is dispatched to the
+        managed-GGUF manager built for that exact variant; a bare profile key
+        (``base``/``customvoice``) goes to the official checkpoint manager.
+        The key — not the current selection — decides, so a row action always
+        addresses the install it names.
+        """
+        return self._build_qwen_model_manager(
+            key,
+            self._data_dir,
+            self._qwen_model_manager_factory,
+            self._qwen_gguf_model_manager_factory,
+        )
 
     def _qwen_host_supported(self) -> bool:
         """Whether this host is a platform the pinned manifests cover at all."""
@@ -2951,7 +2987,7 @@ class AppController(QObject):
         ``qwenVerifyMessage`` and ``qwenVerifyFinished(ok, message)``, and
         the Qwen cards re-inspect so a corrupt file shows up there too.
         """
-        if self._qwen_verifying:
+        if self._shutting_down or self._qwen_verifying:
             return False
         if not engine_profiles.is_qwen_profile(self._active_profile):
             self._set_error(self.tr("Hãy chọn một hồ sơ Qwen trước khi kiểm tra tệp."))
@@ -3099,7 +3135,7 @@ class AppController(QObject):
 
     @Property(bool, notify=qwenModelsChanged)
     def qwenModelBusy(self) -> bool:
-        return bool(self._qwen_models_busy)
+        return bool(self._qwen_models_busy) or self._qwen_operation == "cancelling"
 
     @Property(str, notify=qwenModelsChanged)
     def qwenModelStoragePath(self) -> str:
@@ -3467,6 +3503,8 @@ class AppController(QObject):
         and published on the GUI thread. ``generation`` is the profile
         generation this pass belongs to (0 = a standalone Qwen refresh).
         """
+        if self._shutting_down:
+            return
         if self._qwen_operation is not None and self._qwen_operation != "inspect":
             # An install/import/removal owns the lane: a refresh would race it.
             # A newer INSPECT supersedes an older one instead (bumping the
@@ -3513,6 +3551,8 @@ class AppController(QObject):
         injected = self._qwen_runtime_factory_injected
         injected_factory = self._qwen_runtime_manager_factory
         gguf_runtime_factory = self._qwen_gguf_runtime_manager_factory
+        model_manager_factory = self._qwen_model_manager_factory
+        gguf_model_manager_factory = self._qwen_gguf_model_manager_factory
         data_dir = self._data_dir
 
         def work() -> tuple[int, int, str, str, str, Any | None, dict[str, Any], HardwareInfo]:
@@ -3526,11 +3566,11 @@ class AppController(QObject):
                 # cell (a matrix entry without a published pack never wins),
                 # and the runtime manager is keyed by that cell.
                 qwen_device = _resolve_gguf_device(hardware, device_setting)
-                key = self._qwen_key_for(qwen_device, device_setting)
+                key = AppController._qwen_key_for_format(qwen_device, device_setting, gguf=True)
                 manager = gguf_runtime_factory(data_dir, key) if key else None
             else:
                 qwen_device = resolve_profile_device(qwen_profile, hardware, device_setting)
-                key = self._qwen_key_for(qwen_device, device_setting)
+                key = AppController._qwen_key_for_format(qwen_device, device_setting, gguf=False)
                 manager = (
                     injected_factory(data_dir)
                     if injected
@@ -3544,7 +3584,12 @@ class AppController(QObject):
             models: dict[str, Any] = {}
             for model_key in model_keys:
                 try:
-                    status = self._qwen_model_manager(model_key).inspect()
+                    status = AppController._build_qwen_model_manager(
+                        model_key,
+                        data_dir,
+                        model_manager_factory,
+                        gguf_model_manager_factory,
+                    ).inspect()
                 except Exception as exc:  # noqa: BLE001 - the UI needs a state
                     logger.warning("Qwen model inspection failed: %s", exc)
                     models[model_key] = ProfileReadiness(state="failed", error=str(exc))
@@ -3574,6 +3619,9 @@ class AppController(QObject):
             ) = _unwrap_bg_result(result)
             if gen != self._qwen_generation or self._qwen_operation != "inspect":
                 return
+            if self._shutting_down:
+                self._qwen_operation = None
+                return
             if done_profile != self._active_profile:
                 return  # a stale pass for a profile the user already left
             self._qwen_operation = None
@@ -3596,10 +3644,20 @@ class AppController(QObject):
                 return
             logger.warning("Qwen inspection failed: %s", exc)
             self._qwen_operation = None
+            if self._shutting_down:
+                return
             self._publish_qwen_runtime(None, error=str(exc))
             self.qwenModelsChanged.emit()
 
         self._run_bg(work, on_done, self, on_error=on_error)
+
+    @staticmethod
+    def _qwen_key_for_format(device: str, device_setting: str, *, gguf: bool) -> str:
+        """Pure pinned-key resolver safe to run on background worker threads."""
+        picked = device_setting if device_setting != "auto" else device
+        if gguf:
+            return qwen_gguf_manifest.host_cell_key(picked) or ""
+        return qwen_manifest.host_platform_key(picked) or ""
 
     def _qwen_key_for(self, device: str, device_setting: str) -> str:
         """The pinned key for a resolved device (explicit choice wins).
@@ -3608,10 +3666,7 @@ class AppController(QObject):
         wheel-matrix platform key (``linux-x64-cuda``); GGUF resolves a
         qwentts.cpp pack cell (``linux-x64-cpu``) in ggml vocabulary.
         """
-        picked = device_setting if device_setting != "auto" else device
-        if self._is_gguf_selected():
-            return qwen_gguf_manifest.host_cell_key(picked) or ""
-        return qwen_manifest.host_platform_key(picked) or ""
+        return self._qwen_key_for_format(device, device_setting, gguf=self._is_gguf_selected())
 
     def _publish_qwen_device(self, device: str) -> None:
         """Publish the resolved Qwen device (the active profile's readout is
@@ -3713,12 +3768,21 @@ class AppController(QObject):
 
     def _begin_qwen_operation(self, name: str) -> tuple[int, threading.Event] | None:
         """Claim the single Qwen lane (``None`` = one is already running)."""
-        if self._qwen_operation is not None:
+        if self._shutting_down or self._qwen_operation is not None:
             return None
         self._qwen_generation += 1
         self._qwen_operation = name
         self._qwen_cancel = threading.Event()
         return self._qwen_generation, self._qwen_cancel
+
+    def _release_cancelled_qwen_lane(self, cancelled: threading.Event) -> None:
+        """Unlock the Qwen lane once the unwinding cancelled worker has exited."""
+        if self._qwen_operation == "cancelling" and self._qwen_cancel is cancelled:
+            self._qwen_operation = None
+            self._qwen_models_busy = ""
+            self._qwen_models_structural = None
+            self.qwenRuntimeStateChanged.emit()
+            self.qwenModelsChanged.emit()
 
     def _on_qwen_status_signal(self, payload: object) -> None:
         """Progress from the background lane (tagged by generation)."""
@@ -3796,8 +3860,11 @@ class AppController(QObject):
 
         def on_done(readiness: ProfileReadiness) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             self._qwen_operation = None
+            if self._shutting_down:
+                return
             self._publish_qwen_runtime(readiness)
             if self._active_profile != engine_profiles.VIENEU:
                 # The engine's runtime location may have changed under it.
@@ -3805,9 +3872,12 @@ class AppController(QObject):
 
         def on_error(exc: BaseException) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             logger.warning("Qwen runtime %s failed: %s", action, exc)
             self._qwen_operation = None
+            if self._shutting_down:
+                return
             self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
 
         self._run_bg(work, on_done, self, on_error=on_error)
@@ -3824,13 +3894,14 @@ class AppController(QObject):
 
     @Slot()
     def cancelQwenRuntimeInstall(self) -> None:
-        """Request cooperative cancellation and drop queued callbacks."""
-        if self._qwen_operation not in ("runtime-install", "runtime-repair"):
+        """Request cooperative cancellation and hold the lane until the worker exits."""
+        if self._qwen_operation not in ("runtime-install", "runtime-repair", "runtime-import"):
             return
         self._qwen_cancel.set()
         self._qwen_generation += 1
-        self._qwen_operation = None
+        self._qwen_operation = "cancelling"
         self._publish_qwen_runtime(self._qwen_runtime_readiness("unavailable"))
+        self.qwenModelsChanged.emit()
 
     @Slot()
     def removeQwenRuntime(self) -> None:
@@ -3912,16 +3983,22 @@ class AppController(QObject):
 
         def on_done(readiness: ProfileReadiness) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             self._qwen_operation = None
+            if self._shutting_down:
+                return
             self._publish_qwen_runtime(readiness)
             self.refreshProfileState()
 
         def on_error(exc: BaseException) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             logger.warning("Qwen offline runtime import failed: %s", exc)
             self._qwen_operation = None
+            if self._shutting_down:
+                return
             self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
 
         self._run_bg(work, on_done, self, on_error=on_error)
@@ -3939,20 +4016,30 @@ class AppController(QObject):
             return
         generation, cancelled = claim
         self._qwen_models_busy = key
+        # Snapshot GUI-thread state before submitting to the pool so worker
+        # threads never read mutable _engine, _active_profile, or _settings.
+        data_dir = self._data_dir
+        model_manager_factory = self._qwen_model_manager_factory
+        gguf_model_manager_factory = self._qwen_gguf_model_manager_factory
+        in_use_snapshot = self._qwen_model_in_use(key) if action == "remove" else False
         if start_state:
             statuses = dict(self._qwen_model_statuses)
             statuses[key] = ProfileReadiness(state=start_state)
             self._publish_qwen_models(statuses)
 
         def work() -> ProfileReadiness:
-            manager = self._qwen_model_manager(key)
+            manager = AppController._build_qwen_model_manager(
+                key, data_dir, model_manager_factory, gguf_model_manager_factory
+            )
             call = getattr(manager, action)
             try:
                 if action == "remove":
                     # remove() takes no cancellation/progress arguments; the
                     # shared tree goes only when no other install needs it.
                     # The GGUF manager spells the flag ``drop_shared``.
-                    in_use, drop_shared = self._qwen_model_removal_flags(key)
+                    in_use, drop_shared = AppController._qwen_model_removal_flags_for(
+                        key, in_use=in_use_snapshot, data_dir=data_dir
+                    )
                     if qwen_gguf_models_manifest.parse_variant_key(key) is not None:
                         status = call(in_use=in_use, drop_shared=drop_shared)
                     else:
@@ -3970,9 +4057,12 @@ class AppController(QObject):
 
         def on_done(readiness: ProfileReadiness) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             self._qwen_operation = None
             self._qwen_models_busy = ""
+            if self._shutting_down:
+                return
             statuses = dict(self._qwen_model_statuses)
             statuses[key] = readiness
             self._publish_qwen_models(statuses)
@@ -3980,10 +4070,13 @@ class AppController(QObject):
 
         def on_error(exc: BaseException) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             logger.warning("Qwen model %s failed for %s: %s", action, key, exc)
             self._qwen_operation = None
             self._qwen_models_busy = ""
+            if self._shutting_down:
+                return
             statuses = dict(self._qwen_model_statuses)
             statuses[key] = ProfileReadiness(state="failed", error=str(exc))
             self._publish_qwen_models(statuses)
@@ -4006,16 +4099,17 @@ class AppController(QObject):
 
     @Slot(str)
     def cancelQwenModelDownload(self, profile_key: str) -> None:
-        """Request cooperative cancellation of one model download."""
-        if self._qwen_models_busy != profile_key:
+        """Request cooperative cancellation and hold the lane until the worker exits."""
+        if self._qwen_models_busy != profile_key or self._qwen_operation == "cancelling":
             return
         self._qwen_cancel.set()
         self._qwen_generation += 1
-        self._qwen_operation = None
+        self._qwen_operation = "cancelling"
         self._qwen_models_busy = ""
         statuses = dict(self._qwen_model_statuses)
         statuses[profile_key] = ProfileReadiness(state="unavailable")
         self._publish_qwen_models(statuses)
+        self.qwenRuntimeStateChanged.emit()
 
     @Slot(str)
     def removeQwenModel(self, profile_key: str) -> None:
@@ -4043,12 +4137,17 @@ class AppController(QObject):
             return
         generation, cancelled = claim
         self._qwen_models_busy = profile_key
+        data_dir = self._data_dir
+        model_manager_factory = self._qwen_model_manager_factory
+        gguf_model_manager_factory = self._qwen_gguf_model_manager_factory
         statuses = dict(self._qwen_model_statuses)
         statuses[profile_key] = ProfileReadiness(state="downloading")
         self._publish_qwen_models(statuses)
 
         def work() -> ProfileReadiness:
-            manager = self._qwen_model_manager(profile_key)
+            manager = AppController._build_qwen_model_manager(
+                profile_key, data_dir, model_manager_factory, gguf_model_manager_factory
+            )
             # The GGUF manager spells its offline entry point ``install_offline``.
             call = (
                 manager.install_offline
@@ -4069,9 +4168,12 @@ class AppController(QObject):
 
         def on_done(readiness: ProfileReadiness) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             self._qwen_operation = None
             self._qwen_models_busy = ""
+            if self._shutting_down:
+                return
             statuses = dict(self._qwen_model_statuses)
             statuses[profile_key] = readiness
             self._publish_qwen_models(statuses)
@@ -4079,37 +4181,38 @@ class AppController(QObject):
 
         def on_error(exc: BaseException) -> None:
             if generation != self._qwen_generation:
+                self._release_cancelled_qwen_lane(cancelled)
                 return
             logger.warning("Qwen offline model import failed for %s: %s", profile_key, exc)
             self._qwen_operation = None
             self._qwen_models_busy = ""
+            if self._shutting_down:
+                return
             statuses = dict(self._qwen_model_statuses)
             statuses[profile_key] = ProfileReadiness(state="failed", error=str(exc))
             self._publish_qwen_models(statuses)
 
         self._run_bg(work, on_done, self, on_error=on_error)
 
-    def _qwen_model_removal_flags(self, key: str) -> tuple[bool, bool]:
-        """``(in_use, drop_shared)`` for removing one model row.
-
-        A built Qwen engine holds the ACTIVE selection's model, so exactly
-        that variant cannot be deleted under it — a sibling quantization, the
-        other profile, or the other format's install all stay removable (the
-        engine id pins which format the live engine belongs to). The shared
-        codec/tokenizer tree goes only once no other install of the same
-        format still references it. Runs on the background lane, where the
-        on-disk truth is read instead of the (possibly stale) UI statuses.
-        """
+    def _qwen_model_in_use(self, key: str) -> bool:
+        """GUI-thread check whether the live engine currently holds model ``key``."""
         gguf_key = qwen_gguf_models_manifest.parse_variant_key(key) is not None
-        in_use = False
         engine = self._engine
         if engine is not None and engine_profiles.is_qwen_profile(self._active_profile):
             engine_gguf = getattr(engine, "engine_id", "") == qwen_variants.ENGINE_QWENTTS_CPP
-            in_use = engine_gguf == gguf_key and (
+            return engine_gguf == gguf_key and (
                 key == self._qwen_status_key_for(self._active_profile)
             )
+        return False
+
+    @staticmethod
+    def _qwen_model_removal_flags_for(
+        key: str, *, in_use: bool, data_dir: Path
+    ) -> tuple[bool, bool]:
+        """Background-safe ``(in_use, drop_shared)`` using GUI-snapshotted ``in_use``."""
+        gguf_key = qwen_gguf_models_manifest.parse_variant_key(key) is not None
         if gguf_key:
-            root = self._data_dir / "qwen" / "gguf-models"
+            root = data_dir / "qwen" / "gguf-models"
             quantization = qwen_gguf_models_manifest.parse_variant_key(key)[1]  # type: ignore[index]
             try:
                 others = {
@@ -4121,13 +4224,27 @@ class AppController(QObject):
                 logger.warning("could not read installed GGUF variants", exc_info=True)
                 return in_use, False
             return in_use, not others
-        root = self._data_dir / "qwen" / "models"
+        root = data_dir / "qwen" / "models"
         try:
             others = set(qwen_model_manager.installed_profiles(root)) - {key}
         except Exception:  # noqa: BLE001 - unreadable root: keep the shared tree
             logger.warning("could not read installed Qwen profiles", exc_info=True)
             return in_use, False
         return in_use, not others
+
+    def _qwen_model_removal_flags(self, key: str) -> tuple[bool, bool]:
+        """``(in_use, drop_shared)`` for removing one model row.
+
+        A built Qwen engine holds the ACTIVE selection's model, so exactly
+        that variant cannot be deleted under it — a sibling quantization, the
+        other profile, or the other format's install all stay removable (the
+        engine id pins which format the live engine belongs to). The shared
+        codec/tokenizer tree goes only once no other install of the same
+        format still references it.
+        """
+        return self._qwen_model_removal_flags_for(
+            key, in_use=self._qwen_model_in_use(key), data_dir=self._data_dir
+        )
 
     def _qwen_model_key(self, profile_key: str) -> str:
         """Validate a model row key from QML ("" = refused, error already set).
@@ -4163,8 +4280,10 @@ class AppController(QObject):
     @Slot()
     def refreshModelState(self) -> None:
         """Re-inspect the managed install off the GUI thread (retry seam)."""
-        self._model_generation += 1
-        generation = self._model_generation
+        if self._shutting_down or self._model_downloading:
+            return
+        self._model_inspect_generation += 1
+        generation = self._model_inspect_generation
         manager = self._model_manager
 
         def work() -> tuple[int, ModelStatus]:
@@ -4172,7 +4291,11 @@ class AppController(QObject):
 
         def on_done(result: tuple[int, ModelStatus]) -> None:
             gen, status = _unwrap_bg_result(result)
-            if gen != self._model_generation:
+            if (
+                self._shutting_down
+                or self._model_downloading
+                or gen != self._model_inspect_generation
+            ):
                 return
             self._publish_model_status(status)
 
@@ -4181,6 +4304,8 @@ class AppController(QObject):
     @Slot()
     def downloadOfficialModel(self) -> None:
         """Download + validate the official baseline without blocking the UI."""
+        if self._shutting_down:
+            return
         if self._settings.model_repo != "":
             self._publish_model_status(
                 ModelStatus(
@@ -4203,8 +4328,9 @@ class AppController(QObject):
         self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         self._model_downloading = True
         self._model_cancel.clear()
-        self._model_generation += 1
-        generation = self._model_generation
+        self._model_inspect_generation += 1
+        self._model_download_generation += 1
+        generation = self._model_download_generation
         manager = self._model_manager
         cancelled = self._model_cancel
         self._publish_model_status(
@@ -4225,19 +4351,26 @@ class AppController(QObject):
             )
 
         def on_done(status: ModelStatus) -> None:
-            if generation != self._model_generation:
+            if generation != self._model_download_generation:
+                return
+            self._model_downloading = False
+            if self._shutting_down:
                 return
             self._publish_model_status(status)
-            self._model_downloading = False
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._model_generation:
+            if generation != self._model_download_generation:
+                return
+            self._model_downloading = False
+            if self._shutting_down:
                 return
             logger.warning("model download failed: %s", exc)
             self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
-            self._model_downloading = False
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not wedge downloading
+            on_error(exc)
 
     @Slot()
     def cancelModelDownload(self) -> None:
@@ -4724,6 +4857,8 @@ class AppController(QObject):
         initialized; a failed warmup is silent (the first real request
         surfaces the actionable error when the user actually wants audio).
         """
+        if self._shutting_down:
+            return
         if self._worker is not None:
             engine = getattr(self._worker, "engine", None)
             if getattr(engine, "is_initialized", False):
@@ -5546,6 +5681,12 @@ class AppController(QObject):
             return False
         return True
 
+    @staticmethod
+    def _clear_studio_stretch_cache() -> None:
+        from vienetts_app.core.studio import clear_stretch_cache
+
+        clear_stretch_cache()
+
     def _emit_studio(self, *, kind: str = "") -> None:
         """Publish state now, then render its overview off the GUI thread.
 
@@ -5555,6 +5696,7 @@ class AppController(QObject):
         """
         project = self._studio_project
         if project is None:
+            self._clear_studio_stretch_cache()
             self._studio_seq += 1
             self._studio_pending.clear()
             self._studio_envelope = []
@@ -5613,6 +5755,7 @@ class AppController(QObject):
         except OSError as exc:
             self._set_error(str(exc))
             return False
+        self._clear_studio_stretch_cache()
         self._reset_studio_regen()
         self._reset_studio_pending()
         self._emit_studio()
@@ -5633,6 +5776,7 @@ class AppController(QObject):
         from vienetts_app.core.studio import load_project_from_chapters
 
         self._invalidate_studio_preview()
+        self._clear_studio_stretch_cache()
         self._studio_open_generation += 1
         generation = self._studio_open_generation
         books_dir = self._data_dir / "audiobooks"
@@ -5654,6 +5798,7 @@ class AppController(QObject):
             if project is None:
                 self._set_error(self.tr("Không tìm thấy chương này trong sách."))
                 return
+            self._clear_studio_stretch_cache()
             self._studio_project = project
             self._reset_studio_regen()
             self._reset_studio_pending()
@@ -5686,6 +5831,7 @@ class AppController(QObject):
             self._set_error(self.tr("Chưa có dự án phụ đề để mở trong Studio."))
             return False
         self._invalidate_studio_preview()
+        self._clear_studio_stretch_cache()
         self._studio_open_generation += 1
         generation = self._studio_open_generation
         sub_dir = self._data_dir / "subtitles"
@@ -5699,6 +5845,7 @@ class AppController(QObject):
             if generation != self._studio_open_generation:
                 return
             project = _unwrap_bg_result(result)
+            self._clear_studio_stretch_cache()
             self._studio_project = project
             self._reset_studio_regen()
             self._reset_studio_pending()
@@ -5767,6 +5914,7 @@ class AppController(QObject):
             self._reset_studio_pending()
         self._invalidate_studio_preview()
         seq = self._studio_render_start("save_srt")
+        open_generation = self._studio_open_generation
         sub_dir = self._data_dir / "subtitles"
         proj_id = str(meta.project_id)
         win_start = int(meta.window_start)
@@ -5778,8 +5926,10 @@ class AppController(QObject):
             return reloaded, str(store.wav_path(proj_id))
 
         def on_done(result: Any) -> None:
-            reloaded, wav_path = _unwrap_bg_result(result)
             self._studio_render_settled(seq)
+            if open_generation != self._studio_open_generation:
+                return
+            reloaded, wav_path = _unwrap_bg_result(result)
             self._studio_project = reloaded
             self._reset_studio_pending()
             if self._subtitle_controller is not None and hasattr(
@@ -5793,6 +5943,8 @@ class AppController(QObject):
 
         def on_error(exc: BaseException) -> None:
             self._studio_render_settled(seq)
+            if open_generation != self._studio_open_generation:
+                return
             msg = (
                 str(exc)
                 if isinstance(exc, SubtitleProjectError | ValueError | OSError)
@@ -5870,11 +6022,14 @@ class AppController(QObject):
 
         self._invalidate_studio_preview()
         seq = self._studio_render_start("export_video")
+        open_generation = self._studio_open_generation
         self._set_exporting(True)
-        sub_dir = self._data_dir / "subtitles"
+        data_dir = self._data_dir
+        sub_dir = data_dir / "subtitles"
         proj_id = str(meta.project_id)
         win_start = int(meta.window_start)
         include_speakers = bool(getattr(self, "subtitleExportSpeakerLabels", False))
+        subtitle_language = self._studio_subtitle_language()
 
         def work() -> tuple[Any, str]:
             store = SubtitleProjectStore(sub_dir)
@@ -5909,9 +6064,9 @@ class AppController(QObject):
                     bg_gain_db=float(updated_proj.video_bg_gain_db),
                     embed_subtitles=embed_subs,
                     subtitle_mode=updated_proj.subtitle_embed_mode,
-                    subtitle_language=self._studio_subtitle_language(),
+                    subtitle_language=subtitle_language,
                     duck_spans=duck_spans,
-                    data_dir=self._data_dir,
+                    data_dir=data_dir,
                 )
                 return reloaded, str(target)
             finally:
@@ -5920,9 +6075,11 @@ class AppController(QObject):
                         srt_temp.unlink(missing_ok=True)
 
         def on_done(result: Any) -> None:
-            reloaded, out_video_path = _unwrap_bg_result(result)
             self._studio_render_settled(seq)
             self._set_exporting(False)
+            if open_generation != self._studio_open_generation:
+                return
+            reloaded, out_video_path = _unwrap_bg_result(result)
             self._studio_project = reloaded
             self._reset_studio_pending()
             if self._subtitle_controller is not None:
@@ -5938,6 +6095,8 @@ class AppController(QObject):
         def on_error(exc: BaseException) -> None:
             self._studio_render_settled(seq)
             self._set_exporting(False)
+            if open_generation != self._studio_open_generation:
+                return
             msg = (
                 str(exc)
                 if isinstance(exc, SubtitleProjectError | VideoDubError | ValueError | OSError)
@@ -7138,6 +7297,7 @@ class AppController(QObject):
     def _begin_replay_position(self, duration_ms: int, start_ms: int = 0) -> None:
         """Arm the playhead for a starting replay (duration 0 = unknown yet)."""
         self._replay_pos_timer.stop()
+        self._replay_player_clock = False
         self._set_replay_duration_ms(max(0, int(duration_ms)))
         self._replay_base_ms = max(0, int(start_ms))
         if self._replay_duration_ms > 0:
@@ -7151,6 +7311,7 @@ class AppController(QObject):
     def _end_replay_position(self) -> None:
         """Stop advancing and park the playhead back at the start."""
         self._replay_pos_timer.stop()
+        self._replay_player_clock = False
         self._replay_base_ms = 0
         self._set_replay_paused(False)
         self._set_replay_position(0.0)
@@ -7158,13 +7319,13 @@ class AppController(QObject):
     def _pause_replay_position(self) -> None:
         """Freeze the playhead clock; the position value is kept, not parked."""
         self._replay_pos_timer.stop()
-        if self._replay_duration_ms > 0:
+        if self._replay_duration_ms > 0 and not self._replay_player_clock:
             self._replay_base_ms = min(self._replay_elapsed_ms(), self._replay_duration_ms)
             self._set_replay_position(self._replay_base_ms / self._replay_duration_ms)
 
     def _resume_replay_position(self) -> None:
         """Restart the clock from the kept offset after a pause."""
-        if self._replay_duration_ms <= 0:
+        if self._replay_duration_ms <= 0 or self._replay_player_clock:
             return
         self._replay_clock.start()
         self._replay_pos_timer.start()
@@ -7174,8 +7335,9 @@ class AppController(QObject):
         self._replay_base_ms = max(0, int(ms))
         if self._replay_duration_ms > 0:
             self._set_replay_position(min(self._replay_base_ms / self._replay_duration_ms, 1.0))
-            if self._replay_pos_timer.isActive() or (
-                self._replay_active and not self._replay_paused
+            if not self._replay_player_clock and (
+                self._replay_pos_timer.isActive()
+                or (self._replay_active and not self._replay_paused)
             ):
                 self._replay_clock.start()
                 if not self._replay_pos_timer.isActive():
@@ -7193,6 +7355,12 @@ class AppController(QObject):
         """QMediaPlayer progress → replayPosition for the current artifact."""
         if not self._replay_active:
             return
+        # Once real media-clock ticks arrive, stop the fallback timer so the two
+        # clocks never fight and cause sawtooth playhead jitter (FR-2.3).
+        self._replay_player_clock = True
+        if self._replay_pos_timer.isActive():
+            self._replay_pos_timer.stop()
+        self._replay_base_ms = max(0, int(ms))
         if self._replay_duration_ms > 0:
             self._set_replay_position(min(max(ms / self._replay_duration_ms, 0.0), 1.0))
 
@@ -7902,6 +8070,10 @@ class AppController(QObject):
         risks a native crash. The retire timer keeps retrying the pair on a
         non-blocking cadence until the thread exits.
         """
+        if drain_pool:
+            self._shutting_down = True
+            self._retire_timer.stop()
+            self._clear_studio_stretch_cache()
         self._stop_replay()
         self._stop_audition_session()
         self._reset_audition_tracking()
@@ -7915,41 +8087,100 @@ class AppController(QObject):
         self._cuda_runtime_generation += 1
         self._local_cuda_generation += 1
         self._cuda_runtime_cancel.set()
+        if drain_pool:
+            # App quit only: an internal teardown must not abort active
+            # downloads or permanently invalidate non-engine probes.
+            self._media_download_cancel.set()
+            self._model_cancel.set()
+            self._qwen_cancel.set()
+            self._torch_probe_generation += 1
+            self._update_generation += 1
+            self._profile_generation += 1
+            self._studio_open_generation += 1
+        # Stop/wait on the worker thread and force-close active or retired
+        # subprocess-backed Qwen hosts BEFORE draining pools so no Qwen child
+        # process or live QThread survives app exit (FR-1.5).
+        self._retry_retired_workers(
+            force_close_subprocess=drain_pool,
+            stop_ms=worker_stop_ms if drain_pool else 0,
+        )
+        self._set_preparing_worker(None)
+        if self._worker is not None:
+            worker, self._worker = self._worker, None
+            self._retire_worker(
+                worker,
+                self._engine,
+                stop_ms=worker_stop_ms,
+                force_close_subprocess=drain_pool,
+            )
+            self._engine = None
+        elif self._engine is not None:
+            self._close_engine_quietly(self._engine)
+            self._engine = None
         # Bounded drain: an in-flight export/import write finishes before
         # teardown returns (callbacks may no longer run once exec() exits).
         # Internal teardown skips it — the GUI must not stall on an unrelated
         # pool task, and generation guards already drop stale callbacks.
         if drain_pool:
-            # App quit only: an internal teardown must not abort a download.
-            self._media_download_cancel.set()
             drain_thread_pool()
-        self._retry_retired_workers()
-        self._set_preparing_worker(None)
-        if self._worker is not None:
-            worker, self._worker = self._worker, None
-            self._retire_worker(worker, self._engine, stop_ms=worker_stop_ms)
-            self._engine = None
-        elif self._engine is not None:
-            self._close_engine_quietly(self._engine)
-            self._engine = None
+            self._retry_retired_workers(force_close_subprocess=True, stop_ms=0)
+            self._retire_timer.stop()
         self._set_busy(False)
 
+    @staticmethod
+    def _is_subprocess_backed_engine(engine: Any) -> bool:
+        """True for isolated-host Qwen engines (PyTorch or qwentts.cpp child)."""
+        if engine is None:
+            return False
+        if str(getattr(engine, "engine_id", "") or "") in qwen_variants.ENGINES:
+            return True
+        inner = getattr(engine, "_engine", None)
+        return (
+            inner is not None
+            and inner is not engine
+            and str(getattr(inner, "engine_id", "") or "") in qwen_variants.ENGINES
+        )
+
     def _retire_worker(
-        self, worker: Any, engine: Any, *, stop_ms: int = QUIT_WORKER_STOP_MS
+        self,
+        worker: Any,
+        engine: Any,
+        *,
+        stop_ms: int = QUIT_WORKER_STOP_MS,
+        force_close_subprocess: bool = False,
     ) -> None:
-        """Stop ``worker``; close ``engine`` only once the thread is gone."""
+        """Stop ``worker``; close ``engine`` only once the thread is gone.
+
+        On final quit (``force_close_subprocess=True``), a subprocess-backed
+        Qwen host is force-closed even if the worker is still blocked on its
+        pipe: closing the child unblocks the pipe read so the worker thread
+        exits cleanly before process exit.
+        """
         try:
             worker.stop(timeout_ms=stop_ms)
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.exception("error stopping inference worker")
         if bool(getattr(worker, "isRunning", lambda: False)()):
+            if force_close_subprocess and self._is_subprocess_backed_engine(engine):
+                logger.warning("force-closing subprocess-backed Qwen host during shutdown")
+                self._close_engine_quietly(engine)
+                try:
+                    worker.stop(timeout_ms=stop_ms)
+                except Exception:  # noqa: BLE001 - shutdown must not raise
+                    logger.exception("error waiting for inference worker after host close")
+                if bool(getattr(worker, "isRunning", lambda: False)()):
+                    self._retired_workers.append((worker, None))
+                return
             logger.warning("inference worker still running; deferring engine close")
             self._retired_workers.append((worker, engine))
-            self._retire_timer.start()
+            if not self._shutting_down:
+                self._retire_timer.start()
             return
         self._close_engine_quietly(engine)
 
-    def _retry_retired_workers(self) -> None:
+    def _retry_retired_workers(
+        self, *, force_close_subprocess: bool = False, stop_ms: int = 0
+    ) -> None:
         """Re-assert stop on retired workers without blocking; close what exits."""
         still_running: list[tuple[Any, Any]] = []
         for worker, engine in self._retired_workers:
@@ -7958,11 +8189,21 @@ class AppController(QObject):
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 logger.exception("error stopping retired inference worker")
             if bool(getattr(worker, "isRunning", lambda: False)()):
+                if force_close_subprocess and self._is_subprocess_backed_engine(engine):
+                    logger.warning("force-closing retired Qwen host during shutdown")
+                    self._close_engine_quietly(engine)
+                    try:
+                        worker.stop(timeout_ms=stop_ms)
+                    except Exception:  # noqa: BLE001 - shutdown must not raise
+                        logger.exception("error stopping retired worker after host close")
+                    if bool(getattr(worker, "isRunning", lambda: False)()):
+                        still_running.append((worker, None))
+                    continue
                 still_running.append((worker, engine))
             else:
                 self._close_engine_quietly(engine)
         self._retired_workers = still_running
-        if self._retired_workers:
+        if self._retired_workers and not self._shutting_down:
             self._retire_timer.start()
         else:
             self._retire_timer.stop()
@@ -7971,8 +8212,11 @@ class AppController(QObject):
     def _close_engine_quietly(engine: Any) -> None:
         if engine is None:
             return
+        closer = getattr(engine, "close", None) or getattr(engine, "shutdown", None)
+        if not callable(closer):
+            return
         try:
-            engine.close()
+            closer()
         except Exception:  # noqa: BLE001
             logger.exception("error closing engine")
 
@@ -8289,6 +8533,8 @@ class AppController(QObject):
         QML binding, on the GUI thread. The previous answer stays published
         until the newest probe lands; a superseded probe is dropped.
         """
+        if self._shutting_down:
+            return
         self._torch_probe_generation += 1
         generation = self._torch_probe_generation
         if self._torch_available is None:
@@ -8307,7 +8553,7 @@ class AppController(QObject):
             return bool(result.installed and result.cuda_available) or managed_ready
 
         def on_done(result: Any) -> None:
-            if generation != self._torch_probe_generation:
+            if self._shutting_down or generation != self._torch_probe_generation:
                 return
             available = bool(_unwrap_bg_result(result))
             if available != self._torch_available:
@@ -8315,7 +8561,7 @@ class AppController(QObject):
                 self.torchAvailableChanged.emit()
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._torch_probe_generation:
+            if self._shutting_down or generation != self._torch_probe_generation:
                 return
             logger.warning("torch availability re-probe failed (%s)", exc)
 
@@ -8328,21 +8574,40 @@ class AppController(QObject):
     def resolveTorchAvailabilityAsync(self) -> None:
         """Pre-warm the torch probe off-thread (app.py, post-first-paint).
 
-        Runs the same probe as the ``torchAvailable`` getter on a daemon
-        thread so the QML binding never pays the 1-3 s torch import on GPU
-        installs. Re-emits ``torchAvailableChanged`` once resolved; a probe
-        already done is a no-op. Same RuntimeError-drop discipline as the
-        bridge's async engine note (app may quit mid-probe).
+        Runs the same probe as the ``torchAvailable`` getter via ``_run_bg`` so
+        the QML binding never pays the 1-3 s torch import on GPU installs,
+        drops late completions via ``_torch_probe_generation``, and drains
+        cleanly on shutdown.
         """
-        if self._torch_available is not None:
+        if self._shutting_down or self._torch_available is not None:
             return
+        self._torch_probe_generation += 1
+        generation = self._torch_probe_generation
+        managed_ready, _version = self.managed_cuda_for_detection()
+        probe = self._torch_probe
 
-        def _work() -> None:
-            self._torch_available = self._probe_torch_availability()
-            with contextlib.suppress(RuntimeError):
+        def work() -> bool:
+            result = probe()
+            return bool(result.installed and result.cuda_available) or managed_ready
+
+        def on_done(result: Any) -> None:
+            if self._shutting_down or generation != self._torch_probe_generation:
+                return
+            available = bool(_unwrap_bg_result(result))
+            changed = available != self._torch_available
+            self._torch_available = available
+            if changed:
                 self.torchAvailableChanged.emit()
 
-        threading.Thread(target=_work, name="vienetts-torch-probe", daemon=True).start()
+        def on_error(exc: BaseException) -> None:
+            if self._shutting_down or generation != self._torch_probe_generation:
+                return
+            logger.warning("torch availability pre-warm probe failed (%s)", exc)
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection: fall back to lazy read
+            logger.warning("could not schedule torch availability probe (%s)", exc)
 
     @Property(str, notify=backendChanged)
     def backend(self) -> str:
@@ -8873,17 +9138,19 @@ class AppController(QObject):
     def downloadAsrModel(self) -> bool:
         """Download the selected Whisper ASR model and, when needed, the whisper.cpp CLI."""
         from vienetts_app.core.ai_models import (
+            AiModelDownloadCancelled,
             download_asr_model,
             download_whisper_cpp_runtime,
             is_whisper_cpp_installed,
         )
 
-        if self._asr_download_busy:
+        if self._shutting_down or self._asr_download_busy:
             return False
+        data_dir = self._data_dir
         model_id = self.asrModel
         variant = self._whisper_cpp_runtime_variant()
         need_runtime = self.asrBackend in ("auto", "whisper_cpp") and not is_whisper_cpp_installed(
-            self._data_dir
+            data_dir
         )
         self._asr_download_generation += 1
         generation = self._asr_download_generation
@@ -8894,22 +9161,33 @@ class AppController(QObject):
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._asr_download_generation
+            )
+
         def work() -> tuple[str, str]:
             warning = ""
             if need_runtime:
                 try:
                     download_whisper_cpp_runtime(
-                        self._data_dir,
+                        data_dir,
                         variant=variant,
                         progress_cb=_download_progress_cb(relay, generation, 0.02, 0.23),
+                        cancel_check=cancel_check,
                     )
+                except AiModelDownloadCancelled:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - reported, not fatal
                     warning = str(exc)
             base_p, span_p = (0.25, 0.74) if need_runtime else (0.05, 0.94)
             path = download_asr_model(
                 model_id,
-                self._data_dir,
+                data_dir,
                 progress_cb=_download_progress_cb(relay, generation, base_p, span_p),
+                cancel_check=cancel_check,
             )
             return str(path), warning
 
@@ -8931,7 +9209,9 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._asr_download_busy = False
             self._asr_download_progress = 0.0
-            self._asr_download_status = str(exc)
+            self._asr_download_status = (
+                "" if isinstance(exc, AiModelDownloadCancelled) else str(exc)
+            )
             self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
@@ -8946,12 +9226,14 @@ class AppController(QObject):
     def downloadWhisperCppRuntime(self) -> bool:
         """Download (or reinstall) the `whisper.cpp` CLI for the selected ASR device."""
         from vienetts_app.core.ai_models import (
+            AiModelDownloadCancelled,
             available_whisper_cpp_variants,
             download_whisper_cpp_runtime,
         )
 
-        if self._asr_download_busy:
+        if self._shutting_down or self._asr_download_busy:
             return False
+        data_dir = self._data_dir
         variant = self._whisper_cpp_runtime_variant()
         if (
             self.asrDevice in {"cuda", "metal"}
@@ -8963,20 +9245,27 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
             return False
         self._asr_download_generation += 1
-        progress_cb = _download_progress_cb(
-            self._asr_download_relay, self._asr_download_generation, 0.02, 0.98
-        )
+        generation = self._asr_download_generation
+        progress_cb = _download_progress_cb(self._asr_download_relay, generation, 0.02, 0.98)
         self._asr_download_busy = True
         self._asr_download_progress = 0.02
         self._asr_download_status = self.tr("Đang tải runtime whisper.cpp…")
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._asr_download_generation
+            )
+
         def work() -> str:
             cli = download_whisper_cpp_runtime(
-                self._data_dir,
+                data_dir,
                 variant=variant,
                 progress_cb=progress_cb,
+                cancel_check=cancel_check,
             )
             return str(cli)
 
@@ -8992,7 +9281,9 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._asr_download_busy = False
             self._asr_download_progress = 0.0
-            self._asr_download_status = str(exc)
+            self._asr_download_status = (
+                "" if isinstance(exc, AiModelDownloadCancelled) else str(exc)
+            )
             self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
@@ -9087,13 +9378,15 @@ class AppController(QObject):
         line and a later "Chỉ tải runtime" click can finish the install.
         """
         from vienetts_app.core.ai_models import (
+            AiModelDownloadCancelled,
             download_audiocpp_runtime,
             download_diarization_model,
             is_audiocpp_installed,
         )
 
-        if self._diar_download_busy:
+        if self._shutting_down or self._diar_download_busy:
             return False
+        data_dir = self._data_dir
         model_id = self.diarizationModel
         variant = self._diar_runtime_variant()
         self._diar_download_generation += 1
@@ -9105,21 +9398,32 @@ class AppController(QObject):
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._diar_download_generation
+            )
+
         def work() -> tuple[str, str]:
             warning = ""
-            if not is_audiocpp_installed(self._data_dir):
+            if not is_audiocpp_installed(data_dir):
                 try:
                     download_audiocpp_runtime(
-                        self._data_dir,
+                        data_dir,
                         variant=variant,
                         progress_cb=_download_progress_cb(relay, generation, 0.02, 0.28),
+                        cancel_check=cancel_check,
                     )
+                except AiModelDownloadCancelled:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - reported, not fatal
                     warning = str(exc)
             path = download_diarization_model(
                 model_id,
-                self._data_dir,
+                data_dir,
                 progress_cb=_download_progress_cb(relay, generation, 0.30, 0.69),
+                cancel_check=cancel_check,
             )
             return str(path), warning
 
@@ -9141,7 +9445,9 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 0.0
-            self._diar_download_status = str(exc)
+            self._diar_download_status = (
+                "" if isinstance(exc, AiModelDownloadCancelled) else str(exc)
+            )
             self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
@@ -9163,12 +9469,14 @@ class AppController(QObject):
         not offered is refused with a reason instead of installing another.
         """
         from vienetts_app.core.ai_models import (
+            AiModelDownloadCancelled,
             available_audiocpp_variants,
             download_audiocpp_runtime,
         )
 
-        if self._diar_download_busy:
+        if self._shutting_down or self._diar_download_busy:
             return False
+        data_dir = self._data_dir
         offered = available_audiocpp_variants()
         requested = str(variant or "").strip().lower()
         if requested in ("", "auto"):
@@ -9186,20 +9494,27 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
             return False
         self._diar_download_generation += 1
-        progress_cb = _download_progress_cb(
-            self._diar_download_relay, self._diar_download_generation, 0.02, 0.98
-        )
+        generation = self._diar_download_generation
+        progress_cb = _download_progress_cb(self._diar_download_relay, generation, 0.02, 0.98)
         self._diar_download_busy = True
         self._diar_download_progress = 0.02
         self._diar_download_status = self.tr("Đang tải runtime audio.cpp…")
         self.aiDownloadProgressChanged.emit()
         self.aiModelsInstallChanged.emit()
 
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._diar_download_generation
+            )
+
         def work() -> str:
             cli = download_audiocpp_runtime(
-                self._data_dir,
+                data_dir,
                 variant=target,
                 progress_cb=progress_cb,
+                cancel_check=cancel_check,
             )
             return str(cli)
 
@@ -9215,7 +9530,9 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 0.0
-            self._diar_download_status = str(exc)
+            self._diar_download_status = (
+                "" if isinstance(exc, AiModelDownloadCancelled) else str(exc)
+            )
             self.aiDownloadProgressChanged.emit()
             self.aiModelsInstallChanged.emit()
 
@@ -9338,16 +9655,22 @@ class AppController(QObject):
         """Download (or repair) one optional audio model, verified by size + SHA-256."""
         from vienetts_app.core.ai_models import download_audio_model
 
-        if self._audio_model_busy_id:
+        if self._shutting_down or self._audio_model_busy_id:
             return False
         spec = self._audio_model_spec(model_id)
         if spec is None:
             return False
         self._audio_model_generation += 1
-        progress_cb = _download_progress_cb(
-            self._audio_model_relay, self._audio_model_generation, 0.02, 0.97
-        )
-        cancel_check = self._media_download_cancel.is_set
+        generation = self._audio_model_generation
+        progress_cb = _download_progress_cb(self._audio_model_relay, generation, 0.02, 0.97)
+
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._audio_model_generation
+            )
+
         data_dir = self._data_dir
         self._audio_model_busy_id = spec.id
         self._audio_model_progress = 0.02
@@ -9449,7 +9772,7 @@ class AppController(QObject):
         """
         from vienetts_app.core.ai_models import install_ffmpeg_runtime
 
-        if self._ffmpeg_busy:
+        if self._shutting_down or self._ffmpeg_busy:
             return False
         status = self.ffmpegRuntimeStatus
         if not status["downloadable"]:
@@ -9457,8 +9780,16 @@ class AppController(QObject):
             self.ffmpegRuntimeChanged.emit()
             return False
         self._ffmpeg_generation += 1
-        progress_cb = _download_progress_cb(self._ffmpeg_relay, self._ffmpeg_generation, 0.02, 0.97)
-        cancel_check = self._media_download_cancel.is_set
+        generation = self._ffmpeg_generation
+        progress_cb = _download_progress_cb(self._ffmpeg_relay, generation, 0.02, 0.97)
+
+        def cancel_check() -> bool:
+            return (
+                self._shutting_down
+                or self._media_download_cancel.is_set()
+                or generation != self._ffmpeg_generation
+            )
+
         data_dir = self._data_dir
         self._ffmpeg_busy = True
         self._ffmpeg_progress = 0.02
@@ -9691,16 +10022,20 @@ class AppController(QObject):
                     self.tr("Không thể đổi {} khi đang xử lý: {}").format(key, ", ".join(blockers))
                 )
                 return
+        previous_settings = self._settings
         try:
-            self._settings = replace(self._settings, **{key: value})
-            save_settings(self._settings, self._data_dir)
+            candidate = replace(previous_settings, **{key: value})
+            save_settings(candidate, self._data_dir)
         except ValueError as exc:
+            self._settings = previous_settings
             self._set_error(f"Invalid {key}: {exc}")
             return
         except OSError as exc:  # noqa: BLE001 - disk-full/read-only must not raise into a slot
-            # The in-memory value still applies live; only persistence failed.
+            # Roll back atomically so Python, QML, and the live engine never diverge.
+            self._settings = previous_settings
             self._set_error(f"Could not save settings: {exc}")
             return
+        self._settings = candidate
         self._set_error("")
         for name, signal in (
             ("backend", self.backendChanged),
@@ -9710,6 +10045,7 @@ class AppController(QObject):
             ("output_dir", self.outputDirChanged),
             ("export_format", self.exportFormatChanged),
             ("m4b_bitrate", self.m4bBitrateChanged),
+            ("temperature", self.temperatureChanged),
             ("speed", self.speedChanged),
             ("live_preview", self.livePreviewChanged),
             ("silence_p", self.silencePChanged),

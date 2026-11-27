@@ -1316,3 +1316,197 @@ class TestSubtitleStudioController:
         saved_tl = store.load_timeline(proj.id)
         assert saved_tl is not None
         assert saved_tl.segments[0].end_ms == pytest.approx(900, abs=5)
+
+
+class TestStudioHardeningTask52:
+    """Task 5.2: save/export generation gates, GUI snapshots, and stretch cache cleanup."""
+
+    def _build_subtitle_studio(self, tmp_path: Path, *, with_video: bool = False):
+        from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, FitPolicy
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+        )
+        from vienetts_app.core.subtitles import Cue
+        from vienetts_app.core.synthesis_context import SynthesisContext
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        runner = DeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+        video_path = ""
+        if with_video:
+            vfile = tmp_path / "clip.mp4"
+            vfile.write_bytes(b"fake-video")
+            video_path = str(vfile)
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        cues = (
+            Cue(index=1, start_ms=100, end_ms=600, text="Câu một"),
+            Cue(index=2, start_ms=800, end_ms=1300, text="Câu hai"),
+        )
+        ctx = SynthesisContext(profile="vieneu", model_revision="r1", voice_id="Binh")
+        proj = build_project(
+            tmp_path / "sub.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Binh",
+            context=ctx,
+            video_path=video_path,
+            embed_subtitles=True,
+            subtitle_embed_mode="soft",
+        )
+        store.save(proj)
+        with SubtitleTrackRenderer(store, proj) as renderer:
+            for i in range(len(cues)):
+                renderer.add_clip(i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32))
+            renderer.finish()
+        assert c.openSubtitleInStudio(proj.id, 0) is True
+        runner.drain()
+        return c, runner, proj
+
+    def test_studio_save_and_export_video_drop_stale_callbacks_after_project_switch(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        # 1) Stale studioSaveToSubtitle on_done & on_error are dropped after project switch.
+        c, runner, _proj = self._build_subtitle_studio(tmp_path / "save")
+        exported: list[tuple[str, bool]] = []
+        c.exportFinished.connect(lambda p, ok: exported.append((p, ok)))
+
+        assert c.studioSaveToSubtitle() is True
+        assert c.studioBusy is True
+
+        # Switch to a different Studio project before the save finishes.
+        wav = write_wav_file(_tone(), tmp_path / "save" / "other.wav")
+        c._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="b" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c.openInStudio("text", "fresh alpha\n\nfresh beta") is True
+        new_project = c._studio_project  # noqa: SLF001
+        runner.drain()
+
+        assert c._studio_project is new_project  # noqa: SLF001
+        assert c.studioIsSubtitle is False
+        assert c.studioBusy is False
+        assert exported == []
+
+        # Stale on_error from an old project must not surface errorText on the new project.
+        c2, runner2, _proj2 = self._build_subtitle_studio(tmp_path / "save-err")
+        monkeypatch.setattr(
+            "vienetts_app.core.subtitle_project.splice_studio_window_into_subtitle",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk gone")),
+        )
+        assert c2.studioSaveToSubtitle() is True
+        wav2 = write_wav_file(_tone(), tmp_path / "save-err" / "other.wav")
+        c2._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="c" * 32, path=wav2, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c2.openInStudio("text", "fresh") is True
+        c2._set_error("")  # noqa: SLF001
+        runner2.drain()
+        assert c2.errorText == ""
+        assert c2.studioBusy is False
+
+        # 2) Stale studioExportVideo on_done & on_error are dropped after project switch.
+        monkeypatch.undo()
+        c3, runner3, _proj3 = self._build_subtitle_studio(tmp_path / "vid", with_video=True)
+        exported3: list[tuple[str, bool]] = []
+        c3.exportFinished.connect(lambda p, ok: exported3.append((p, ok)))
+
+        def fake_mux(_vpath, _dub_wav, out_path, **_kw):
+            Path(out_path).write_bytes(b"muxed")
+            return Path(out_path)
+
+        monkeypatch.setattr("vienetts_app.core.video_dub.mux_dubbed_video", fake_mux)
+        assert c3.studioExportVideo(str(tmp_path / "vid" / "out")) is True
+        assert c3.exporting is True
+
+        wav3 = write_wav_file(_tone(), tmp_path / "vid" / "other.wav")
+        c3._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="d" * 32, path=wav3, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c3.openInStudio("text", "new project") is True
+        new_project3 = c3._studio_project  # noqa: SLF001
+        runner3.drain()
+
+        assert c3._studio_project is new_project3  # noqa: SLF001
+        assert c3.studioIsSubtitle is False
+        assert c3.exporting is False
+        assert c3.studioBusy is False
+        assert exported3 == []
+
+        # Stale studioExportVideo on_error also clears exporting/busy without surfacing an error.
+        c4, runner4, _proj4 = self._build_subtitle_studio(tmp_path / "vid-err", with_video=True)
+        monkeypatch.setattr(
+            "vienetts_app.core.video_dub.mux_dubbed_video",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError("mux failed")),
+        )
+        assert c4.studioExportVideo(str(tmp_path / "vid-err" / "out")) is True
+        wav4 = write_wav_file(_tone(), tmp_path / "vid-err" / "other.wav")
+        c4._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="e" * 32, path=wav4, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c4.openInStudio("text", "new project") is True
+        c4._set_error("")  # noqa: SLF001
+        runner4.drain()
+        assert c4.errorText == ""
+        assert c4.exporting is False
+        assert c4.studioBusy is False
+
+    def test_studio_export_video_snapshots_subtitle_language_on_gui_thread(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from dataclasses import replace
+
+        c, runner, _proj = self._build_subtitle_studio(tmp_path, with_video=True)
+        c.asrLanguage = "vi"
+        seen_languages: list[str] = []
+
+        def fake_mux(_vpath, _dub_wav, out_path, *, subtitle_language="", **_kw):
+            seen_languages.append(subtitle_language)
+            Path(out_path).write_bytes(b"muxed")
+            return Path(out_path)
+
+        monkeypatch.setattr("vienetts_app.core.video_dub.mux_dubbed_video", fake_mux)
+        assert c.studioExportVideo(str(tmp_path / "out")) is True
+        # Mutate GUI-thread settings AFTER submitting work(), BEFORE the pool runs it.
+        c._settings = replace(c._settings, asr_language="ja")  # noqa: SLF001
+        runner.drain()
+        assert seen_languages == ["vi"]
+
+    def test_studio_clears_stretch_cache_on_project_switch_and_shutdown(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.core import studio
+
+        def _fill_cache() -> None:
+            studio._stretched(_tone(0.25), 1.25)  # noqa: SLF001
+            assert studio.stretch_cache_size() == 1
+
+        c, runner, proj = self._build_subtitle_studio(tmp_path / "cache")
+        wav = write_wav_file(_tone(0.25), tmp_path / "cache" / "art.wav")
+        c._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="f" * 32, path=wav, sample_rate=48_000, samples=12_000, duration_ms=250
+        )
+
+        # 1) openInStudio clears stretch cache.
+        _fill_cache()
+        assert c.openInStudio("text", "alpha") is True
+        assert studio.stretch_cache_size() == 0
+
+        # 2) openChapterInStudio clears stretch cache.
+        _stub_chapter_book(monkeypatch, tmp_path / "cache-ch")
+        _fill_cache()
+        assert c.openChapterInStudio("book", 0) is True
+        runner.drain()
+        assert studio.stretch_cache_size() == 0
+
+        # 3) openSubtitleInStudio clears stretch cache.
+        _fill_cache()
+        assert c.openSubtitleInStudio(proj.id, 0) is True
+        runner.drain()
+        assert studio.stretch_cache_size() == 0
+
+        # 4) shutdown(drain_pool=True) clears stretch cache.
+        _fill_cache()
+        c.shutdown(drain_pool=True)
+        assert studio.stretch_cache_size() == 0

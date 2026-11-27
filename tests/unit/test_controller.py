@@ -1455,10 +1455,11 @@ class TestLifecycle:
             raise OSError("disk full")
 
         monkeypatch.setattr(controller_module, "save_settings", boom)
+        previous_theme = harness.controller.theme
         harness.controller.theme = "dark"  # must not raise
         assert "Could not save settings" in harness.controller.errorText
         assert "disk full" in harness.controller.errorText
-        assert harness.controller.theme == "dark"  # applies live regardless
+        assert harness.controller.theme == previous_theme  # rolled back atomically
 
 
 class TestStreaming:
@@ -5208,10 +5209,13 @@ class TestQwenRuntimeManagement:
         assert controller.qwenRuntimeBusy is True
         controller.cancelQwenRuntimeInstall()
         assert controller.qwenRuntimeState == "unavailable"
-        assert controller.qwenRuntimeBusy is False
-        # The held install result is stale now: landing it must change nothing.
+        assert controller._qwen_operation == "cancelling"  # noqa: SLF001 - lane held until exit
+        assert controller.qwenRuntimeBusy is True
+        # The held install result is stale now: landing it drops the result and unlocks the lane.
         harness.run_pending(0)
         assert controller.qwenRuntimeState == "unavailable"
+        assert controller.qwenRuntimeBusy is False
+        assert controller._qwen_operation is None  # noqa: SLF001
 
     def test_repair_remove_and_import_dispatch_to_the_manager(
         self, qcoreapp, tmp_path: Path, x64_host: None
@@ -5468,10 +5472,14 @@ class TestQwenModelManagement:
         controller.cancelQwenModelDownload("customvoice")
         rows = {row["key"]: row for row in controller.qwenModels}
         assert rows["customvoice"]["state"] == "unavailable"
-        assert controller.qwenModelBusy is False
-        harness.run_pending(0)  # the stale result must not land
+        assert rows["customvoice"]["busy"] is False
+        assert controller._qwen_operation == "cancelling"  # noqa: SLF001 - lane held until exit
+        assert controller.qwenModelBusy is True
+        harness.run_pending(0)  # the stale result must not land; lane unlocks on exit
         rows = {row["key"]: row for row in controller.qwenModels}
         assert rows["customvoice"]["state"] == "unavailable"
+        assert controller.qwenModelBusy is False
+        assert controller._qwen_operation is None  # noqa: SLF001
 
         # One operation owns the Qwen lane: while an install is in flight a
         # runtime install and a second model install are both refused.
@@ -6299,3 +6307,476 @@ class TestVerifyQwenFiles:
         harness = ProfileHarness.qwen_ready(tmp_path / "case-c")
         assert harness.controller.verifyQwenFiles() is False
         assert harness.controller.errorText != ""
+
+
+class TestTask52ControllerHardening:
+    """Task 5.2: lane locks, state integrity, snapshots, playhead clock & full quit cancel."""
+
+    def test_qwen_cancel_holds_lane_lock_until_worker_exits(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        # 1) Runtime install cancel holds _qwen_operation="cancelling" until on_done unwinds.
+        case_a = tmp_path / "runtime"
+        case_a.mkdir()
+        pin_official_format(case_a)
+        harness = ProfileHarness(case_a, deferred=True)
+        controller = harness.controller
+        controller.setQwenDevice("cpu")
+        harness.run_pending(0)
+        assert controller.qwenRuntimeBusy is False
+
+        controller.installQwenRuntime()
+        assert controller.qwenRuntimeState == "downloading"
+        assert controller.qwenRuntimeBusy is True
+        controller.cancelQwenRuntimeInstall()
+        assert controller.qwenRuntimeState == "unavailable"
+        assert controller._qwen_operation == "cancelling"  # noqa: SLF001
+        assert controller.qwenRuntimeBusy is True
+        assert controller.qwenModelBusy is True
+
+        # Concurrent ops are refused while the cancelled worker is still unwinding.
+        pending_before = len(harness.pending)
+        controller.installQwenRuntime()
+        controller.installQwenModel("base")
+        controller.refreshQwenState()
+        assert len(harness.pending) == pending_before
+
+        # Once the unwinding worker lands, stale status is dropped and lane unlocks.
+        harness.run_pending(0)
+        assert controller.qwenRuntimeState == "unavailable"
+        assert controller._qwen_operation is None  # noqa: SLF001
+        assert controller.qwenRuntimeBusy is False
+        assert controller.qwenModelBusy is False
+
+        # A fresh install is now admitted cleanly.
+        controller.installQwenRuntime()
+        assert controller.qwenRuntimeState == "downloading"
+        harness.run_pending(0)
+        assert controller.qwenRuntimeState == "ready"
+
+        # 2) Model download cancel also holds the lane until worker exits (including on_error).
+        case_b = tmp_path / "model"
+        case_b.mkdir()
+        pin_official_format(case_b)
+        harness_b = ProfileHarness(case_b, deferred=True)
+        ctrl_b = harness_b.controller
+        ctrl_b.refreshQwenState()
+        harness_b.run_pending(0)
+
+        bg_b = _DeferredBackground()
+        ctrl_b._run_bg = bg_b  # noqa: SLF001
+        ctrl_b.installQwenModel("customvoice")
+        assert ctrl_b.qwenModelBusy is True
+        ctrl_b.cancelQwenModelDownload("customvoice")
+        assert ctrl_b._qwen_operation == "cancelling"  # noqa: SLF001
+        assert ctrl_b.qwenModelBusy is True
+        assert ctrl_b.qwenRuntimeBusy is True
+        calls_before = len(bg_b.calls)
+        ctrl_b.installQwenModel("base")
+        ctrl_b.installQwenRuntime()
+        assert len(bg_b.calls) == calls_before
+
+        # Simulate the unwinding worker failing on_error: lane must still release.
+        _work, _on_done, on_error = bg_b.calls.pop(0)
+        assert on_error is not None
+        on_error(RuntimeError("cancelled mid-stream"))
+        assert ctrl_b._qwen_operation is None  # noqa: SLF001
+        assert ctrl_b.qwenModelBusy is False
+        assert ctrl_b.qwenRuntimeBusy is False
+        rows = {row["key"]: row for row in ctrl_b.qwenModels}
+        assert rows["customvoice"]["state"] == "unavailable"
+
+    def test_refresh_model_state_during_download_or_import_never_wedges_downloading(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # Official download: pre-existing inspect landing mid-download + refreshModelState
+        # called mid-download must neither clobber progress nor wedge _model_downloading.
+        manager = _FakeModelManager(status=_model_status("unavailable"))
+        manager.queue_statuses(_model_status("ready", location=_FakeModelLocation(tmp_path)._inner))
+        background = _DeferredBackground()
+        harness = Harness(tmp_path)
+        harness.controller._model_manager = manager  # noqa: SLF001
+        harness.controller._run_bg = background  # noqa: SLF001
+
+        harness.controller.refreshModelState()  # job 0: pre-download inspect
+        harness.controller.downloadOfficialModel()  # job 1: active download
+        assert harness.controller._model_downloading is True  # noqa: SLF001
+        assert harness.controller.modelState == "downloading"
+
+        # A refresh requested while downloading is ignored (no new inspect queued).
+        calls_during = len(background.calls)
+        harness.controller.refreshModelState()
+        assert len(background.calls) == calls_during
+
+        # Pre-download inspect landing late must not overwrite "downloading" or wedge state.
+        background.complete(0)
+        assert harness.controller.modelState == "downloading"
+        assert harness.controller._model_downloading is True  # noqa: SLF001
+
+        # Download completion finishes cleanly and clears _model_downloading.
+        background.complete(0)
+        assert harness.controller.modelState == "ready"
+        assert harness.controller._model_downloading is False  # noqa: SLF001
+
+        # Same guarantee for importOfflinePack().
+        pack_dir = tmp_path / "offline-pack"
+        pack_dir.mkdir()
+        manager.install_offline_pack = lambda _src: _model_status(  # type: ignore[attr-defined]
+            "ready", location=_FakeModelLocation(tmp_path)._inner
+        )
+        harness.controller.importOfflinePack(str(pack_dir))
+        assert harness.controller._model_downloading is True  # noqa: SLF001
+        calls_during = len(background.calls)
+        harness.controller.refreshModelState()
+        assert len(background.calls) == calls_during
+        background.complete(0)
+        assert harness.controller.modelState == "ready"
+        assert harness.controller._model_downloading is False  # noqa: SLF001
+
+    def test_temperature_emits_signal_and_set_setting_rolls_back_on_oserror(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.controller as controller_module
+
+        temp_signals: list[float] = []
+        harness.controller.temperatureChanged.connect(
+            lambda: temp_signals.append(harness.controller.temperature)
+        )
+        harness.controller.temperature = 0.85
+        assert temp_signals == [pytest.approx(0.85)]
+
+        # Build an engine under the current precision ("int8"), then fail persistence.
+        harness.controller.generate("warm up", "")
+        harness.worker.fail_last("done")
+        built_engine = harness.controller._engine  # noqa: SLF001
+        assert built_engine is not None
+        precision_signals: list[str] = []
+        harness.controller.precisionChanged.connect(
+            lambda: precision_signals.append(harness.controller.precision)
+        )
+
+        def boom(_settings, _data_dir):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(controller_module, "save_settings", boom)
+        harness.controller.precision = "fp32"
+
+        # Python settings, QML signals, and engine stay in lockstep on failure.
+        assert harness.controller.precision == "int8"
+        assert precision_signals == []
+        assert harness.controller._engine is built_engine  # noqa: SLF001
+        assert built_engine.closed is False
+        assert "Could not save settings" in harness.controller.errorText
+
+    def test_qwen_inspection_and_removal_snapshot_gui_state_before_pool_work(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        # 1) _start_qwen_inspection snapshots format/settings before submitting work().
+        case_a = tmp_path / "inspect"
+        case_a.mkdir()
+        pin_official_format(case_a)
+        harness = ProfileHarness(case_a, deferred=True)
+        ctrl = harness.controller
+        ctrl.refreshQwenState()
+        # Mutate settings to GGUF AFTER submitting work(), BEFORE the pool thread executes it.
+        ctrl._settings = replace(ctrl._settings, qwen_model_format="gguf")  # noqa: SLF001
+        work, _on_done = harness.pending.pop(0)
+        result = work()
+        # Official format keyspace ("linux-x64-..." + bare model keys), NOT GGUF.
+        _gen, _pgen, _active, _dev, key, _runtime, models, _hw = result
+        assert "customvoice" in models and "base" in models
+        assert not any("-" in model_key for model_key in models)
+        assert key in ("", "linux-x64-cpu", "linux-x64-cuda")
+
+        # 2) _qwen_model_removal_flags snapshots in_use on the GUI thread before pool work().
+        case_b = tmp_path / "remove"
+        case_b.mkdir()
+        pin_official_format(case_b)
+        harness_b = ProfileHarness(
+            case_b,
+            model_status=QwenModelStatus(state="ready", installed_bytes=4_000),
+            runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000),
+            deferred=True,
+        )
+        ctrl_b = harness_b.controller
+        ctrl_b.setQwenDevice("cpu")
+        harness_b.run_pending(0)
+        assert ctrl_b.switchEngineProfile(QWEN_CUSTOM) is True
+        harness_b.run_pending(0)
+        ctrl_b._engine = FakeQwenEngine(profile=QWEN_CUSTOM)  # noqa: SLF001
+
+        ctrl_b.removeQwenModel("customvoice")
+        # Mutate GUI-thread engine/profile BEFORE the worker thread runs remove().
+        ctrl_b._engine = None  # noqa: SLF001
+        ctrl_b._active_profile = VIENEU  # noqa: SLF001
+        harness_b.run_pending(0)
+        assert harness_b.manager_for("customvoice").calls == [("remove", "in_use=True,shared=True")]
+
+    def test_resolve_torch_availability_async_uses_bg_runner_and_generation_guard(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        probe_calls: list[int] = []
+
+        def fake_probe() -> TorchProbe:
+            probe_calls.append(1)
+            return TorchProbe(installed=True, cuda_available=True)
+
+        background = _DeferredBackground()
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(_FakeCudaManager()),
+            background=background,
+            torch_probe=fake_probe,
+        )
+        notified: list[bool] = []
+        controller.torchAvailableChanged.connect(lambda: notified.append(controller.torchAvailable))
+
+        # Runs through self._run_bg (not raw threading.Thread).
+        controller.resolveTorchAvailabilityAsync()
+        assert len(background.calls) == 1
+        assert probe_calls == []
+
+        # A stale probe superseded by a newer generation is dropped cleanly.
+        controller._torch_probe_generation += 1  # noqa: SLF001
+        background.complete(0)
+        assert probe_calls == [1]
+        assert controller._torch_available is None  # noqa: SLF001
+        assert notified == []
+
+        # A fresh probe lands on the GUI thread and emits torchAvailableChanged.
+        controller.resolveTorchAvailabilityAsync()
+        assert len(background.calls) == 1
+        background.complete(0)
+        assert controller._torch_available is True  # noqa: SLF001
+        assert notified == [True]
+
+    def test_replay_position_timer_stops_on_first_real_player_position_tick(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(tmp_path / "clock.wav", job.id, samples=48_000)  # 1000 ms
+        harness.worker.complete_last(artifact)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+
+        # Fallback timer starts on replay for players that never emit positionChanged.
+        assert harness.controller.replay() is True
+        assert harness.controller._replay_pos_timer.isActive() is True  # noqa: SLF001
+
+        # First real QMediaPlayer.positionChanged stops the fallback timer.
+        playback.positionChanged.emit(250)
+        assert harness.controller._replay_pos_timer.isActive() is False  # noqa: SLF001
+        assert harness.controller.replayPosition == pytest.approx(0.25)
+
+        # Pause/resume/seek keep the fallback timer off while real clock owns playback.
+        harness.controller.pauseReplay()
+        assert harness.controller.replayPosition == pytest.approx(0.25)
+        harness.controller.resumeReplay()
+        assert harness.controller._replay_pos_timer.isActive() is False  # noqa: SLF001
+        assert harness.controller.seekReplay(0.75) is True
+        assert harness.controller._replay_pos_timer.isActive() is False  # noqa: SLF001
+        assert harness.controller.replayPosition == pytest.approx(0.75)
+
+        # Next replay re-arms the fallback timer cleanly until a real tick arrives.
+        harness.controller.stopReplay()
+        assert harness.controller.replay() is True
+        assert harness.controller._replay_pos_timer.isActive() is True  # noqa: SLF001
+        harness.controller.stopReplay()
+
+    def test_shutdown_latches_cancels_all_download_lanes_and_force_closes_retired_qwen_hosts(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.controller as controller_module
+
+        # 1) All 4 ASR/diarization downloaders wire cancel_check & handle cancellation cleanly.
+        monkeypatch.setattr(
+            ai_models,
+            "available_audiocpp_variants",
+            lambda: {"cpu": object(), "cuda12.4": object()},
+        )
+        monkeypatch.setattr(ai_models, "available_whisper_cpp_variants", lambda: {"cpu": object()})
+        monkeypatch.setattr(ai_models, "is_whisper_cpp_installed", lambda _d=None: False)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", lambda _d=None: False)
+
+        recorded_checks: dict[str, Any] = {}
+        model_called_after_runtime_cancel: list[str] = []
+
+        def stub_whisper_runtime(_data_dir, *, cancel_check=None, **_kw):
+            recorded_checks["whisper_runtime"] = cancel_check
+            if cancel_check is not None and cancel_check():
+                raise ai_models.AiModelDownloadCancelled("cancelled whisper runtime")
+            return tmp_path / "whisper-cli"
+
+        def stub_asr_model(_model_id, _data_dir, *, cancel_check=None, **_kw):
+            recorded_checks["asr_model"] = cancel_check
+            model_called_after_runtime_cancel.append("asr")
+            if cancel_check is not None and cancel_check():
+                raise ai_models.AiModelDownloadCancelled("cancelled asr model")
+            return tmp_path / "ggml-base.bin"
+
+        def stub_audiocpp_runtime(_data_dir, *, cancel_check=None, **_kw):
+            recorded_checks["audiocpp_runtime"] = cancel_check
+            if cancel_check is not None and cancel_check():
+                raise ai_models.AiModelDownloadCancelled("cancelled audiocpp runtime")
+            return tmp_path / "audiocpp_cli"
+
+        def stub_diar_model(_model_id, _data_dir, *, cancel_check=None, **_kw):
+            recorded_checks["diar_model"] = cancel_check
+            model_called_after_runtime_cancel.append("diar")
+            if cancel_check is not None and cancel_check():
+                raise ai_models.AiModelDownloadCancelled("cancelled diar model")
+            return tmp_path / "nemotron.gguf"
+
+        monkeypatch.setattr(ai_models, "download_whisper_cpp_runtime", stub_whisper_runtime)
+        monkeypatch.setattr(ai_models, "download_asr_model", stub_asr_model)
+        monkeypatch.setattr(ai_models, "download_audiocpp_runtime", stub_audiocpp_runtime)
+        monkeypatch.setattr(ai_models, "download_diarization_model", stub_diar_model)
+
+        # Case A: downloadAsrModel & downloadDiarizationModel abort during runtime step on quit.
+        bg_a = _DeferredBackground()
+        ctrl_a = AppController(data_dir=tmp_path / "dl-a", bg_runner=bg_a)
+        assert ctrl_a.downloadAsrModel() is True
+        assert ctrl_a.downloadDiarizationModel() is True
+        # Internal teardown does NOT latch _shutting_down or cancel downloads.
+        ctrl_a.shutdown(drain_pool=False)
+        assert ctrl_a._shutting_down is False  # noqa: SLF001
+        assert ctrl_a._model_cancel.is_set() is False  # noqa: SLF001
+        assert ctrl_a._qwen_cancel.is_set() is False  # noqa: SLF001
+
+        # Final quit latches _shutting_down and cancels all download lanes.
+        ctrl_a.shutdown(drain_pool=True)
+        assert ctrl_a._shutting_down is True  # noqa: SLF001
+        assert ctrl_a._model_cancel.is_set() is True  # noqa: SLF001
+        assert ctrl_a._qwen_cancel.is_set() is True  # noqa: SLF001
+        assert ctrl_a._cuda_runtime_cancel.is_set() is True  # noqa: SLF001
+        assert ctrl_a._media_download_cancel.is_set() is True  # noqa: SLF001
+
+        for work, _done, on_error in list(bg_a.calls):
+            with pytest.raises(ai_models.AiModelDownloadCancelled) as exc_info:
+                work()
+            assert on_error is not None
+            on_error(exc_info.value)
+        bg_a.calls.clear()
+        assert model_called_after_runtime_cancel == []  # runtime cancel aborts before model step
+        assert ctrl_a.asrDownloadBusy is False
+        assert ctrl_a.diarizationDownloadBusy is False
+        assert ctrl_a.asrDownloadStatus == ""
+        assert ctrl_a.diarizationDownloadStatus == ""
+        assert ctrl_a.errorText == ""
+
+        # Case B: standalone runtime + model-only downloaders also wire cancel_check cleanly.
+        monkeypatch.setattr(ai_models, "is_whisper_cpp_installed", lambda _d=None: True)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", lambda _d=None: True)
+        bg_b = _DeferredBackground()
+        ctrl_b = AppController(data_dir=tmp_path / "dl-b", bg_runner=bg_b)
+        assert ctrl_b.downloadAsrModel() is True
+        assert ctrl_b.downloadDiarizationModel() is True
+        ctrl_b.shutdown(drain_pool=True)
+        for work, _done, on_error in list(bg_b.calls):
+            with pytest.raises(ai_models.AiModelDownloadCancelled) as exc_info:
+                work()
+            assert on_error is not None
+            on_error(exc_info.value)
+        bg_b.calls.clear()
+        assert ctrl_b.asrDownloadBusy is False and ctrl_b.asrDownloadStatus == ""
+        assert ctrl_b.diarizationDownloadBusy is False and ctrl_b.diarizationDownloadStatus == ""
+
+        bg_c = _DeferredBackground()
+        ctrl_c = AppController(data_dir=tmp_path / "dl-c", bg_runner=bg_c)
+        assert ctrl_c.downloadWhisperCppRuntime() is True
+        assert ctrl_c.downloadAudiocppRuntime() is True
+        ctrl_c.shutdown(drain_pool=True)
+        for work, _done, on_error in list(bg_c.calls):
+            with pytest.raises(ai_models.AiModelDownloadCancelled) as exc_info:
+                work()
+            assert on_error is not None
+            on_error(exc_info.value)
+        bg_c.calls.clear()
+        assert ctrl_c.asrDownloadBusy is False and ctrl_c.asrDownloadStatus == ""
+        assert ctrl_c.diarizationDownloadBusy is False and ctrl_c.diarizationDownloadStatus == ""
+        assert set(recorded_checks) == {
+            "whisper_runtime",
+            "asr_model",
+            "audiocpp_runtime",
+            "diar_model",
+        }
+        assert all(callable(fn) for fn in recorded_checks.values())
+
+        # Late timers/callbacks/downloads after shutdown(drain_pool=True) are no-ops.
+        ctrl_c.prewarm_engine()
+        ctrl_c.resolveTorchAvailabilityAsync()
+        ctrl_c.refreshModelState()
+        ctrl_c.refreshProfileState()
+        ctrl_c.refreshQwenState()
+        ctrl_c.refreshCudaRuntimeState()
+        ctrl_c.checkForUpdatesStartup()
+        ctrl_c.downloadOfficialModel()
+        assert ctrl_c.downloadAsrModel() is False
+        assert ctrl_c.downloadWhisperCppRuntime() is False
+        assert ctrl_c.downloadDiarizationModel() is False
+        assert ctrl_c.downloadAudiocppRuntime() is False
+        assert ctrl_c.downloadAudioModel(ai_models.SILERO_VAD_MODEL_ID) is False
+        assert ctrl_c.installFfmpegRuntime() is False
+        assert bg_c.calls == []
+        assert ctrl_c._worker is None  # noqa: SLF001
+
+        # 2) Active + retired subprocess-backed Qwen hosts are force-closed BEFORE pool drain.
+        events: list[str] = []
+
+        class StuckQwenEngine(FakeQwenEngine):
+            def __init__(self, label: str, engine_id: str, owner_worker: Any) -> None:
+                super().__init__(profile=QWEN_CUSTOM)
+                self.label = label
+                self.engine_id = engine_id
+                self._owner_worker = owner_worker
+
+            def close(self) -> None:
+                super().close()
+                events.append(f"close:{self.label}")
+                # Closing the subprocess pipe unblocks the worker thread.
+                self._owner_worker.running = False
+
+        class StuckWorker(FakeWorker):
+            def __init__(self, label: str, engine: Any) -> None:
+                super().__init__(engine)
+                self.label = label
+                self.running = True
+
+            def isRunning(self) -> bool:
+                return self.running
+
+            def stop(self, timeout_ms: int = 5000) -> bool:
+                events.append(f"stop:{self.label}:{timeout_ms}")
+                return super().stop(timeout_ms=timeout_ms)
+
+        monkeypatch.setattr(
+            controller_module,
+            "drain_thread_pool",
+            lambda *a, **k: events.append("drain_pool") or True,
+        )
+        ctrl_q = AppController(data_dir=tmp_path / "qwen-quit", bg_runner=run_sync)
+        retired_worker = StuckWorker("retired", None)
+        retired_engine = StuckQwenEngine("retired", "qwentts_cpp", retired_worker)
+        retired_worker.engine = retired_engine
+        active_worker = StuckWorker("active", None)
+        active_engine = StuckQwenEngine("active", "pytorch", active_worker)
+        active_worker.engine = active_engine
+
+        ctrl_q._retired_workers.append((retired_worker, retired_engine))  # noqa: SLF001
+        ctrl_q._worker = active_worker  # noqa: SLF001
+        ctrl_q._engine = active_engine  # noqa: SLF001
+
+        ctrl_q.shutdown(drain_pool=True)
+
+        assert retired_engine.closed is True
+        assert active_engine.closed is True
+        assert retired_worker.isRunning() is False
+        assert active_worker.isRunning() is False
+        assert ctrl_q._retired_workers == []  # noqa: SLF001
+        assert ctrl_q._retire_timer.isActive() is False  # noqa: SLF001
+        drain_idx = events.index("drain_pool")
+        assert events.index("close:retired") < drain_idx
+        assert events.index("close:active") < drain_idx

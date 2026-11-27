@@ -9,15 +9,20 @@ every wheel has been verified, extracted, and imported by the host itself.
 
 from __future__ import annotations
 
+import contextlib
+import http.client
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import build_opener
 
 from vienetts_app.core.managed_install import (
@@ -29,6 +34,9 @@ from vienetts_app.core.managed_install import (
     extract_wheel_archive,
     file_matches,
     promoted_install,
+    replace_retrying,
+    response_header,
+    response_url,
     safe_remove,
 )
 from vienetts_app.core.managed_install import (
@@ -43,6 +51,98 @@ from vienetts_app.core.qwen_runtime_manifest import (
 )
 
 _DOWNLOAD_TIMEOUT_SECONDS = 30
+_DOWNLOAD_MAX_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_BASE_SECONDS = 0.5
+_DOWNLOAD_BACKOFF_MAX_SECONDS = 4.0
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_PERMANENT_DOWNLOAD_ERROR_MARKERS = (
+    "exceeds declared artifact size",
+    "redirected away from",
+    "redirected to non-HTTPS",
+    "safe full-download restart",
+    "must use HTTPS",
+)
+
+
+def _close_quietly(response: object) -> None:
+    closer = getattr(response, "close", None)
+    if callable(closer):
+        with contextlib.suppress(Exception):
+            closer()
+
+
+def _validated_opener(opener: Callable[..., object]) -> Callable[..., object]:
+    """Wrap an HTTP opener to enforce HTTPS and reject invalid Content-Length."""
+
+    def _open(request: object, timeout: float = _DOWNLOAD_TIMEOUT_SECONDS) -> object:
+        req_url = getattr(request, "full_url", None) or str(request)
+        if urlsplit(req_url).scheme != "https":
+            raise ValueError(f"download URL must use HTTPS: {req_url}")
+        response = opener(request, timeout=timeout)
+        final_url = response_url(response)
+        if final_url is not None and urlsplit(final_url).scheme != "https":
+            _close_quietly(response)
+            raise OSError(f"download redirected to non-HTTPS URL: {final_url}")
+        raw_cl = response_header(response, "Content-Length")
+        if raw_cl is not None:
+            try:
+                cl_value = int(raw_cl.strip())
+            except ValueError as exc:
+                _close_quietly(response)
+                raise ValueError(f"invalid Content-Length header: {raw_cl!r}") from exc
+            if cl_value < 0:
+                _close_quietly(response)
+                raise ValueError(f"negative Content-Length header: {raw_cl!r}")
+        return response
+
+    return _open
+
+
+def _is_retryable_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUSES
+    if isinstance(exc, http.client.HTTPException):
+        return True
+    if isinstance(exc, ValueError):
+        return False
+    if isinstance(exc, OSError):
+        message = str(exc)
+        return not any(marker in message for marker in _PERMANENT_DOWNLOAD_ERROR_MARKERS)
+    return False
+
+
+def _preserve_or_unlink_partial(path: Path, expected_size: int) -> None:
+    """Keep a valid partial (< expected_size) for resume; unlink empty/oversized/symlinks."""
+    if path.is_symlink():
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    try:
+        if not path.exists():
+            return
+        size = path.stat().st_size
+    except OSError:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    if not (0 < size < expected_size):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _wait_for_retry(delay_s: float, cancelled: Callable[[], bool]) -> bool:
+    """Sleep up to ``delay_s`` seconds using Event.wait; False if cancelled early."""
+    if delay_s <= 0:
+        return not cancelled()
+    event = threading.Event()
+    deadline = time.monotonic() + delay_s
+    while True:
+        if cancelled():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        event.wait(min(remaining, 0.05))
 
 
 def _running_python_tag() -> str:
@@ -119,16 +219,22 @@ class QwenRuntimeManager:
     def _previous_dir(self) -> Path:
         return self.root / f"{self.manifest.format_version}.previous"
 
-    def _archive_path(self, wheel: _Wheel) -> Path:
-        return self._staging_dir() / "wheels" / f"{wheel.filename}.part"
+    def _wheels_dir(self) -> Path:
+        # Kept outside staging so wheel archives are never promoted into active/.
+        return self.root / ".wheels_cache" / self.manifest.format_version
 
-    def _staging_directories(self) -> tuple[Path, Path, Path]:
-        staging = self._staging_dir()
-        return self.root / ".staging", staging, staging / "wheels"
+    def _archive_path(self, wheel: _Wheel) -> Path:
+        return self._wheels_dir() / f"{wheel.filename}.part"
+
+    def _staging_directories(self) -> tuple[Path, Path]:
+        return self.root / ".staging", self._staging_dir()
+
+    def _wheel_cache_directories(self) -> tuple[Path, Path]:
+        return self.root / ".wheels_cache", self._wheels_dir()
 
     def _prepare_staging(self) -> Path:
         root = self.root.resolve()
-        for directory in self._staging_directories():
+        for directory in (*self._staging_directories(), *self._wheel_cache_directories()):
             if directory.is_symlink():
                 raise OSError("staging directory must not be a symlink")
             directory.mkdir(exist_ok=True)
@@ -166,8 +272,8 @@ class QwenRuntimeManager:
 
     @property
     def _required_free_bytes(self) -> int:
-        # Archives remain present while their contents are expanded into staging.
-        return self._total_bytes * 2
+        # Wheel cache (~1x) + unpacked site-packages (~2-2.5x) + rollback headroom.
+        return (self._total_bytes * 7 + 1) // 2
 
     def _status(
         self,
@@ -187,8 +293,32 @@ class QwenRuntimeManager:
             location=location,
         )
 
-    def _archive_validates(self, wheel: _Wheel, path: Path) -> bool:
-        return file_matches(path, wheel.size_bytes, wheel.sha256)
+    def _archive_validates(
+        self, wheel: _Wheel, path: Path, *, known_sha256: str | None = None
+    ) -> bool:
+        return file_matches(path, wheel.size_bytes, wheel.sha256, known_sha256=known_sha256)
+
+    def _prune_legacy_wheels(self) -> None:
+        """Delete orphaned legacy ``active/wheels/`` left by pre-hardening installs."""
+        active = self._active_dir()
+        if active.is_symlink() or not active.is_dir():
+            return
+        legacy_wheels = active / "wheels"
+        if not (legacy_wheels.is_symlink() or legacy_wheels.exists()):
+            return
+        try:
+            if not legacy_wheels.is_symlink() and not legacy_wheels.resolve().is_relative_to(
+                active.resolve()
+            ):
+                return
+            safe_remove(legacy_wheels)
+        except OSError:
+            return
+
+    def _clean_wheel_cache(self) -> None:
+        safe_remove(self._wheels_dir())
+        with contextlib.suppress(OSError):
+            (self.root / ".wheels_cache").rmdir()
 
     def _metadata(self) -> dict[str, object]:
         return {
@@ -205,6 +335,7 @@ class QwenRuntimeManager:
             return self._status("failed", error="active runtime must not be a symlink")
         if not active.is_dir():
             return self._status("unavailable")
+        self._prune_legacy_wheels()
         install_path = active / "install.json"
         if not install_path.is_file():
             return self._status("failed", error="install metadata is missing")
@@ -222,6 +353,7 @@ class QwenRuntimeManager:
     def cancel_staging(self) -> None:
         """Discard resumable archives and any incomplete staged extraction."""
         safe_remove(self._staging_dir())
+        self._clean_wheel_cache()
 
     def remove(self, *, in_use: bool = False) -> QwenRuntimeStatus:
         """Remove the managed runtime only when no Qwen engine has loaded it."""
@@ -231,7 +363,7 @@ class QwenRuntimeManager:
         if not active.exists():
             return self._status("unavailable")
         try:
-            safe_remove(active)
+            safe_remove(active, strict=True)
         except OSError as exc:
             return self._status("failed", error=f"could not remove runtime: {exc}")
         return self._status("unavailable")
@@ -250,6 +382,7 @@ class QwenRuntimeManager:
         the import gate is the only thing that can tell the two apart, and
         without it Repair would hand back the same broken runtime as "ready".
         """
+        self._prune_legacy_wheels()
         existing = self.inspect()
         if existing.state == "ready":
             ok, _detail = self._import_check(self._location(self._active_dir()).site_packages)
@@ -258,7 +391,7 @@ class QwenRuntimeManager:
         for wheel in self.manifest.wheels:
             archive_path = self._archive_path(wheel)
             if archive_path.exists() and not self._archive_validates(wheel, archive_path):
-                archive_path.unlink(missing_ok=True)
+                _preserve_or_unlink_partial(archive_path, wheel.size_bytes)
         return self._install_verified(cancelled, on_progress)
 
     def _install_guard(self) -> QwenRuntimeStatus | None:
@@ -297,6 +430,7 @@ class QwenRuntimeManager:
         on_progress: Callable[[QwenRuntimeStatus], None],
     ) -> tuple[int, QwenRuntimeStatus | None]:
         verified_bytes = 0
+        validated_opener = _validated_opener(self._opener)
         for wheel in self.manifest.wheels:
             if cancelled():
                 return verified_bytes, self._status("unavailable", installed_bytes=verified_bytes)
@@ -304,28 +438,63 @@ class QwenRuntimeManager:
             if archive_path.is_symlink():
                 archive_path.unlink()
             if not self._archive_validates(wheel, archive_path):
-                try:
-                    download_wheel_archive(
-                        wheel,
-                        archive_path,
-                        cancelled=cancelled,
-                        opener=self._opener,
-                        downloader=self._downloader,
-                        timeout=_DOWNLOAD_TIMEOUT_SECONDS,
-                        on_bytes=self._wheel_progress_reporter(wheel, verified_bytes, on_progress),
-                    )
-                except _DownloadCancelled:
-                    if not self._archive_validates(wheel, archive_path):
-                        archive_path.unlink(missing_ok=True)
-                    return verified_bytes, self._status(
-                        "unavailable", installed_bytes=verified_bytes
-                    )
-                except (HTTPError, OSError, ValueError) as exc:
-                    archive_path.unlink(missing_ok=True)
-                    return verified_bytes, self._status(
-                        "failed", installed_bytes=verified_bytes, error=f"download failed: {exc}"
-                    )
-                if not self._archive_validates(wheel, archive_path):
+                known_sha256: str | None = None
+                for attempt in range(_DOWNLOAD_MAX_ATTEMPTS):
+                    try:
+                        known_sha256 = download_wheel_archive(
+                            wheel,
+                            archive_path,
+                            cancelled=cancelled,
+                            opener=validated_opener,
+                            downloader=self._downloader,
+                            timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+                            on_bytes=self._wheel_progress_reporter(
+                                wheel, verified_bytes, on_progress
+                            ),
+                        )
+                        break
+                    except _DownloadCancelled:
+                        if not self._archive_validates(wheel, archive_path):
+                            _preserve_or_unlink_partial(archive_path, wheel.size_bytes)
+                        return verified_bytes, self._status(
+                            "unavailable", installed_bytes=verified_bytes
+                        )
+                    except (
+                        http.client.HTTPException,
+                        HTTPError,
+                        URLError,
+                        OSError,
+                        TimeoutError,
+                        ValueError,
+                    ) as exc:
+                        if cancelled():
+                            _preserve_or_unlink_partial(archive_path, wheel.size_bytes)
+                            return verified_bytes, self._status(
+                                "unavailable", installed_bytes=verified_bytes
+                            )
+                        if "exceeds declared artifact size" in str(exc):
+                            archive_path.unlink(missing_ok=True)
+                        else:
+                            _preserve_or_unlink_partial(archive_path, wheel.size_bytes)
+                        if (
+                            _is_retryable_download_error(exc)
+                            and attempt + 1 < _DOWNLOAD_MAX_ATTEMPTS
+                        ):
+                            delay = min(
+                                _DOWNLOAD_BACKOFF_MAX_SECONDS,
+                                _DOWNLOAD_BACKOFF_BASE_SECONDS * (2**attempt),
+                            )
+                            if not _wait_for_retry(delay, cancelled):
+                                return verified_bytes, self._status(
+                                    "unavailable", installed_bytes=verified_bytes
+                                )
+                            continue
+                        return verified_bytes, self._status(
+                            "failed",
+                            installed_bytes=verified_bytes,
+                            error=f"download failed: {exc}",
+                        )
+                if not self._archive_validates(wheel, archive_path, known_sha256=known_sha256):
                     archive_path.unlink(missing_ok=True)
                     return verified_bytes, self._status(
                         "failed",
@@ -376,6 +545,7 @@ class QwenRuntimeManager:
         on_progress: Callable[[QwenRuntimeStatus], None] = lambda _status: None,
     ) -> QwenRuntimeStatus:
         """Download, validate, extract, and atomically promote the runtime."""
+        self._prune_legacy_wheels()
         existing = self.inspect()
         if existing.state == "ready":
             return existing
@@ -411,6 +581,7 @@ class QwenRuntimeManager:
         Every file is verified against the manifest before extraction, so an
         offline pack cannot smuggle in a different build than the pinned one.
         """
+        self._prune_legacy_wheels()
         existing = self.inspect()
         if existing.state == "ready":
             return existing
@@ -447,7 +618,7 @@ class QwenRuntimeManager:
         active = self._active_dir()
         previous = self._previous_dir()
         if not active.exists() and previous.exists():
-            os.replace(previous, active)
+            replace_retrying(previous, active)
 
     def _promote_staging(self) -> QwenRuntimeStatus:
         staging = self._staging_dir()
@@ -455,6 +626,8 @@ class QwenRuntimeManager:
         previous = self._previous_dir()
         if not self._staging_is_safe():
             return self._status("failed", error="promotion failed: staging directory is unsafe")
+        # Never allow any legacy staged wheels directory to promote into active/.
+        safe_remove(staging / "wheels")
         try:
             self._recover_previous_if_needed()
             with promoted_install(staging, active, previous):
@@ -470,6 +643,7 @@ class QwenRuntimeManager:
             return self._status("failed", error=str(exc))
         except OSError as exc:
             return self._status("failed", error=f"promotion failed: {exc}")
+        self._clean_wheel_cache()
         return status
 
     def _wheel_progress_reporter(

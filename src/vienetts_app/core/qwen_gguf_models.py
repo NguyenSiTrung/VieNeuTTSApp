@@ -16,24 +16,32 @@ consumed by cleanup.
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import shutil
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import HTTPError
 
 from vienetts_app.core.managed_install import (
     DownloadCancelled,
+    FileStamp,
     InstallPromotionError,
     StampLedger,
     file_matches,
+    file_matches_stamped,
     free_space_bytes,
     promoted_install,
+    replace_retrying,
     require_verify_mode,
     safe_remove,
     split_install_record,
 )
+from vienetts_app.core.paths import to_extended
 from vienetts_app.core.qwen_gguf_model_manifest import (
     FORMAT_VERSION,
     MANIFEST,
@@ -45,6 +53,63 @@ from vienetts_app.core.qwen_gguf_model_manifest import (
 from vienetts_app.core.qwen_variants import MODEL_FORMAT_GGUF, QwenVariant
 
 SHARED_DIR_NAME = "shared"
+
+_DOWNLOAD_MAX_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_BASE_SECONDS = 0.5
+_DOWNLOAD_BACKOFF_MAX_SECONDS = 4.0
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_retryable_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUSES
+    return isinstance(exc, http.client.HTTPException | OSError | TimeoutError)
+
+
+def _preserve_or_unlink_partial(path: Path, expected_size: int) -> None:
+    """Keep partial (< expected_size) files for resume; unlink empty/oversized/symlinks."""
+    if path.is_symlink():
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    try:
+        if not path.exists():
+            return
+        size = path.stat().st_size
+    except OSError:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    if not (0 < size < expected_size):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _wait_for_retry(delay_s: float, cancelled: Callable[[], bool]) -> bool:
+    if delay_s <= 0:
+        return not cancelled()
+    event = threading.Event()
+    deadline = time.monotonic() + delay_s
+    while True:
+        if cancelled():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        event.wait(min(remaining, 0.05))
+
+
+def _clear_hf_download_metadata(local_dir: Path) -> None:
+    """Remove HF ``.metadata`` / ``.incomplete`` entries after a checksum mismatch."""
+    download_cache = local_dir / ".cache" / "huggingface" / "download"
+    if download_cache.is_symlink() or not download_cache.is_dir():
+        return
+    for pattern in ("*.metadata", "*.incomplete"):
+        for entry in download_cache.rglob(pattern):
+            with contextlib.suppress(OSError):
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink(missing_ok=True)
+
 
 #: Manifest profile key -> EngineId (inverse of PROFILE_KEY_FOR).
 _ENGINE_ID_FOR = {profile: engine for engine, profile in PROFILE_KEY_FOR.items()}
@@ -279,6 +344,11 @@ class QwenGgufModelManager:
                 return self._status("failed", error="staging directory is unsafe")
         return None
 
+    def _clean_staging_caches(self) -> None:
+        """Delete HF ``.cache/`` directories inside staging before promotion."""
+        safe_remove(self._staging_dir() / ".cache")
+        safe_remove(self._shared_staging_dir() / ".cache")
+
     def _verified(self, record: QwenGgufFile, path: Path) -> bool:
         """Size+SHA and the declared GGUF metadata — both, never just bytes."""
         if path.is_symlink() or not file_matches(path, record.size_bytes, record.sha256):
@@ -289,11 +359,13 @@ class QwenGgufModelManager:
         """HF downloads reuse the hub seam: resume, redirects, *.incomplete."""
         from huggingface_hub import hf_hub_download  # noqa: PLC0415 - lazy import
 
+        local_dir = target.parent
+        local_dir_str = str(to_extended(local_dir.resolve())) if os.name == "nt" else str(local_dir)
         hf_hub_download(
             repo_id=self.recipe.repo,
             filename=url.rsplit("/", 1)[-1],
             revision=self.recipe.revision,
-            local_dir=str(target.parent),
+            local_dir=local_dir_str,
             local_dir_use_symlinks=False,
         )
 
@@ -302,21 +374,42 @@ class QwenGgufModelManager:
         record: QwenGgufFile,
         destination: Path,
         downloader: Callable[[str, Path], None],
+        *,
+        cancelled: Callable[[], bool] = lambda: False,
     ) -> str:
         """Fetch one file into ``destination`` and verify it; "" on success."""
         destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            downloader(self._url_for(record), destination)
-        except DownloadCancelled:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the seam reports anything
-            return f"download failed: {exc}"
+        for attempt in range(_DOWNLOAD_MAX_ATTEMPTS):
+            try:
+                downloader(self._url_for(record), destination)
+                break
+            except DownloadCancelled:
+                _preserve_or_unlink_partial(destination, record.size_bytes)
+                raise
+            except Exception as exc:  # noqa: BLE001 - the seam reports anything
+                if cancelled():
+                    _preserve_or_unlink_partial(destination, record.size_bytes)
+                    raise DownloadCancelled from exc
+                _preserve_or_unlink_partial(destination, record.size_bytes)
+                if _is_retryable_download_error(exc) and attempt + 1 < _DOWNLOAD_MAX_ATTEMPTS:
+                    delay = min(
+                        _DOWNLOAD_BACKOFF_MAX_SECONDS,
+                        _DOWNLOAD_BACKOFF_BASE_SECONDS * (2**attempt),
+                    )
+                    if not _wait_for_retry(delay, cancelled):
+                        raise DownloadCancelled from exc
+                    continue
+                return f"download failed: {exc}"
         if not file_matches(destination, record.size_bytes, record.sha256):
+            with contextlib.suppress(OSError):
+                destination.unlink(missing_ok=True)
+            _clear_hf_download_metadata(destination.parent)
             return f"checksum mismatch: {record.path}"
         metadata_error = metadata_matches(record, destination)
         if metadata_error:
             with contextlib.suppress(OSError):
                 destination.unlink(missing_ok=True)
+            _clear_hf_download_metadata(destination.parent)
             return metadata_error
         return ""
 
@@ -324,34 +417,37 @@ class QwenGgufModelManager:
         self,
         cancelled: Callable[[], bool],
         on_progress: Callable[[QwenGgufModelStatus], None],
+        ledger: StampLedger | None = None,
     ) -> tuple[int, QwenGgufModelStatus | None]:
         """Stage the talker + shared tokenizer, reusing anything that verifies."""
         downloader = self._downloader if self._downloader is not None else self._default_download
         verified_bytes = 0
         plan = (
-            (self.recipe.talker, self._staging_dir() / self.recipe.talker.path),
+            (self.recipe.talker, self._staging_dir() / self.recipe.talker.path, False),
             (
                 self.recipe.tokenizer,
                 self._shared_staging_dir() / self.recipe.tokenizer.path,
+                True,
             ),
         )
-        for record, destination in plan:
+        for record, destination, is_shared in plan:
             if cancelled():
                 return verified_bytes, self._status("unavailable", installed_bytes=verified_bytes)
-            is_shared = destination.parent == self._shared_staging_dir()
-            if is_shared and file_matches(
-                self._shared_dir() / record.path,
-                record.size_bytes,
-                record.sha256,
-            ):
+            stamp_key = f"{SHARED_DIR_NAME}/{record.path}" if is_shared else f"files/{record.path}"
+            shared_target = self._shared_dir() / record.path
+            if is_shared and file_matches(shared_target, record.size_bytes, record.sha256):
                 # Already promoted for a sibling variant: one download serves
                 # every profile sharing the quantization.
+                if ledger is not None:
+                    ledger.record(stamp_key, shared_target)
                 verified_bytes += record.size_bytes
                 on_progress(self._status("downloading", installed_bytes=verified_bytes))
                 continue
             if not self._verified(record, destination):
                 try:
-                    error = self._download_into(record, destination, downloader)
+                    error = self._download_into(
+                        record, destination, downloader, cancelled=cancelled
+                    )
                 except DownloadCancelled:
                     return verified_bytes, self._status(
                         "unavailable", installed_bytes=verified_bytes
@@ -360,37 +456,54 @@ class QwenGgufModelManager:
                     return verified_bytes, self._status(
                         "failed", installed_bytes=verified_bytes, error=error
                     )
+            if ledger is not None:
+                ledger.record(stamp_key, destination)
             verified_bytes += record.size_bytes
             on_progress(self._status("downloading", installed_bytes=verified_bytes))
         return verified_bytes, None
 
     # --- promote ------------------------------------------------------------
 
-    def _promote_shared(self) -> str:
+    def _promote_shared(self, verified_stamps: Mapping[str, FileStamp] | None = None) -> str:
         record = self.recipe.tokenizer
         staged = self._shared_staging_dir() / record.path
         target = self._shared_dir() / record.path
-        if file_matches(target, record.size_bytes, record.sha256):
+        known = (
+            verified_stamps.get(f"{SHARED_DIR_NAME}/{record.path}")
+            if verified_stamps is not None
+            else None
+        )
+        if file_matches_stamped(target, record.size_bytes, record.sha256, known) is not None:
+            safe_remove(self._shared_staging_dir())
             return ""
-        if not self._verified(record, staged):
+        staged_ok = (
+            known is not None
+            and not staged.is_symlink()
+            and file_matches_stamped(staged, record.size_bytes, record.sha256, known) is not None
+        )
+        if not staged_ok and not self._verified(record, staged):
             return f"shared file is missing or corrupt: {record.path}"
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged, target)
+            replace_retrying(staged, target)
         except OSError as exc:
             return f"could not promote shared file {record.path}: {exc}"
+        safe_remove(self._shared_staging_dir())
         return ""
 
-    def _promote_staging(self) -> QwenGgufModelStatus:
+    def _promote_staging(
+        self, verified_stamps: Mapping[str, FileStamp] | None = None
+    ) -> QwenGgufModelStatus:
         staging = self._staging_dir()
         active = self._active_dir()
         previous = self._previous_dir()
-        shared_error = self._promote_shared()
+        self._clean_staging_caches()
+        shared_error = self._promote_shared(verified_stamps)
         if shared_error:
             return self._status("failed", error=shared_error)
         try:
             if not active.exists() and previous.exists():
-                os.replace(previous, active)
+                replace_retrying(previous, active)
             with promoted_install(staging, active, previous):
                 status = self.status()
                 if not status.ready:
@@ -399,12 +512,18 @@ class QwenGgufModelManager:
             return self._status("failed", error=str(exc))
         except OSError as exc:
             return self._status("failed", error=f"promotion failed: {exc}")
+        with contextlib.suppress(OSError):
+            (self.root / ".staging").rmdir()
         return status
 
-    def _finish_staging(self, verified_bytes: int) -> QwenGgufModelStatus:
+    def _finish_staging(
+        self, verified_bytes: int, ledger: StampLedger | None = None
+    ) -> QwenGgufModelStatus:
+        self._clean_staging_caches()
+        metadata = ledger.with_stamps(self._metadata()) if ledger is not None else self._metadata()
         try:
             (self._staging_dir() / "install.json").write_text(
-                json.dumps(self._metadata(), sort_keys=True),
+                json.dumps(metadata, sort_keys=True),
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -413,7 +532,7 @@ class QwenGgufModelManager:
                 installed_bytes=verified_bytes,
                 error=f"could not write metadata: {exc}",
             )
-        return self._promote_staging()
+        return self._promote_staging(ledger.fresh if ledger is not None else None)
 
     # --- public API ---------------------------------------------------------
 
@@ -429,13 +548,14 @@ class QwenGgufModelManager:
         guard = self._install_guard()
         if guard is not None:
             return guard
-        verified_bytes, failure = self._stage_files(cancelled, on_progress)
+        ledger = StampLedger({})
+        verified_bytes, failure = self._stage_files(cancelled, on_progress, ledger)
         if failure is not None:
             return failure
         if cancelled():
             return self._status("unavailable", installed_bytes=verified_bytes)
         on_progress(self._status("validating", installed_bytes=verified_bytes))
-        return self._finish_staging(verified_bytes)
+        return self._finish_staging(verified_bytes, ledger)
 
     def install_offline(
         self,
@@ -489,25 +609,38 @@ class QwenGgufModelManager:
         guard = self._install_guard()
         if guard is not None:
             return guard
+        ledger = StampLedger({})
         try:
             for record, candidate in pair:
+                is_talker = record is self.recipe.talker
+                if not is_talker:
+                    shared_target = self._shared_dir() / record.path
+                    if file_matches(shared_target, record.size_bytes, record.sha256):
+                        ledger.record(f"{SHARED_DIR_NAME}/{record.path}", shared_target)
+                        continue
                 destination = (
                     self._staging_dir() / record.path
-                    if record is self.recipe.talker
+                    if is_talker
                     else self._shared_staging_dir() / record.path
                 )
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if not file_matches(destination, record.size_bytes, record.sha256):
                     shutil.copyfile(candidate, destination)
+                stamp_key = (
+                    f"files/{record.path}" if is_talker else f"{SHARED_DIR_NAME}/{record.path}"
+                )
+                if destination.stat().st_size == record.size_bytes:
+                    ledger.record(stamp_key, destination)
+            self._clean_staging_caches()
             (self._staging_dir() / "install.json").write_text(
-                json.dumps(self._metadata(), sort_keys=True),
+                json.dumps(ledger.with_stamps(self._metadata()), sort_keys=True),
                 encoding="utf-8",
             )
         except OSError as exc:
             safe_remove(self._staging_dir())
             return self._status("failed", error=f"could not stage offline pack: {exc}")
         on_progress(self._status("validating", installed_bytes=self.recipe.total_bytes))
-        return self._promote_staging()
+        return self._promote_staging(ledger.fresh)
 
     def repair(
         self,
@@ -540,10 +673,13 @@ class QwenGgufModelManager:
         active = self._active_dir()
         if not active.exists():
             return self._status("unavailable")
-        safe_remove(active)
-        if drop_shared:
-            for path in unreferenced_shared_files(self.root, self.manifest):
-                safe_remove(path)
+        try:
+            safe_remove(active, strict=True)
+            if drop_shared:
+                for path in unreferenced_shared_files(self.root, self.manifest):
+                    safe_remove(path, strict=True)
+        except OSError as exc:
+            return self._status("failed", error=f"could not remove model: {exc}")
         return self._status("unavailable")
 
     def cancel_staging(self) -> None:

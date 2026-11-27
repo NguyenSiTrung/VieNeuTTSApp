@@ -765,3 +765,184 @@ def test_a_legacy_pack_record_hashes_once_then_persists(tmp_path: Path, monkeypa
     assert manager.status().ready
     assert manager.status().ready
     assert len(calls) == len(manager.pack.files)
+
+
+def test_http_online_install_uses_inline_sha_and_pre_promotion_stamps(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fresh HTTP 200 online install computes SHA-256 inline and stamps install.json
+    before promotion: 0 sha256_of() disk reads across install + post-promote status."""
+    pack = mini_pack(downloads=("https://github.com/acme/packs/linux-x64-cpu",))
+    contents = pack_contents(pack)
+
+    def opener(request: Any, timeout: float = 0) -> FakeResponse:
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        path = url.rsplit("/", 1)[-1]
+        key = next(k for k in contents if k.rsplit("/", 1)[-1] == path)
+        body = contents[key]
+        resp = FakeResponse(body, status=200, url=url)
+        resp.headers["Content-Length"] = str(len(body))
+        return resp
+
+    calls = _hash_spy(monkeypatch)
+    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack, opener=opener)
+    status = manager.install_online()
+    assert status.ready
+    assert calls == []
+
+    record = json.loads((active_dir(manager) / "install.json").read_text("utf-8"))
+    assert set(record["stamps"]) == {f"files/{item.path}" for item in pack.files}
+    assert manager.status().ready
+    assert calls == []
+
+
+def test_http_transient_retry_content_length_downgrade_checksum_unlink_and_strict_remove(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Transient HTTPException preserves partials and resumes with backoff; bad
+    Content-Length and https->http downgrades fail cleanly; checksum mismatch
+    unlinks corrupt files; remove is strict."""
+    import http.client
+
+    from vienetts_app.core import managed_install as mi
+    from vienetts_app.core import qwen_gguf_runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "_DOWNLOAD_BACKOFF_BASE_SECONDS", 0.0)
+    pack = mini_pack(downloads=("https://github.com/acme/packs/linux-x64-cpu",))
+    contents = pack_contents(pack)
+
+    # 1) Transient IncompleteRead mid-stream keeps partial < size_bytes and resumes via 206.
+    class FlakyBodyResponse(FakeResponse):
+        def __init__(self, first_chunk: bytes, *, url: str) -> None:
+            super().__init__(first_chunk, status=200, url=url)
+            self._sent = False
+
+        def read(self, size: int = -1) -> bytes:
+            if not self._sent:
+                self._sent = True
+                return super().read(size)
+            raise http.client.IncompleteRead(b"partial", expected=len(LIBQWEN))
+
+    lib_requests = {"n": 0}
+    seen_ranges: list[str | None] = []
+
+    def flaky_opener(request: Any, timeout: float = 0) -> FakeResponse:
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        path = url.rsplit("/", 1)[-1]
+        key = next(k for k in contents if k.rsplit("/", 1)[-1] == path)
+        body = contents[key]
+        range_hdr = getattr(request, "headers", {}).get("Range")
+        if key == "libqwen.so":
+            lib_requests["n"] += 1
+            seen_ranges.append(range_hdr)
+            if lib_requests["n"] == 1:
+                return FlakyBodyResponse(body[:5], url=url)
+        if range_hdr:
+            offset = int(range_hdr.removeprefix("bytes=").split("-")[0])
+            resp = FakeResponse(body[offset:], status=206, url=url)
+            resp.headers["Content-Range"] = f"bytes {offset}-{len(body) - 1}/{len(body)}"
+            return resp
+        return FakeResponse(body, status=200, url=url)
+
+    manager = QwenGgufRuntimeManager(tmp_path / "retry", pack, opener=flaky_opener)
+    assert manager.install_online().ready
+    assert lib_requests["n"] == 2
+    assert seen_ranges == [None, "bytes=5-"]
+
+    # 2) Bad/negative Content-Length fails cleanly.
+    for bad_cl in ("not-an-int", "-10"):
+
+        def bad_cl_opener(request: Any, timeout: float = 0, cl: str = bad_cl) -> FakeResponse:
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            resp = FakeResponse(LIBQWEN, status=200, url=url)
+            resp.headers["Content-Length"] = cl
+            return resp
+
+        bad_mgr = QwenGgufRuntimeManager(tmp_path / f"cl-{bad_cl}", pack, opener=bad_cl_opener)
+        failed = bad_mgr.install_online()
+        assert failed.state == "failed"
+        assert "Content-Length" in failed.error or "download failed" in failed.error
+
+    # 3) https -> http downgrade redirect fails cleanly.
+    def downgrade_opener(request: Any, timeout: float = 0) -> FakeResponse:
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        return FakeResponse(LIBQWEN, status=200, url=url.replace("https://", "http://", 1))
+
+    down_mgr = QwenGgufRuntimeManager(tmp_path / "downgrade", pack, opener=downgrade_opener)
+    failed_down = down_mgr.install_online()
+    assert failed_down.state == "failed"
+
+    # 4) Checksum mismatch unlinks corrupt staged file.
+    bad_payload = dict(contents)
+    bad_payload["libqwen.so"] = b"corrupt bytes"
+    corrupt_mgr = QwenGgufRuntimeManager(
+        tmp_path / "corrupt",
+        pack,
+        downloader=file_downloader(bad_payload),
+    )
+    failed_corrupt = corrupt_mgr.install_online()
+    assert failed_corrupt.state == "failed"
+    assert "checksum mismatch" in failed_corrupt.error
+    assert not (staging_dir(corrupt_mgr) / "libqwen.so").exists()
+
+    # 5) Strict remove reports failure when active directory remains locked.
+    monkeypatch.setattr(mi, "REMOVAL_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(mi.shutil, "rmtree", lambda *_a, **_k: None)
+    failed_remove = manager.remove()
+    assert failed_remove.state == "failed"
+    assert "could not remove" in failed_remove.error
+
+
+def test_pack_archive_extract_caps_bytes_against_zip_and_tar_bombs(tmp_path: Path) -> None:
+    """_PackArchive.extract() caps extracted bytes to record.size_bytes + 1 and cleans up."""
+    import tarfile
+    import zipfile
+
+    from vienetts_app.core.qwen_gguf_runtime import _PackArchive
+
+    pack = mini_pack()
+    contents = pack_contents(pack)
+    oversized = b"\x00" * (2 * 1024 * 1024)  # 2 MiB bomb for a 21-byte member
+
+    # Zip bomb
+    zip_path = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path, data in contents.items():
+            zf.writestr(path, oversized if path == "libqwen.so" else data)
+
+    archive = _PackArchive(zip_path)
+    try:
+        target = tmp_path / "out-zip" / "libqwen.so"
+        with pytest.raises(OSError, match="exceeds declared size"):
+            archive.extract(pack.files[0], target)
+        assert not target.exists()
+    finally:
+        archive.close()
+
+    zip_mgr = QwenGgufRuntimeManager(tmp_path / "rt-zip", pack)
+    status_zip = zip_mgr.install_from_offline_pack(zip_path)
+    assert status_zip.state == "failed"
+    assert "exceeds declared size" in status_zip.error
+
+    # Tar bomb
+    tar_path = tmp_path / "bomb.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tf:
+        for path, data in contents.items():
+            blob = oversized if path == "libqwen.so" else data
+            info = tarfile.TarInfo(path)
+            info.size = len(blob)
+            tf.addfile(info, io.BytesIO(blob))
+
+    tar_archive = _PackArchive(tar_path)
+    try:
+        target = tmp_path / "out-tar" / "libqwen.so"
+        with pytest.raises(OSError, match="exceeds declared size"):
+            tar_archive.extract(pack.files[0], target)
+        assert not target.exists()
+    finally:
+        tar_archive.close()
+
+    tar_mgr = QwenGgufRuntimeManager(tmp_path / "rt-tar", pack)
+    status_tar = tar_mgr.install_from_offline_pack(tar_path)
+    assert status_tar.state == "failed"
+    assert "exceeds declared size" in status_tar.error

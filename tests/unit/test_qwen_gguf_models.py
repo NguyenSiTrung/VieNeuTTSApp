@@ -630,3 +630,167 @@ def test_stat_stamps_skip_unchanged_hashing(tmp_path: Path, monkeypatch) -> None
     assert manager.status().ready
     assert manager.status().ready
     assert len(calls) == 2
+
+
+def test_staging_cache_and_shared_staging_cleaned_and_windows_extended_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """HF .cache/ never promotes, .staging/shared/ is cleaned after promote,
+    and Windows _default_download passes extended local_dir."""
+    manifest = mini_manifest()
+    payload = contents_for(manifest)
+
+    def caching_downloader(url: str, target: Path) -> None:
+        name = url.rsplit("/", 1)[-1]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cache_dir = target.parent / ".cache" / "huggingface" / "download"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / f"{name}.metadata").write_text("etag", encoding="utf-8")
+        target.write_bytes(payload[name])
+
+    manager = _manager(tmp_path, "base", "Q8_0", manifest=manifest, downloader=caching_downloader)
+    status = manager.install()
+    assert status.ready
+    assert not (tmp_path / "base-Q8_0" / ".cache").exists()
+    assert not (tmp_path / "shared" / ".cache").exists()
+    assert not (tmp_path / ".staging" / "shared").exists()
+
+    # Windows _default_download routes local_dir through to_extended unconditionally.
+    win_manager = _manager(tmp_path / "win", "base", "Q8_0", manifest=manifest)
+    target = win_manager._staging_dir() / win_manager.recipe.talker.path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    recorded: list[str] = []
+
+    def fake_hf_download(**kwargs):
+        recorded.append(str(kwargs["local_dir"]))
+        return target
+
+    import sys
+    import types
+
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=fake_hf_download)
+    )
+    monkeypatch.setattr(os, "name", "nt")
+    original_resolve = Path.resolve
+
+    def fake_resolve(self, *args, **kwargs):
+        if ".staging" in str(self):
+
+            class ShortWinPath:
+                def __str__(self) -> str:
+                    return r"C:\m\.staging\base-Q8_0"
+
+            return ShortWinPath()
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    win_manager._default_download(win_manager._url_for(win_manager.recipe.talker), target)
+    assert len(recorded) == 1
+    assert recorded[0].startswith("\\\\?\\C:\\")
+
+
+def test_promotion_persists_stamps_without_rehash_and_remove_is_strict(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Install hashes each file once (0 redundant hashes at promote/status) and
+    remove() fails honestly when active files remain locked."""
+    from vienetts_app.core import managed_install as mi
+
+    manifest = mini_manifest()
+    calls = _hash_spy(monkeypatch)
+    manager = _manager(
+        tmp_path,
+        "base",
+        "Q8_0",
+        manifest=manifest,
+        downloader=file_downloader(contents_for(manifest)),
+    )
+    status = manager.install()
+    assert status.ready
+    # Exactly 1 hash for talker + 1 for shared tokenizer (0 in promote/status).
+    assert len(calls) == 2
+
+    calls.clear()
+    assert manager.status().ready
+    assert calls == []
+
+    # Offline install also persists stamps so warm status hashes nothing.
+    source = tmp_path / "offline_src"
+    (source / "base-Q8_0").mkdir(parents=True)
+    (source / "base-Q8_0" / "qwen-talker-0.6b-base-Q8_0.gguf").write_bytes(TALKER_B8)
+    (source / "shared").mkdir(parents=True)
+    (source / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").write_bytes(TOK_Q8)
+    offline_mgr = _manager(tmp_path / "offline_dst", "base", "Q8_0", manifest=manifest)
+    calls.clear()
+    assert offline_mgr.install_offline(source).ready
+    assert len(calls) == 2
+    calls.clear()
+    assert offline_mgr.status().ready
+    assert calls == []
+
+    # Strict remove fails when rmtree cannot remove active dir.
+    monkeypatch.setattr(mi, "REMOVAL_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(mi.shutil, "rmtree", lambda *_a, **_k: None)
+    failed = manager.remove()
+    assert failed.state == "failed"
+    assert "could not remove" in failed.error
+
+
+def test_transient_retry_preserves_partial_and_checksum_mismatch_unlinks_and_clears_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Transient HTTPException/URLError retries with backoff preserving partial < size_bytes;
+    checksum mismatch unlinks corrupt file and clears HF .metadata."""
+    import http.client
+
+    from vienetts_app.core import qwen_gguf_models as mod
+
+    monkeypatch.setattr(mod, "_DOWNLOAD_BACKOFF_BASE_SECONDS", 0.0)
+    manifest = mini_manifest()
+    payload = contents_for(manifest)
+
+    # Transient IncompleteRead leaves partial bytes intact and succeeds on retry.
+    attempts: dict[str, int] = {}
+    partial_sizes: list[int] = []
+
+    def flaky_downloader(url: str, target: Path) -> None:
+        name = url.rsplit("/", 1)[-1]
+        attempts[name] = attempts.get(name, 0) + 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if attempts[name] == 1 and name == "qwen-talker-0.6b-base-Q8_0.gguf":
+            target.write_bytes(payload[name][:12])
+            raise http.client.IncompleteRead(payload[name][:12], expected=len(payload[name]))
+        if attempts[name] == 2 and name == "qwen-talker-0.6b-base-Q8_0.gguf":
+            assert target.exists()
+            partial_sizes.append(target.stat().st_size)
+        target.write_bytes(payload[name])
+
+    manager = _manager(
+        tmp_path / "retry", "base", "Q8_0", manifest=manifest, downloader=flaky_downloader
+    )
+    assert manager.install().ready
+    assert attempts["qwen-talker-0.6b-base-Q8_0.gguf"] == 2
+    assert partial_sizes == [12]
+
+    # Checksum mismatch unlinks corrupt file AND clears HF .cache/huggingface/download/*.metadata.
+    bad_root = tmp_path / "bad"
+
+    def corrupt_downloader(url: str, target: Path) -> None:
+        name = url.rsplit("/", 1)[-1]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dl_cache = target.parent / ".cache" / "huggingface" / "download"
+        dl_cache.mkdir(parents=True, exist_ok=True)
+        (dl_cache / f"{name}.metadata").write_text("stale-meta", encoding="utf-8")
+        (dl_cache / f"{name}.etag.incomplete").write_bytes(b"corrupt-partial")
+        target.write_bytes(b"wrong bytes of bad hash")
+
+    bad_mgr = _manager(bad_root, "base", "Q8_0", manifest=manifest, downloader=corrupt_downloader)
+    failed = bad_mgr.install()
+    assert failed.state == "failed"
+    assert "checksum mismatch" in failed.error
+    staged_talker = bad_root / ".staging" / "base-Q8_0" / "qwen-talker-0.6b-base-Q8_0.gguf"
+    assert not staged_talker.exists()
+    dl_cache = bad_root / ".staging" / "base-Q8_0" / ".cache" / "huggingface" / "download"
+    assert list(dl_cache.glob("*.metadata")) == []
+    assert list(dl_cache.glob("*.incomplete")) == []

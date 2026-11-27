@@ -17,16 +17,21 @@ the whole pack. A first or changed-file inspect still hashes, so callers keep
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import shutil
+import stat
 import tarfile
+import threading
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from urllib.error import HTTPError
-from urllib.parse import quote
+from typing import IO
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit
 from urllib.request import build_opener
 
 from vienetts_app.core.managed_install import (
@@ -39,7 +44,10 @@ from vienetts_app.core.managed_install import (
     file_matches,
     is_same_file,
     promoted_install,
+    replace_retrying,
     require_verify_mode,
+    response_header,
+    response_url,
     safe_remove,
     sha256_of,
     split_install_record,
@@ -53,9 +61,117 @@ from vienetts_app.core.qwen_gguf_runtime_manifest import (
 )
 
 _DOWNLOAD_TIMEOUT_SECONDS = 30
+_DOWNLOAD_MAX_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_BASE_SECONDS = 0.5
+_DOWNLOAD_BACKOFF_MAX_SECONDS = 4.0
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_PERMANENT_DOWNLOAD_ERROR_MARKERS = (
+    "exceeds declared artifact size",
+    "redirected away from",
+    "redirected to non-HTTPS",
+    "safe full-download restart",
+    "must use HTTPS",
+)
 _COPY_CHUNK = 1024 * 1024
 
 _ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz", ".tar")
+
+
+def _close_quietly(response: object) -> None:
+    closer = getattr(response, "close", None)
+    if callable(closer):
+        with contextlib.suppress(Exception):
+            closer()
+
+
+def _validated_opener(opener: Callable[..., object]) -> Callable[..., object]:
+    """Wrap an HTTP opener to enforce HTTPS and reject invalid Content-Length."""
+
+    def _open(request: object, timeout: float = _DOWNLOAD_TIMEOUT_SECONDS) -> object:
+        req_url = getattr(request, "full_url", None) or str(request)
+        if urlsplit(req_url).scheme != "https":
+            raise ValueError(f"download URL must use HTTPS: {req_url}")
+        response = opener(request, timeout=timeout)
+        final_url = response_url(response)
+        if final_url is not None and urlsplit(final_url).scheme != "https":
+            _close_quietly(response)
+            raise OSError(f"download redirected to non-HTTPS URL: {final_url}")
+        raw_cl = response_header(response, "Content-Length")
+        if raw_cl is not None:
+            try:
+                cl_value = int(raw_cl.strip())
+            except ValueError as exc:
+                _close_quietly(response)
+                raise ValueError(f"invalid Content-Length header: {raw_cl!r}") from exc
+            if cl_value < 0:
+                _close_quietly(response)
+                raise ValueError(f"negative Content-Length header: {raw_cl!r}")
+        return response
+
+    return _open
+
+
+def _is_retryable_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUSES
+    if isinstance(exc, http.client.HTTPException):
+        return True
+    if isinstance(exc, ValueError):
+        return False
+    if isinstance(exc, OSError):
+        message = str(exc)
+        return not any(marker in message for marker in _PERMANENT_DOWNLOAD_ERROR_MARKERS)
+    return False
+
+
+def _preserve_or_unlink_partial(path: Path, expected_size: int) -> None:
+    """Keep partial (< expected_size) files for resume; unlink empty/oversized/symlinks."""
+    if path.is_symlink():
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    try:
+        if not path.exists():
+            return
+        size = path.stat().st_size
+    except OSError:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    if not (0 < size < expected_size):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _wait_for_retry(delay_s: float, cancelled: Callable[[], bool]) -> bool:
+    if delay_s <= 0:
+        return not cancelled()
+    event = threading.Event()
+    deadline = time.monotonic() + delay_s
+    while True:
+        if cancelled():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        event.wait(min(remaining, 0.05))
+
+
+def _copy_bounded(
+    source: IO[bytes], destination: IO[bytes], *, limit_bytes: int, label: str
+) -> None:
+    """Stream at most ``limit_bytes`` from ``source`` to ``destination`` (read cap +1)."""
+    read_cap = limit_bytes + 1
+    written = 0
+    while True:
+        to_read = min(_COPY_CHUNK, read_cap - written)
+        chunk = source.read(to_read)
+        if not chunk:
+            return
+        written += len(chunk)
+        if written > limit_bytes:
+            raise OSError(f"archive member {label} exceeds declared size ({limit_bytes} bytes)")
+        destination.write(chunk)
 
 
 class _PackArchive:
@@ -73,7 +189,11 @@ class _PackArchive:
         if name.endswith(".zip"):
             self._zip: zipfile.ZipFile | None = zipfile.ZipFile(path)
             self._tar = None
-            raw = [(info.filename, info) for info in self._zip.infolist() if not info.is_dir()]
+            raw = [
+                (info.filename, info)
+                for info in self._zip.infolist()
+                if not info.is_dir() and not stat.S_ISLNK(info.external_attr >> 16)
+            ]
         elif name.endswith((".tar.gz", ".tgz", ".tar")):
             self._zip = None
             self._tar = tarfile.open(path)  # noqa: SIM115 - closed via close()
@@ -95,20 +215,29 @@ class _PackArchive:
         return cleaned
 
     def extract(self, record: PackFile, target: Path) -> bool:
-        """Write member ``record.path`` to ``target``; False when absent."""
+        """Write member ``record.path`` to ``target`` (capped at ``size_bytes + 1``)."""
         member = self._members.get(record.path)
         if member is None:
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        if self._zip is not None:
-            with self._zip.open(member) as source, target.open("wb") as destination:  # type: ignore[arg-type]
-                shutil.copyfileobj(source, destination, _COPY_CHUNK)
-        else:
-            source = self._tar.extractfile(member)  # type: ignore[union-attr,arg-type]
-            if source is None:
-                return False
-            with source, target.open("wb") as destination:
-                shutil.copyfileobj(source, destination, _COPY_CHUNK)
+        try:
+            if self._zip is not None:
+                with self._zip.open(member) as source, target.open("wb") as destination:  # type: ignore[arg-type]
+                    _copy_bounded(
+                        source, destination, limit_bytes=record.size_bytes, label=record.path
+                    )
+            else:
+                source = self._tar.extractfile(member)  # type: ignore[union-attr,arg-type]
+                if source is None:
+                    return False
+                with source, target.open("wb") as destination:
+                    _copy_bounded(
+                        source, destination, limit_bytes=record.size_bytes, label=record.path
+                    )
+        except OSError:
+            with contextlib.suppress(OSError):
+                target.unlink(missing_ok=True)
+            raise
         return True
 
     def close(self) -> None:
@@ -431,7 +560,7 @@ class QwenGgufRuntimeManager:
         if not active.exists():
             return self._status("unavailable")
         try:
-            safe_remove(active)
+            safe_remove(active, strict=True)
         except OSError as exc:
             return self._status("failed", error=f"could not remove runtime: {exc}")
         return self._status("unavailable")
@@ -502,27 +631,66 @@ class QwenGgufRuntimeManager:
             target.unlink()
         filename = PurePosixPath(record.path).name
         downloader = self._downloader
+        validated_opener = _validated_opener(self._opener)
         last_error = f"no published runtime pack for {self.pack.cell}"
         for base_url in self.pack.downloads:
             url = f"{base_url.rstrip('/')}/{quote(record.path, safe='/')}"
-            wheel = RuntimeWheel(filename, url, record.size_bytes, record.sha256)
-            try:
-                download_wheel_archive(
-                    wheel,
-                    target,
-                    cancelled=cancelled,
-                    opener=self._opener,
-                    downloader=(None if downloader is None else lambda w, t: downloader(w.url, t)),
-                    timeout=_DOWNLOAD_TIMEOUT_SECONDS,
-                    on_bytes=on_bytes,
-                )
-            except DownloadCancelled:
-                raise
-            except (HTTPError, OSError, ValueError) as exc:
-                last_error = f"download failed: {exc}"
+            if urlsplit(url).scheme != "https":
+                last_error = f"download URL must use HTTPS: {url}"
                 continue
-            if file_matches(target, record.size_bytes, record.sha256):
+            wheel = RuntimeWheel(filename, url, record.size_bytes, record.sha256)
+            known_sha256: str | None = None
+            downloaded = False
+            for attempt in range(_DOWNLOAD_MAX_ATTEMPTS):
+                try:
+                    known_sha256 = download_wheel_archive(
+                        wheel,
+                        target,
+                        cancelled=cancelled,
+                        opener=validated_opener,
+                        downloader=(
+                            None if downloader is None else lambda w, t: downloader(w.url, t)
+                        ),
+                        timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+                        on_bytes=on_bytes,
+                    )
+                    downloaded = True
+                    break
+                except DownloadCancelled:
+                    _preserve_or_unlink_partial(target, record.size_bytes)
+                    raise
+                except (
+                    http.client.HTTPException,
+                    HTTPError,
+                    URLError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                ) as exc:
+                    if cancelled():
+                        _preserve_or_unlink_partial(target, record.size_bytes)
+                        raise DownloadCancelled from exc
+                    if "exceeds declared artifact size" in str(exc):
+                        with contextlib.suppress(OSError):
+                            target.unlink(missing_ok=True)
+                    else:
+                        _preserve_or_unlink_partial(target, record.size_bytes)
+                    last_error = f"download failed: {exc}"
+                    if _is_retryable_download_error(exc) and attempt + 1 < _DOWNLOAD_MAX_ATTEMPTS:
+                        delay = min(
+                            _DOWNLOAD_BACKOFF_MAX_SECONDS,
+                            _DOWNLOAD_BACKOFF_BASE_SECONDS * (2**attempt),
+                        )
+                        if not _wait_for_retry(delay, cancelled):
+                            raise DownloadCancelled from exc
+                        continue
+                    break
+            if not downloaded:
+                continue
+            if file_matches(target, record.size_bytes, record.sha256, known_sha256=known_sha256):
                 return ""
+            with contextlib.suppress(OSError):
+                target.unlink(missing_ok=True)
             last_error = f"checksum mismatch: {record.path}"
         return last_error
 
@@ -534,6 +702,7 @@ class QwenGgufRuntimeManager:
         archive: _PackArchive | None = None,
         *,
         allow_downloads: bool,
+        ledger: StampLedger | None = None,
     ) -> tuple[int, QwenGgufRuntimeStatus | None]:
         """Ensure every manifest file is present and verified in staging.
 
@@ -546,8 +715,8 @@ class QwenGgufRuntimeManager:
         for record in self.pack.files:
             if cancelled():
                 return verified_bytes, self._status("unavailable", installed_bytes=verified_bytes)
+            staged = self._staged_path(record.path)
             if not self._staged_file_valid(record.path, record.size_bytes, record.sha256):
-                staged = self._staged_path(record.path)
                 staged.parent.mkdir(parents=True, exist_ok=True)
                 active_source = active / record.path
                 pack_source = pack_dir / record.path if pack_dir is not None else None
@@ -623,6 +792,12 @@ class QwenGgufRuntimeManager:
                             f"no published runtime pack for {self.pack.cell}"
                         ),
                     )
+            if (
+                ledger is not None
+                and staged.is_file()
+                and staged.stat().st_size == record.size_bytes
+            ):
+                ledger.record(f"files/{record.path}", staged)
             verified_bytes += record.size_bytes
             on_progress(self._status("downloading", installed_bytes=verified_bytes))
         return verified_bytes, None
@@ -631,6 +806,7 @@ class QwenGgufRuntimeManager:
         self,
         verified_bytes: int,
         cancelled: Callable[[], bool],
+        ledger: StampLedger | None = None,
     ) -> QwenGgufRuntimeStatus | None:
         """Create the declared links and metadata inside the staged tree."""
         staging = self._staging_dir()
@@ -644,19 +820,27 @@ class QwenGgufRuntimeManager:
                 safe_remove(link_path)
                 link_path.parent.mkdir(parents=True, exist_ok=True)
                 self._create_pack_link(link, link_path)
-            (staging / "install.json").write_text(
-                json.dumps(self._metadata(), sort_keys=True),
-                encoding="utf-8",
-            )
         except OSError as exc:
             return self._status("failed", installed_bytes=verified_bytes, error=str(exc))
-        bad_member = self._tree_verifies(staging)
+        verify_ledger = (
+            StampLedger(ledger.as_dict(), mode="stamp")
+            if ledger is not None
+            else StampLedger({}, mode="full")
+        )
+        bad_member = self._tree_verifies(staging, verify_ledger)
         if bad_member:
             return self._status(
                 "failed",
                 installed_bytes=verified_bytes,
                 error=f"staged pack does not match the manifest: {bad_member}",
             )
+        try:
+            (staging / "install.json").write_text(
+                json.dumps(verify_ledger.with_stamps(self._metadata()), sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            return self._status("failed", installed_bytes=verified_bytes, error=str(exc))
         return None
 
     def _promote_staging(self) -> QwenGgufRuntimeStatus:
@@ -668,7 +852,7 @@ class QwenGgufRuntimeManager:
         active.parent.mkdir(parents=True, exist_ok=True)
         if not active.exists() and previous.exists():
             with contextlib.suppress(OSError):
-                os.replace(previous, active)
+                replace_retrying(previous, active)
         try:
             with promoted_install(
                 staging,
@@ -715,12 +899,13 @@ class QwenGgufRuntimeManager:
         guard = self._install_guard()
         if guard is not None:
             return guard
+        ledger = StampLedger({})
         verified_bytes, failure = self._stage_files(
-            cancelled, on_progress, None, allow_downloads=True
+            cancelled, on_progress, None, allow_downloads=True, ledger=ledger
         )
         if failure is not None:
             return failure
-        failure = self._finalize_staging(verified_bytes, cancelled)
+        failure = self._finalize_staging(verified_bytes, cancelled, ledger=ledger)
         if failure is not None:
             return failure
         return self._promote_staging()
@@ -767,12 +952,18 @@ class QwenGgufRuntimeManager:
                             "failed",
                             error=(f"offline pack link does not match the manifest: {link.path}"),
                         )
+            ledger = StampLedger({})
             verified_bytes, failure = self._stage_files(
-                cancelled, on_progress, directory, archive, allow_downloads=False
+                cancelled,
+                on_progress,
+                directory,
+                archive,
+                allow_downloads=False,
+                ledger=ledger,
             )
             if failure is not None:
                 return failure
-            failure = self._finalize_staging(verified_bytes, cancelled)
+            failure = self._finalize_staging(verified_bytes, cancelled, ledger=ledger)
             if failure is not None:
                 return failure
             return self._promote_staging()
@@ -823,15 +1014,17 @@ class QwenGgufRuntimeManager:
         guard = self._install_guard()
         if guard is not None:
             return guard
+        ledger = StampLedger({})
         verified_bytes, failure = self._stage_files(
             cancelled,
             on_progress,
             pack_dir,
             allow_downloads=bool(self.pack.downloads),
+            ledger=ledger,
         )
         if failure is not None:
             return failure
-        failure = self._finalize_staging(verified_bytes, cancelled)
+        failure = self._finalize_staging(verified_bytes, cancelled, ledger=ledger)
         if failure is not None:
             return failure
         return self._promote_staging()

@@ -647,10 +647,29 @@ an explicit stored choice is never overridden):
     Single-File M4B via managed/PATH `ffmpeg` (`core/m4b_export.py`),
     configurable `m4b_bitrate` (`64k|96k|128k` in `SettingsExport.qml`),
     `AudiobookTab` export menu + `cancelExport()` + shelf cover thumbnails.
-  - Current live gate (`7152377`, 2026-11-27): 1493 collected / 1474 selected
-    (19 benchmark deselected; `-m "not slow"` → 1458, `-m "not slow and not
-    benchmark"` → 1439); `ruff check .` + `ruff format --check .` green (210
-    files); i18n 1301/1301 finished (0 unfinished); 18 archived tracks.
+  - Track `audit_hardening_perf_20261127` (`1773614..69644bf`, epic `tjbm`,
+    archived, zero new dependencies; closed `02pc`, `c64z`, `73r3`): bundled
+    `vienetts_en.qm` in `packaging/vienetts-app.spec` + `.github/workflows/release.yml`
+    and added automated `.ts`/`.qm` parity gate (`tests/unit/test_packaging_i18n.py`);
+    partitioned `QThreadPool` lanes (`interactive`/`downloads`/`exports`) &
+    module-level `_OrderedJob` (`ui/bg_ops.py`) + tracked startup `QTimer`s
+    (`app.py`); native GGUF ABI/Qwen IPC/worker & `<150 ms` playback hardening;
+    managed-install disk-leak cleanup + proactive legacy pruning + inline
+    SHA-256 + stamped `ModelManager`; HTTP redirect/scheme/size-cap/crash/clone
+    security; POSIX process-group / Windows Job Object teardown & bounded CLI
+    buffers (`core/processes.py`); WSOLA slow-rate tail, recursive EPUB parser,
+    single-pass Silero VAD, O(N log N) diarization/ASR sweeps, portrait Display
+    Matrix ASS burn-in, `SubtitleStudioMeta.render_id` guard, off-thread
+    `removeProject()`, `AppController` offloads/cached async getters/quit cancel
+    + `qwenModelsModel` `DictListModel`, and QML lazy `AppButton` Canvases,
+    virtualized `StudioTab` `ListView`, single-Canvas `StudioTimeline`, and
+    lazy `SubtitleVideoPreview` `MediaPlayer`.
+  - Current live gate (`69644bf`, 2026-11-27): 1709 collected / 1690 selected
+    (19 benchmark deselected; `-m "not slow"` → 1674, `-m "not slow and not
+    benchmark"` → 1655); `pytest -m benchmark` 19/19 passed; `pytest -n 4`
+    1679 passed / 5 skipped / 0 regressions; `ruff check .` + `ruff format
+    --check .` green (211 files); i18n 1303/1303 finished (0 unfinished); 19
+    archived tracks.
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

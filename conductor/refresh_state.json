@@ -1,74 +1,70 @@
 {
-  "timestamp": "2026-11-27T02:07:30Z",
+  "timestamp": "2026-11-27T07:55:00Z",
   "scope": "all",
-  "drift": "2 ARCHIVED TRACKS SYNCED (`dub_asr_diar_hardening_20261029` epic `VieNeuTTSApp-9hzp` + `audiobook_booksreader_export_20261126` epic `VieNeuTTSApp-2qnl`) — 50 commits since last full refresh (`6648bf0..7152377`): 3 already-transitive dependencies (`soxr>=1.0`, `onnxruntime>=1.20.0`, `kaldi-native-fbank>=1.20`) declared directly in `pyproject.toml` and dispatch-only `.github/workflows/media-runtime-build.yml` added in `9hzp`; zero new dependencies in `2qnl`; suite 1278/1261 -> 1493/1474 tests, ruff 192 -> 210 formatted files, i18n 1216 -> 1301/1301 finished, patterns 227 -> 261 bullets, 16 -> 18 archived tracks.",
-  "commits_since_last_refresh": "6648bf0..7152377 (50 commits: `16fb3d2..f5ebfce` dub_asr_diar_hardening_20261029 + macOS whisper-cli pack publish `3260c66` + archive `f5ebfce`; `4bdcc67..7152377` audiobook_booksreader_export_20261126 + completion `8980880` + archive `7152377`)",
+  "drift": "1 ARCHIVED TRACK SYNCED (`audit_hardening_perf_20261127` epic `VieNeuTTSApp-tjbm`; closed `VieNeuTTSApp-02pc`, `VieNeuTTSApp-c64z`, `VieNeuTTSApp-73r3`) — 27 commits since last full refresh (`c49582a..69644bf`): zero new dependencies (`pyproject.toml`/`uv.lock` untouched); `packaging/vienetts-app.spec` + `.github/workflows/release.yml` now bundle & assert `vienetts_en.qm` with `tests/unit/test_packaging_i18n.py` full `.ts`/`.qm` parity gate; suite 1493/1474 -> 1709/1690 tests (+216/+216), ruff 210 -> 211 formatted files, i18n 1301 -> 1303/1303 finished, patterns 261 -> 272 bullets (+11), 18 -> 19 archived tracks.",
+  "commits_since_last_refresh": "c49582a..69644bf (27 commits: `671bb49` beads sync; `1773614..fbc1614` 24 tasks of `audit_hardening_perf_20261127`; `be8d141` track completion & docs sync; `69644bf` archive)",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "updated Implementation Status heading and body from 2026-10-28 (16 archived tracks, 1278/1261 tests, 192 files, 1216 i18n) to 2026-11-27 (18 archived tracks, 1493 collected / 1474 selected, 19 benchmark deselected, -m 'not slow' -> 1458, -m 'not slow and not benchmark' -> 1439, 210 ruff files, 1301/1301 i18n)",
-        "added `dub_asr_diar_hardening_20261029` and `audiobook_booksreader_export_20261126` to Implementation Status and suite-size history",
-        "updated top 2026-11-27 full refresh marker covering `6648bf0..7152377`, declared direct deps, and Beads counts (635 total / 23 open / 1 blocked / 39 deferred / 572 closed)"
+        "updated suite-size history and bottom 2026-11-27 (2) full refresh marker covering `c49582a..69644bf` (`audit_hardening_perf_20261127`, 19 archived tracks, 1709 collected / 1690 selected, 211 ruff files, 1303/1303 i18n, Beads 666 total / 20 open / 1 blocked / 39 deferred / 606 closed)"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "updated top 2026-11-27 refresh marker covering both `dub_asr_diar_hardening_20261029` (declared `soxr`/`onnxruntime`/`kaldi-native-fbank`, `.github/workflows/media-runtime-build.yml`, macOS `whisper-cli` publish `3260c66`) and `audiobook_booksreader_export_20261126` (zero new deps, `core/id3.py`, `core/epub_export.py`, `core/m4b_export.py`, streaming `export_mp3_parts`, `m4b_bitrate`)",
-        "added `m4bBitrate` (`64k|96k|128k`) to Persistence (`settings.json`)",
-        "added Post-v0.4.0 on `main` summary under Build & Dev Tooling with `.github/workflows/media-runtime-build.yml`, both archived tracks, and live gate counts (1493/1474, 210 files, 1301/1301 i18n)"
+        "added `audit_hardening_perf_20261127` summary under Post-v0.4.0 on `main` (frozen `vienetts_en.qm` packaging/CI gate, partitioned `QThreadPool`s, managed-install leak cleanup/stamping, HTTP/crash/clone security, single-pass VAD, QML virtualization) and updated live gate to `69644bf` (1709/1690, 211 files, 1303/1303 i18n, 19 archived tracks)"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "added top 2026-11-27 refresh marker for `6648bf0..7152377` with live gate figures (1493 collected / 1474 selected, 19 benchmark deselected; ruff 210 files green; i18n 1301/1301 finished)",
-        "updated `linux-aarch64` host baseline bullet to include the 2 `audio.cpp` tests in `tests/unit/test_ai_models.py` (`linux/aarch64 unsupported`) alongside Qwen/GGUF `host_cell_key` (`4jwz`/`x898`)",
-        "appended `dub_asr_diar_hardening_20261029` (-> 1352/1333) and `audiobook_booksreader_export_20261126` (-> 1493/1474) to the suite-size history"
+        "added top 2026-11-27 (2) refresh marker for `c49582a..69644bf` with live gate figures (1709 collected / 1690 selected, 19 benchmark deselected; `pytest -m benchmark` 19/19; `pytest -n 4` 1679 passed / 5 skipped / 0 regressions; ruff 211 files; i18n 1303/1303)",
+        "replaced stale `test_i18n.py was removed` note with `tests/unit/test_packaging_i18n.py` automated catalog & packaging gate (closing `VieNeuTTSApp-73r3`)",
+        "appended `audit_hardening_perf_20261127` (+216/+216 -> 1709/1690) to the suite-size history"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "updated `Tiered pytest runs` and `Suite size is a MOVING number` from stale `1278/1261` (2026-10-28) to live `1493 collected / 1474 selected` (`19` benchmark deselected; `-m 'not slow'` -> 1458; `-m 'not slow and not benchmark'` -> 1439)",
-        "verified all 18 archived `learnings.md` tracks against `patterns.md`: 261 exact bullets (+25 from `9hzp`, +9 from `2qnl` since `6648bf0`), 0 un-elevated patterns, 0 duplicates",
-        "updated `Last refreshed` footer for 2026-11-27 full refresh"
+        "updated `Tiered pytest runs`, i18n catalog gate note, and `Suite size is a MOVING number` from `1493/1474` to live `1709 collected / 1690 selected` (19 benchmark deselected; `-m 'not slow'` -> 1674; `-m 'not slow and not benchmark'` -> 1655)",
+        "verified all 19 archived `learnings.md` tracks against `patterns.md`: 272 exact bullets (+11 from `audit_hardening_perf_20261127`), 0 un-elevated patterns, 0 duplicates"
       ]
     },
     {
       "file": "conductor/tracks.md",
       "updates": [
-        "no change needed — `conductor/tracks/` is absent/empty and all 18 completed tracks are archived in `conductor/archive/`"
+        "no change needed — `conductor/tracks/` is empty and all 19 completed tracks are archived in `conductor/archive/`"
       ]
     }
   ],
   "verification": {
-    "collect_only": "1493 collected / 1474 selected (19 benchmark deselected) — was 1278/1261 (+215 collected / +213 selected across 9hzp + 2qnl)",
-    "collect_slow": "-m 'not slow' -> 1458 / 1493 (35 deselected)",
-    "collect_slow_no_bench": "-m 'not slow and not benchmark' -> 1439 / 1493 (54 deselected)",
-    "ruff": "ruff check . -> All checks passed!; ruff format --check . -> 210 files already formatted",
-    "i18n": "vienetts_en.ts -> 1301 source text(s), 1301 finished and 0 unfinished",
-    "deps": "git diff 6648bf0..HEAD -- pyproject.toml uv.lock -> declared already-transitive `soxr>=1.0`, `onnxruntime>=1.20.0`, `kaldi-native-fbank>=1.20` in `dub_asr_diar_hardening_20261029`; zero dep changes in `audiobook_booksreader_export_20261126`; app version 0.4.0 unchanged",
-    "workflows": "added dispatch-only `.github/workflows/media-runtime-build.yml` in `dub_asr_diar_hardening_20261029` (macOS `whisper-cli` packs published `3260c66`, GPL FFmpeg cells unpublished pending `VieNeuTTSApp-0j8g`)",
-    "tracks": "conductor/tracks/ empty; conductor/archive/ holds 18 track dirs, all 18 documented in conductor/tracks.md"
+    "collect_only": "1709 collected / 1690 selected (19 benchmark deselected) — was 1493/1474 (+216 collected / +216 selected across `audit_hardening_perf_20261127`)",
+    "collect_slow": "-m 'not slow' -> 1674 / 1709 (35 deselected)",
+    "collect_slow_no_bench": "-m 'not slow and not benchmark' -> 1655 / 1709 (54 deselected)",
+    "benchmark": "pytest -m benchmark -q -> 19 passed",
+    "full_suite": "QT_QPA_PLATFORM=offscreen QT_AUDIO_BACKEND=ffmpeg pytest -n 4 -q -> 1679 passed / 5 skipped / 0 regressions (6 pre-existing linux/aarch64 host-cell + system ffmpeg 6.1.1 baselines)",
+    "ruff": "ruff check . -> All checks passed!; ruff format --check . -> 211 files already formatted",
+    "i18n": "vienetts_en.ts -> 1303 source text(s), 1303 finished and 0 unfinished; verified by tests/unit/test_packaging_i18n.py",
+    "deps": "git diff c49582a..HEAD -- pyproject.toml uv.lock -> empty (zero dependency changes; app version 0.4.0 unchanged)",
+    "workflows": "`.github/workflows/release.yml` gained `Assert the bundle ships the English translation catalog` across windows-x64/macos-arm64/linux-x64 (`d73b232`); `packaging/vienetts-app.spec` bundles `vienetts_en.qm`",
+    "tracks": "conductor/tracks/ empty; conductor/archive/ holds 19 track dirs, all 19 documented in conductor/tracks.md"
   },
   "learnings_consolidation": {
-    "tracks_scanned": 18,
+    "tracks_scanned": 19,
     "new_tracks_since_last_refresh": [
-      "dub_asr_diar_hardening_20261029",
-      "audiobook_booksreader_export_20261126"
+      "audit_hardening_perf_20261127"
     ],
-    "patterns_before": 227,
-    "new_patterns_added_since_last_refresh": 34,
+    "patterns_before": 261,
+    "new_patterns_added_since_last_refresh": 11,
     "duplicate_patterns_merged": 0,
-    "patterns_after": 261,
-    "source": "All 25 learnings from `dub_asr_diar_hardening_20261029` and all 9 learnings from `audiobook_booksreader_export_20261126` were already elevated prior to/during archive; this refresh synced stale 2026-10-28 suite-size figures in `patterns.md` L8 and L265."
+    "patterns_after": 272,
+    "source": "All 11 reusable patterns from `audit_hardening_perf_20261127` (8 at completion + 3 at archive) are elevated in `conductor/patterns.md`; this refresh synced live `1709/1690` suite counts and updated the `test_packaging_i18n.py` gate note."
   },
-  "beads_drift": "CHECKED via `bd list --all --json` and `bd blocked --json`: 635 total / 23 open / 0 in_progress / 1 blocked (`VieNeuTTSApp-k47m` blocked by `VieNeuTTSApp-0j8g`, plus deferred `VieNeuTTSApp-nqx.2.4` blocked by `VieNeuTTSApp-nqx.2.3`) / 39 deferred / 572 closed (was 557 total / 0 open / 1 blocked / 39 deferred / 517 closed at `6648bf0`). Zero plan.md drift: `conductor/tracks/` is empty and both epics (`VieNeuTTSApp-9hzp` and `VieNeuTTSApp-2qnl`) are closed.",
+  "beads_drift": "CHECKED via `bd list --all --json` and `bd blocked --json`: 666 total / 20 open / 0 in_progress / 1 blocked (`VieNeuTTSApp-k47m` blocked by `VieNeuTTSApp-0j8g`, plus deferred `VieNeuTTSApp-nqx.2.4` blocked by `VieNeuTTSApp-nqx.2.3`) / 39 deferred / 606 closed (was 635 total / 23 open / 1 blocked / 39 deferred / 572 closed at `c49582a`). Zero plan.md drift: `conductor/tracks/` is empty and epic `VieNeuTTSApp-tjbm` + absorbed `02pc`/`c64z`/`73r3` are closed.",
   "known_baseline_failures": {
-    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy), x64-cell Qwen/GGUF host-cell tests on linux-aarch64 (beads VieNeuTTSApp-4jwz / VieNeuTTSApp-x898), and the two `audio.cpp` runtime tests in tests/unit/test_ai_models.py on linux-aarch64 (unsupported platform)",
+    "documented": "tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke (device-less host, bead VieNeuTTSApp-3iy), x64-cell Qwen/GGUF host-cell tests on linux-aarch64 (beads VieNeuTTSApp-4jwz / VieNeuTTSApp-x898), the two `audio.cpp` runtime tests in tests/unit/test_ai_models.py on linux-aarch64 (unsupported platform), and system ffmpeg 6.1.1 alimiter peak in test_mux_dubbed_video_replace_and_duck_modes",
     "loaded_host_flakes": "1-2 varying order/load-sensitive failures per full -n auto run on a busy host; prefer -n 4 for a clean read"
   },
-  "notes": "Scope: `all`. Full refresh syncing `product.md`, `tech-stack.md`, `workflow.md`, `patterns.md`, and `refresh_state.json` through `7152377`."
+  "notes": "Scope: `all`. Full refresh syncing `product.md`, `tech-stack.md`, `workflow.md`, `patterns.md`, and `refresh_state.json` through `69644bf`."
 }

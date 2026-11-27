@@ -1109,14 +1109,133 @@ def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(
     # A save-back that crashes right after its timeline write leaves the mixed
     # state refused; track.wav is untouched and no part file lingers.
     spliced_track = store.wav_path(project.id).read_bytes()
+    win0_reloaded = load_project_from_subtitle(store, project.id, start_cue=0)
     crashing = make_store(tmp_path)
     spy_commit(crashing, monkeypatch, fail="save")
     with pytest.raises(SubtitleProjectError, match="save"):
-        splice_studio_window_into_subtitle(crashing, win0)
+        splice_studio_window_into_subtitle(crashing, win0_reloaded)
     fresh = make_store(tmp_path)
     assert fresh.cached_render(updated) is None
     assert fresh.wav_path(project.id).read_bytes() == spliced_track
     assert not list(fresh.project_dir(project.id).glob("*.part.wav"))
+
+
+def test_splice_validates_render_id_and_streams_with_single_soundfile_handle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import soundfile as sf
+
+    from vienetts_app.core import subtitle_project as sp_mod
+    from vienetts_app.core.align import DEFAULT_SAMPLE_RATE
+    from vienetts_app.core.studio import (
+        GainOp,
+        commit_ops,
+        load_project_from_subtitle,
+        render_project_for_subtitle_save,
+    )
+    from vienetts_app.core.subtitle_project import splice_studio_window_into_subtitle
+    from vienetts_app.core.subtitles import Cue
+
+    store = make_store(tmp_path)
+    cues = tuple(
+        Cue(
+            index=i + 1,
+            start_ms=i * 1000,
+            end_ms=i * 1000 + 600,
+            text=f"Dòng {i + 1}",
+        )
+        for i in range(6)
+    )
+    project = build_project(
+        tmp_path / "six.srt",
+        cues,
+        FitPolicy.dub(rate_cap=1.5),
+        voice_key="Binh",
+        context=render_context(),
+    )
+    store.save(project)
+    with SubtitleTrackRenderer(store, project) as renderer:
+        for i in range(6):
+            tone = np.full(int(0.5 * DEFAULT_SAMPLE_RATE), 0.1 * (i + 1), dtype=np.float32)
+            renderer.add_clip(i, tone)
+        renderer.finish()
+
+    orig_proj = store.require(project.id)
+    assert orig_proj.render_id
+    # Middle window (cues 2..4) has both non-empty prefix and non-empty suffix.
+    mid_win = load_project_from_subtitle(store, project.id, start_cue=2, max_cues=2)
+    assert mid_win.subtitle_meta is not None
+    assert mid_win.subtitle_meta.render_id == orig_proj.render_id
+
+    edited = commit_ops(mid_win, (GainOp(db=3.0),))
+    orig_audio, _ = read_wav(store.wav_path(project.id))
+    expected_window = render_project_for_subtitle_save(edited)
+    orig_start = mid_win.subtitle_meta.orig_window_start_frame
+    orig_end = mid_win.subtitle_meta.orig_window_end_frame
+
+    # Force multi-chunk streaming for both prefix and suffix, and count SoundFile read opens.
+    monkeypatch.setattr(sp_mod, "SPLICE_CHUNK_FRAMES", 4_096)
+    read_opens: list[str] = []
+    real_soundfile = sf.SoundFile
+
+    def spy_soundfile(file, mode="r", *args, **kwargs):
+        if mode == "r":
+            read_opens.append(str(file))
+        return real_soundfile(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(sf, "SoundFile", spy_soundfile)
+    updated = splice_studio_window_into_subtitle(store, edited)
+    assert len(read_opens) == 1
+    assert updated.render_id and updated.render_id != orig_proj.render_id
+
+    spliced_audio, _ = read_wav(store.wav_path(project.id))
+    expected_full = np.concatenate(
+        [orig_audio[:orig_start], expected_window, orig_audio[orig_end:]]
+    )
+    assert spliced_audio.size == expected_full.size
+    np.testing.assert_allclose(spliced_audio, expected_full, atol=1e-3)
+
+    # Stale Studio window (still carrying orig_proj.render_id) must be rejected cleanly.
+    track_before = store.wav_path(project.id).read_bytes()
+    with pytest.raises(SubtitleProjectError, match="render|Studio|changed|reopen"):
+        splice_studio_window_into_subtitle(store, mid_win)
+    assert store.wav_path(project.id).read_bytes() == track_before
+
+    # Backward compatibility: a meta without render_id ("") still splices cleanly.
+    legacy_win = replace(mid_win, subtitle_meta=replace(mid_win.subtitle_meta, render_id=""))
+    spliced_legacy = splice_studio_window_into_subtitle(store, legacy_win)
+    assert spliced_legacy.render_id != updated.render_id
+
+
+def test_unit_clip_cache_contains_without_disk_touch_avoids_syscalls_and_keeps_lru(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    audio = np.linspace(-0.4, 0.4, 500, dtype=np.float32)
+    keys = [UnitClipCache.key(f"cue {i}", voice_id="v") for i in range(4)]
+    seed = UnitClipCache(tmp_path / "units")
+    first_path = seed.put(keys[0], audio, SR)
+    assert first_path is not None
+    size = first_path.stat().st_size
+
+    lru_dir = tmp_path / "lru"
+    lru = UnitClipCache(lru_dir, cap_bytes=3 * size)
+    for k in keys[:3]:
+        lru.put(k, audio, SR)
+
+    utime_calls: list[Any] = []
+    real_utime = os.utime
+    monkeypatch.setattr(
+        os, "utime", lambda path, *a, **kw: utime_calls.append(path) or real_utime(path, *a, **kw)
+    )
+    assert lru.contains(keys[0], touch_disk=False) is True
+    assert utime_calls == []  # zero disk touch syscalls on GUI-thread lookup
+
+    # In-memory LRU still knows keys[0] was just used, so keys[1] is evicted next.
+    monkeypatch.undo()
+    lru.put(keys[3], audio, SR)
+    assert {p.stem for p in lru_dir.glob("*.wav")} == {keys[0], keys[2], keys[3]}
 
 
 def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:

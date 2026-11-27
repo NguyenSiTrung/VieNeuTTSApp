@@ -51,6 +51,9 @@ class SubtitleStudioMeta:
     #: without silently falling back to whatever the last export used.
     subtitle_embed_mode: str = "soft"
     speaker_voices: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: ``SubtitleProject.render_id`` active when this Studio window was opened;
+    #: checked before splicing back so a re-rendered track is never corrupted.
+    render_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -1013,6 +1016,7 @@ def load_project_from_subtitle(
             "burn" if str(sub_proj.subtitle_embed_mode or "") == "burn" else "soft"
         ),
         speaker_voices=dict(sub_proj.speaker_voices),
+        render_id=str(sub_proj.render_id or ""),
     )
     return StudioProject(clips=tuple(clips), ops=(), subtitle_meta=meta)
 

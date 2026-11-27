@@ -2661,8 +2661,13 @@ def test_remove_project_stops_owners_first_and_prunes_unreferenced_media(tmp_pat
         pid = controller.projectId
         events.clear()
         assert controller.removeProject(pid) is True
+        # Removal flushes/deletes off the GUI thread (VieNeuTTSApp-c64z).
+        assert events == ["cancel", "clear", "release"], owner
+        assert controller.busyOwner == "" and store.project_dir(pid).exists()
+        work, done, _ = runner.calls[-1]
+        done(_on_thread(work))
         assert events == ["cancel", "clear", "release", "remove"], owner
-        assert controller.busyOwner == "" and not store.project_dir(pid).exists()
+        assert not store.project_dir(pid).exists()
         fake.pending.clear()
 
     # Media: an ASR project (managed SRT) and a companion-SRT project share
@@ -2683,8 +2688,12 @@ def test_remove_project_stops_owners_first_and_prunes_unreferenced_media(tmp_pat
     cache = controller._media_cache_dir(video)  # noqa: SLF001
     assert managed_srt.parent == store.root and cache.is_dir()
     assert controller.removeProject(controller.projectId) is True
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
     assert not managed_srt.exists() and cache.is_dir()  # the companion project keeps it
     assert controller.removeProject(companion_id) is True
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
     assert not cache.exists()
     assert (tmp_path / "talk.srt").is_file() and video.is_file()  # user files untouched
 
@@ -3620,3 +3629,605 @@ def test_video_preview_url_release_unrendered_seek_and_audio_exclusivity(
     releases.clear()
     assert controller.removeProject(proj_id) is True
     assert len(releases) >= 1
+
+
+# ── Task 4.5 hardening: Windows handle release, cancel/state races, c64z ────
+
+
+def test_render_and_speaker_ref_stop_playback_and_retry_replace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    from vienetts_app.core import subtitle_project as sp_mod
+
+    fake = FakeApp()
+    player = FakePlayer()
+    stops: list[str] = []
+    real_stop = player.stop
+
+    def spy_stop() -> None:
+        stops.append("stop")
+        real_stop()
+
+    monkeypatch.setattr(player, "stop", spy_stop)
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, fake, player, bg_runner=runner)
+
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+    render_all(controller, fake, tmp_path)
+
+    # 1. render() stops active playback BEFORE opening/promoting track.wav, and
+    # _finish_render() stops playback again before renderer.finish() promotes.
+    controller.play()
+    assert controller.playerState == "playing"
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    stops.clear()
+    controller.render()
+    assert stops == ["stop"]
+    assert controller.playerState == "stopped"
+
+    # Even if playback was active mid-render, _finish_render() stops it before finish().
+    finish_order: list[str] = []
+    real_finish = SubtitleTrackRenderer.finish
+
+    def spy_finish(self_r: SubtitleTrackRenderer) -> Any:
+        finish_order.append(f"finish:{player.state}")
+        return real_finish(self_r)
+
+    monkeypatch.setattr(SubtitleTrackRenderer, "finish", spy_finish)
+    player.play("something.wav")
+    assert controller.playerState == "playing"
+    stops.clear()
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert stops == ["stop"]
+    assert finish_order == ["finish:stopped"]
+    assert controller.rendered is True
+
+    # 2. playSpeakerSample() (cache miss) and cloneSpeakerFromVideo() stop playback
+    # before extracting/replacing ref_<speaker>.wav, and _extract_speaker_ref()
+    # uses _replace_retrying() across transient Windows PermissionError locks.
+    replace_attempts = 0
+    real_replace = os.replace
+
+    def flaky_replace(src: Any, dst: Any) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts <= 2:
+            raise PermissionError("WinError 32 simulated lock")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(sp_mod, "REPLACE_LOCK_DELAY_S", 0.0)
+    monkeypatch.setattr(sp_mod.os, "replace", flaky_replace)
+
+    def fake_extract(vpath, cues, spk, out, **kw):
+        write_wav_file(np.zeros(4_800, dtype=np.float32), Path(out), sample_rate=48_000)
+        return Path(out), "Xin chào"
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav", fake_extract
+    )
+
+    controller.play()
+    assert controller.playerState == "playing"
+    stops.clear()
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    assert stops == ["stop"]
+    assert controller.playerState == "stopped"
+    work, done, _ = runner.calls[-1]
+    done(work())
+    assert replace_attempts == 3
+    assert controller.playerState == "playing"  # audition started after promotion
+
+    # cloneSpeakerFromVideo() also stops playback before replacing the ref WAV.
+    replace_attempts = 0
+    stops.clear()
+    assert controller.cloneSpeakerFromVideo("SPEAKER_01", "CloneA") is True
+    assert stops == ["stop"]
+    assert controller.playerState == "stopped"
+    work, done, _ = runner.calls[-1]
+    res = work()
+    assert replace_attempts == 3
+    done(res)
+
+
+def test_sample_and_bounds_cancel_on_lifecycle_and_clear_video_gating(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from vienetts_app.core.diarization import DiarizationCancelled
+
+    fake = FakeApp()
+    player = FakePlayer()
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, fake, player, bg_runner=runner)
+
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+
+    # 1. _sample_generation is bumped by _cancel_owners(), _clear_workspace(), and shutdown().
+    g0 = controller._sample_generation  # noqa: SLF001
+    controller._cancel_owners()  # noqa: SLF001
+    assert controller._sample_generation > g0  # noqa: SLF001
+
+    g1 = controller._sample_generation  # noqa: SLF001
+    controller._clear_workspace()  # noqa: SLF001
+    assert controller._sample_generation > g1  # noqa: SLF001
+
+    g2 = controller._sample_generation  # noqa: SLF001
+    controller.shutdown()
+    assert controller._sample_generation > g2  # noqa: SLF001
+
+    # 2. playSpeakerSample.failed ignores DiarizationCancelled, stale gen, and project switch.
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    _, _, failed_cancel = runner.calls[-1]
+    failed_cancel(DiarizationCancelled("cancelled"))
+    assert controller.errorText == ""
+
+    # Project switch without bumping gen manually: mismatched project_id must not set error.
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    _, _, failed_switch = runner.calls[-1]
+    saved_gen = controller._sample_generation  # noqa: SLF001
+    other = tmp_path / "other.srt"
+    other.write_text(OTHER_SRT, encoding="utf-8")
+    assert controller.importSrt(str(other)) is True
+    # Force gen back to verify the project_id guard independently too.
+    controller._sample_generation = saved_gen  # noqa: SLF001
+    failed_switch(RuntimeError("old project failure"))
+    assert controller.errorText == ""
+
+    # 3. clearVideo() is gated by _refuse_if_busy() across ai, render, and export,
+    # and when idle bumps both _sample_generation and _bounds_generation.
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+    render_all(controller, fake, tmp_path)
+
+    # AI busy -> clearVideo refused
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: list(cues),
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    controller.confirmRenderInvalidation()
+    assert controller.aiBusy is True
+    controller.clearVideo()
+    assert controller.hasVideo is True and controller.hintText != ""
+    controller.cancelAiTask()
+
+    # Export busy -> clearVideo refused
+    assert controller.exportTrack(str(tmp_path / "out")) != ""
+    assert controller.exporting is True
+    controller.clearVideo()
+    assert controller.hasVideo is True and controller.hintText != ""
+    controller.cancelExport()
+
+    # Render busy -> clearVideo refused
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    controller.render()
+    assert controller.rendering is True
+    controller.clearVideo()
+    assert controller.hasVideo is True and controller.hintText != ""
+    controller.cancelRender()
+
+    # Idle -> clearVideo succeeds and bumps BOTH _sample_generation and _bounds_generation,
+    # dropping any in-flight sample audition or speech-bound refinement.
+    cache_dir = controller._media_cache_dir(video)  # noqa: SLF001
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    write_wav_file(np.zeros(16_000, dtype=np.float32), cache_dir / "source_16k.wav", 16_000)
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+    sample_work, sample_done, sample_fail = runner.calls[-1]
+    sg_before = controller._sample_generation  # noqa: SLF001
+    bg_before = controller._bounds_generation  # noqa: SLF001
+    controller.clearVideo()
+    assert controller.hasVideo is False
+    assert controller._sample_generation > sg_before  # noqa: SLF001
+    assert controller._bounds_generation > bg_before  # noqa: SLF001
+    sample_fail(RuntimeError("late failure after clearVideo"))
+    assert controller.errorText == ""
+
+
+def test_export_video_progress_drops_stale_ticks_via_progress_relay(
+    qcoreapp, tmp_path: Path, monkeypatch
+) -> None:
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    render_all(controller, fake, tmp_path)
+
+    captured_progress: list[Any] = []
+    tick1_sent, release_worker = threading.Event(), threading.Event()
+
+    def fake_mux(vpath, apath, outpath, *, progress=None, cancel_check=None, **kw):
+        captured_progress.append(progress)
+        assert progress is not None
+        progress(0.4)
+        tick1_sent.set()
+        assert release_worker.wait(5)
+        progress(0.85)  # late tick emitted after cancelExport()
+        Path(outpath).write_bytes(b"muxed")
+        return Path(outpath)
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.mux_dubbed_video", fake_mux)
+
+    out = str(tmp_path / "exports")
+    assert controller.exportVideo(out) != ""
+    work, done, _ = runner.calls[-1]
+    box: list[Any] = []
+    worker = threading.Thread(target=lambda: box.append(work()))
+    worker.start()
+    assert tick1_sent.wait(5)
+    QCoreApplication.sendPostedEvents()
+    assert controller.exportProgress == pytest.approx(0.4)
+
+    # Cancel export, then let late progress tick fire on the worker thread.
+    controller.cancelExport()
+    assert controller.exportProgress == pytest.approx(0.0)
+    release_worker.set()
+    worker.join(5)
+    QCoreApplication.sendPostedEvents()
+    assert controller.exportProgress == pytest.approx(0.0)
+    done(box[0])
+    assert controller.exportProgress == pytest.approx(0.0)
+
+    # A late tick emitted AFTER a normal export completes is also dropped.
+    tick1_sent.clear()
+    release_worker.set()
+    assert controller.exportVideo(out) != ""
+    work2, done2, _ = runner.calls[-1]
+    done2(_on_thread(work2))
+    QCoreApplication.sendPostedEvents()
+    assert controller.exporting is False
+    assert controller.exportProgress == pytest.approx(0.0)
+    late_cb = captured_progress[-1]
+    late_cb(0.95)
+    QCoreApplication.sendPostedEvents()
+    assert controller.exportProgress == pytest.approx(0.0)
+
+
+def test_transcribe_video_skips_redundant_speech_bounds_refinement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    controller = make_controller(tmp_path, FakeApp(), FakePlayer(), bg_runner=runner)
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    cache_dir = controller._media_cache_dir(video)  # noqa: SLF001
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    write_wav_file(np.zeros(16_000, dtype=np.float32), cache_dir / "source_16k.wav", 16_000)
+
+    refine_calls: list[Any] = []
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_speech_bounds",
+        lambda cues, wav, **kw: refine_calls.append(wav) or list(cues),
+    )
+    # run_transcription already ran single-pass VAD (even if a cue still has None bounds).
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.run_transcription",
+        transcribed([Cue(1, 0, 1500, "Xin chào.")]),
+    )
+
+    assert controller.importVideo(str(video)) is True
+    assert controller.transcribeVideo(True) is True
+    work, done, _ = runner.calls[-1]
+    queued_before_done = len(runner.calls)
+    done(work())
+    # Drain any post-transcribe background tasks (e.g., media cache sweep) — none may refine!
+    for w, d, _ in runner.calls[queued_before_done:]:
+        d(w())
+    assert refine_calls == []
+
+
+def test_speaker_voice_preserves_render_metadata_and_store_locking_and_atomic_srt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer())
+    store = controller._store  # noqa: SLF001
+    video = tmp_path / "dub.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    assert controller.updateCue(0, "Xin chào", "SPEAKER_01") is True
+    assert controller.setSpeakerVoice("SPEAKER_01", "Binh") is True
+    render_all(controller, fake, tmp_path)
+    pid = controller.projectId
+    rendered = store.require(pid)
+    assert rendered.rendered is True and rendered.render_id != ""
+
+    # 1. _apply_speaker_voice preserves stored render metadata (render_id, fingerprint,
+    # total_ms, stats, adjusted, cue_rates) instead of overwriting them with unrendered defaults.
+    assert controller.setSpeakerVoice("SPEAKER_01", "Ngoc") is True
+    controller.confirmRenderInvalidation()
+    assert controller.rendered is False and controller.renderStale is True
+    stored_after = store.require(pid)
+    assert stored_after.speaker_voices == {"SPEAKER_01": "Ngoc"}
+    assert stored_after.render_id == rendered.render_id
+    assert stored_after.fingerprint == rendered.fingerprint
+    assert stored_after.total_ms == rendered.total_ms
+    assert stored_after.stats == rendered.stats
+    assert stored_after.adjusted == rendered.adjusted
+    assert stored_after.cue_rates == rendered.cue_rates
+
+    # Reopening while voice diverges from stored fingerprint must open as stale/unrendered.
+    assert controller.openProject(pid) is True
+    assert controller.rendered is False and controller.renderStale is True
+
+    # Switching back to "Binh" re-adopts the preserved render with 0 re-synthesis!
+    fake.pending.clear()
+    assert controller.setSpeakerVoice("SPEAKER_01", "Binh") is True
+    assert controller.rendered is True and controller.renderStale is False
+    controller.render()
+    assert fake.pending == []
+
+    # 2. _update_project_cues() holds _store_lock, calls _projects_changed(), and writes
+    # managed .srt atomically via export_srt_file().
+    managed_srt = controller._managed_srt_path(video)  # noqa: SLF001
+    managed_srt.parent.mkdir(parents=True, exist_ok=True)
+    managed_srt.write_text(SRT, encoding="utf-8")
+    controller._project = replace(controller._project, source_path=str(managed_srt))  # noqa: SLF001
+
+    lock_held_on_save: list[bool] = []
+    real_save = store.save
+
+    def spy_save(proj):
+        lock_held_on_save.append(controller._store_lock.locked())  # noqa: SLF001
+        return real_save(proj)
+
+    monkeypatch.setattr(store, "save", spy_save)
+
+    import vienetts_app.ui.subtitle_controller as sc_mod
+
+    srt_exports: list[Path] = []
+    real_export_srt = sc_mod.export_srt_file
+
+    def spy_export_srt(target, cues, *, include_speakers=False):
+        srt_exports.append(Path(target))
+        return real_export_srt(target, cues, include_speakers=include_speakers)
+
+    monkeypatch.setattr(sc_mod, "export_srt_file", spy_export_srt)
+
+    proj_changes: list[int] = []
+    controller.projectsChanged.connect(lambda: proj_changes.append(1))
+    assert controller.updateCue(0, "Xin chào cập nhật", "SPEAKER_01") is True
+    controller.confirmRenderInvalidation()
+    assert lock_held_on_save and all(lock_held_on_save)
+    assert srt_exports == [managed_srt]
+    assert len(proj_changes) >= 1
+
+    # 3. _save_imported() holds _store_lock on the fresh-save branch too.
+    lock_held_on_save.clear()
+    fresh_srt = tmp_path / "fresh.srt"
+    fresh_srt.write_text(OTHER_SRT, encoding="utf-8")
+    assert controller.importSrt(str(fresh_srt)) is True
+    assert lock_held_on_save == [True]
+
+    # 4. _RenderCommitStore receives `store.load(id) or project` (never None), so settings
+    # saved mid-render survive finish() even when project.json was absent at render start.
+    monkeypatch.setattr(store, "save", real_save)
+    pid2 = controller.projectId
+    store.project_path(pid2).unlink(missing_ok=True)
+    controller.render()
+    assert controller._render_commit is not None  # noqa: SLF001
+    assert controller._render_commit._base is not None  # noqa: SLF001
+    controller.setLlmGlossary("saved mid render")
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+    assert store.require(pid2).llm_glossary == "saved mid render"
+    assert controller.llmGlossary == "saved mid render"
+
+
+def test_deferred_invalidation_queue_and_ai_stale_reason_only_on_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from vienetts_app.core.subtitles import Cue
+
+    runner = _DeferredRunner()
+    fake = FakeApp()
+    controller = make_controller(tmp_path, fake, FakePlayer(), bg_runner=runner)
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+
+    # 1. Multiple confirmed invalidations during a render queue cleanly and ALL apply at end.
+    controller.render()
+    assert controller.rendering is True
+    controller.rateCap = 1.2
+    controller.confirmRenderInvalidation()
+    controller.offsetMs = 250
+    controller.confirmRenderInvalidation()
+    assert controller.rateCap == 1.5 and controller.offsetMs == 0
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendering is False
+    assert controller.rateCap == 1.2
+    assert controller.offsetMs == 250
+    assert controller._project.policy.rate_cap == 1.2  # noqa: SLF001
+    assert controller._project.policy.offset_ms == 250  # noqa: SLF001
+
+    # Re-render cleanly so project is rendered again.
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True and controller._stale_reason == ""  # noqa: SLF001
+
+    # 2. Confirmed LLM failure must NOT mark _stale_reason or invalidate the render.
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: (_ for _ in ()).throw(RuntimeError("llm down")),
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    controller.confirmRenderInvalidation()
+    assert controller.aiBusy is True
+    assert controller._stale_reason == ""  # noqa: SLF001
+    work, done, failed = runner.calls[-1]
+    with pytest.raises(RuntimeError, match="llm down"):
+        work()
+    failed(RuntimeError("llm down"))
+    assert controller.aiBusy is False
+    assert controller.rendered is True
+    assert controller.renderStale is False
+    assert controller._stale_reason == ""  # noqa: SLF001
+
+    # 3. Confirmed diarization cancel must NOT mark _stale_reason, and a queued voice
+    # invalidation confirmed while AI is busy applies once AI finishes/cancels.
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [replace(c, speaker="SPEAKER_01") for c in cues],
+    )
+    assert controller.runDiarization() is True
+    controller.confirmRenderInvalidation()
+    assert controller.aiBusy is True
+    assert controller._stale_reason == ""  # noqa: SLF001
+    # Stage & confirm a voice change while AI is busy -> stays deferred until AI ends.
+    controller.voice = "voice-b"
+    assert controller.invalidationPending is True
+    controller.confirmRenderInvalidation()
+    assert controller.voice == ""  # still deferred while aiBusy
+    controller.cancelAiTask()
+    assert controller.aiBusy is False
+    assert controller.voice == "voice-b"  # queued invalidation drained now
+    assert controller._stale_reason == "voice"  # noqa: SLF001 (NOT "diarization"!)
+
+    # 4. Failed transcribeVideo on an already-stale cue-edited project keeps "cue_edit".
+    controller.voice = ""  # back to cached render
+    assert controller.rendered is True
+    assert controller.updateCue(0, "Câu đã sửa", "") is True
+    controller.confirmRenderInvalidation()
+    assert controller._stale_reason == "cue_edit"  # noqa: SLF001
+    assert controller.transcribeVideo(False) is True
+    assert controller.invalidationReason == "asr"
+    controller.confirmRenderInvalidation()
+    assert controller._stale_reason == "cue_edit"  # noqa: SLF001
+    _, _, failed_asr = runner.calls[-1]
+    failed_asr(RuntimeError("asr boom"))
+    assert controller._stale_reason == "cue_edit"  # noqa: SLF001
+
+    # 5. Successful LLM refinement DOES set _stale_reason = "llm".
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True and controller._stale_reason == ""  # noqa: SLF001
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [Cue(1, 0, 2000, "Tinh chỉnh OK"), Cue(2, 3000, 5000, "Xong")],
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    controller.confirmRenderInvalidation()
+    work_ok, done_ok, _ = runner.calls[-1]
+    done_ok(work_ok())
+    assert controller.rendered is False and controller.renderStale is True
+    assert controller._stale_reason == "llm"  # noqa: SLF001
+
+
+def test_remove_project_off_gui_thread_and_cached_render_zero_gui_utime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    # 1. removeProject() executes units_exec.flush(), store.remove(), and
+    # _prune_unreferenced_media() (store.list_projects()) on the background runner thread.
+    runner = _DeferredRunner()
+    executor = DeferredExecutor()
+    fake = FakeApp()
+    controller = make_controller(
+        tmp_path, fake, FakePlayer(), unit_executor=executor, bg_runner=runner
+    )
+    store = controller._store  # noqa: SLF001
+
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"fake_mp4")
+    assert controller.importSrt(load_srt(tmp_path)) is True
+    assert controller.attachVideo(str(video)) is True
+    cache = controller._media_cache_dir(video)  # noqa: SLF001
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "source_16k.wav").write_bytes(b"audio")
+    pid = controller.projectId
+
+    thread_checks: dict[str, list[bool]] = {"flush": [], "remove": [], "list_projects": []}
+    real_flush = executor.flush
+    real_remove = store.remove
+    real_list = store.list_projects
+
+    def spy_flush(timeout_ms: int = 5000) -> None:
+        thread_checks["flush"].append(threading.current_thread() is threading.main_thread())
+        real_flush(timeout_ms)
+
+    def spy_remove(project_id: str) -> None:
+        thread_checks["remove"].append(threading.current_thread() is threading.main_thread())
+        real_remove(project_id)
+
+    def spy_list() -> list[Any]:
+        thread_checks["list_projects"].append(threading.current_thread() is threading.main_thread())
+        return real_list()
+
+    monkeypatch.setattr(executor, "flush", spy_flush)
+    monkeypatch.setattr(store, "remove", spy_remove)
+    monkeypatch.setattr(store, "list_projects", spy_list)
+
+    assert controller.removeProject(pid) is True
+    assert controller.loaded is False
+    # Nothing heavy ran synchronously on the GUI thread.
+    assert thread_checks == {"flush": [], "remove": [], "list_projects": []}
+
+    work, done, _ = runner.calls[-1]
+    done(_on_thread(work))
+    assert thread_checks == {"flush": [False], "remove": [False], "list_projects": [False]}
+    assert not store.project_dir(pid).exists()
+    assert not cache.exists()
+
+    # 2. Cached render triggers ZERO os.utime syscalls on the GUI thread (VieNeuTTSApp-c64z).
+    cached_root = tmp_path / "cached"
+    cached_root.mkdir()
+    id_ctrl, id_fake, _ = identified_env(cached_root)
+    id_exec = DeferredExecutor()
+    id_ctrl._units_exec = id_exec  # noqa: SLF001
+    assert id_ctrl.importSrt(load_srt(cached_root, numbered_srt(12))) is True
+    id_ctrl.render()
+    while id_fake.pending:
+        complete_next_unit(id_fake, cached_root)
+    id_exec.drain()
+    assert id_ctrl.rendered is True
+
+    id_ctrl.offsetMs = 100
+    id_ctrl.confirmRenderInvalidation()
+
+    gui_utimes: list[Any] = []
+    worker_utimes: list[Any] = []
+    real_utime = os.utime
+
+    def spy_utime(path: Any, *args: Any, **kwargs: Any) -> None:
+        if threading.current_thread() is threading.main_thread():
+            gui_utimes.append(path)
+        else:
+            worker_utimes.append(path)
+        real_utime(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "utime", spy_utime)
+    id_fake.submitted.clear()
+    id_ctrl.render()
+    assert id_fake.submitted == []  # all 12 units came from UnitClipCache
+    assert gui_utimes == []  # ZERO utime syscalls on the GUI thread!
+    # Running placements on a worker thread touches on-disk mtime off the GUI thread.
+    while id_exec.queue:
+        w, d, err = id_exec.queue.pop(0)
+        d(_on_thread(w))
+    assert len(worker_utimes) == 12
+    assert id_ctrl.rendered is True

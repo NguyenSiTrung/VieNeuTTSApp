@@ -321,6 +321,32 @@ def _raw_speaker_map(project: SubtitleProject) -> dict[str, str]:
     return {str(k): str(v) for k, v in project.speaker_voices.items() if k and v}
 
 
+def fingerprint_matches_inputs(project: SubtitleProject) -> bool:
+    """True when ``project.fingerprint`` matches ``project``'s current audio inputs.
+
+    Used when speaker voices are updated in place on disk while preserving the
+    stored render metadata: an edited active speaker diverges from the stored
+    fingerprint so the track naturally reports stale until reverted or re-rendered.
+    """
+    if not project.fingerprint:
+        return True
+    active = _active_speaker_voices(project.cues, project.speaker_voices)
+    raw = _raw_speaker_map(project)
+    speaker_maps = (active,) if raw == active else (active, raw)
+    return any(
+        _fingerprint_digest(
+            project.cues,
+            project.policy,
+            project.sample_rate,
+            project.voice_key,
+            project.context,
+            speaker_map,
+        )
+        == project.fingerprint
+        for speaker_map in speaker_maps
+    )
+
+
 def project_id_for(source_path: str | Path, cues: Sequence[Cue]) -> str:
     """Workspace id for a subtitle file: name + spoken text (same content → same id)."""
     name = Path(source_path).name
@@ -515,21 +541,27 @@ class UnitClipCache:
             return None
         return self.directory / f"{key}.wav"
 
-    def contains(self, key: str) -> bool:
+    def contains(self, key: str, *, touch_disk: bool = True) -> bool:
         """Whether a clip is stored under ``key``, from the index (no WAV read).
 
-        A hit counts as a use, so the clips a render is about to place are
-        the last ones a later put evicts.
+        A hit counts as a use in the in-memory LRU order, so the clips a render
+        is about to place are the last ones a later put evicts. Pass
+        ``touch_disk=False`` on the GUI thread to avoid per-unit ``stat``/``utime``
+        syscalls (the placement worker's :meth:`get` refreshes on-disk mtime).
         """
         path = self.path_for(key)
         if path is None:
             return False
         with self._lock:
             index = self._load_index()
-            if key not in index:
+            entry = index.get(key)
+            if entry is None:
                 return False
-            self._touch(key, path)  # drops the entry when the file is gone
-            return key in index
+            if touch_disk:
+                self._touch(key, path)  # drops the entry when the file is gone
+                return key in index
+            self._touch_memory(key, entry[0])
+            return True
 
     def get(self, key: str, sample_rate: int) -> np.ndarray | None:
         """The cached clip, when present at ``sample_rate``; never raises.
@@ -606,6 +638,14 @@ class UnitClipCache:
             self._index = index
             self._tick = max((tick for _, tick in index.values()), default=0)
         return self._index
+
+    def _touch_memory(self, key: str, size: int) -> int:
+        """Mark ``key`` most recently used in memory without filesystem syscalls."""
+        assert self._index is not None
+        tick = max(time.time_ns(), self._tick + _UNIT_TICK_NS)
+        self._tick = tick
+        self._index[key] = (size, tick)
+        return tick
 
     def _touch(self, key: str, path: Path) -> None:
         """Mark ``key`` most recently used, in memory and on disk (mtime)."""
@@ -1382,7 +1422,7 @@ def splice_studio_window_into_subtitle(
     fresh ``render_id``. A failure before the promote leaves ``track.wav``
     untouched and deletes the part file.
     """
-    from vienetts_app.core.audio import read_wav_range
+    from vienetts_app.core.audio import _sf
     from vienetts_app.core.studio import render_project_for_subtitle_save
 
     meta = getattr(studio_project, "subtitle_meta", None)
@@ -1396,8 +1436,15 @@ def splice_studio_window_into_subtitle(
         or timeline is None
         or len(timeline.segments) != len(sub_proj.cues)
         or not source_wav.is_file()
+        or sub_proj.render_id != store.track_render_id(meta.project_id)
     ):
         raise SubtitleProjectError("Subtitle project has no rendered track to update.")
+    meta_render_id = str(getattr(meta, "render_id", "") or "")
+    if meta_render_id and sub_proj.render_id != meta_render_id:
+        raise SubtitleProjectError(
+            "Subtitle track changed since this Studio window was opened; "
+            "reopen the window before saving."
+        )
 
     window_mix = render_project_for_subtitle_save(studio_project)
     orig_start = max(0, int(meta.orig_window_start_frame))
@@ -1406,22 +1453,33 @@ def splice_studio_window_into_subtitle(
     part = store.prepare_track_part(sub_proj.id)
     writer = StreamingWavWriter(part, sub_proj.sample_rate)
     try:
-        cursor = 0
-        while cursor < orig_start:
-            stop = min(orig_start, cursor + SPLICE_CHUNK_FRAMES)
-            chunk, _ = read_wav_range(source_wav, cursor, stop)
-            if chunk.size == 0:
-                break
-            writer.write(chunk)
-            cursor += int(chunk.size)
-        writer.write(window_mix)
-        cursor = orig_end
-        while True:
-            chunk, _ = read_wav_range(source_wav, cursor, cursor + SPLICE_CHUNK_FRAMES)
-            if chunk.size == 0:
-                break
-            writer.write(chunk)
-            cursor += int(chunk.size)
+        with _sf().SoundFile(str(source_wav), mode="r") as reader:
+            total_src_frames = int(reader.frames)
+            remaining = min(orig_start, total_src_frames)
+            while remaining > 0:
+                chunk = reader.read(
+                    min(remaining, SPLICE_CHUNK_FRAMES),
+                    dtype="float32",
+                    always_2d=False,
+                )
+                frames_read = int(chunk.shape[0]) if chunk.ndim > 1 else int(chunk.size)
+                if frames_read == 0:
+                    break
+                writer.write(np.ascontiguousarray(np.asarray(chunk, dtype=np.float32).ravel()))
+                remaining -= frames_read
+            writer.write(window_mix)
+            if orig_end < total_src_frames:
+                reader.seek(orig_end)
+                while True:
+                    chunk = reader.read(
+                        SPLICE_CHUNK_FRAMES,
+                        dtype="float32",
+                        always_2d=False,
+                    )
+                    frames_read = int(chunk.shape[0]) if chunk.ndim > 1 else int(chunk.size)
+                    if frames_read == 0:
+                        break
+                    writer.write(np.ascontiguousarray(np.asarray(chunk, dtype=np.float32).ravel()))
         writer.close()
         total_frames = writer.frames
     except BaseException:

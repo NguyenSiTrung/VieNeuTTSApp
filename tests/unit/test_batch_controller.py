@@ -699,3 +699,126 @@ class TestItemListModel:
         qcoreapp.processEvents()
         assert events == [("changed", 0, 0)]
         assert model.get(0)["progress"] == pytest.approx(0.25)
+
+
+class TestTask33Hardening:
+    """Task 3.3 (FR-3.5): collision-safe pipelined saves, uid tracking & import-while-running."""
+
+    def test_pipelined_same_stem_saves_never_overwrite_and_sanitize_reserved_names(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        bg = DeferredBg()
+        h = Harness(tmp_path)
+        h.bc._run_bg = bg
+        one = txt(tmp_path, "dup.txt", "thứ nhất")
+        (tmp_path / "sub").mkdir()
+        two = tmp_path / "sub" / "dup.txt"
+        two.write_text("thứ hai", encoding="utf-8")
+        h.bc.addFiles([str(one), str(two)])
+        bg.run_all()
+        h.bc.runAll()
+
+        # Both renders finish BEFORE either background save hits disk.
+        complete(h, tmp_path, "job-1")
+        complete(h, tmp_path, "job-2")
+        bg.run_all()
+
+        wavs = sorted(p.name for p in (tmp_path / "out").glob("*.wav"))
+        assert wavs == ["dup.wav", "dup_2.wav"]
+        assert h.bc.items[0]["wavPath"] != h.bc.items[1]["wavPath"]
+
+        # Reserved Windows device names and forbidden chars are sanitized via core.paths.
+        reserved = h.bc._export_target("CON")
+        assert reserved.name == "_CON.wav"
+        forbidden = h.bc._export_target('a:b/c*?"<>|')
+        assert all(ch not in forbidden.name for ch in ':/\\*?"<>|')
+        assert h.bc._export_target("...").name == "audio.wav"
+
+    def test_tracked_playing_and_current_indices_follow_uid_across_mutations(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # 1. Playing index shifts when an earlier row is removed, and stops when removed itself.
+        h = Harness(tmp_path / "play")
+        h.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "một")),
+                str(txt(tmp_path, "b.txt", "hai")),
+            ]
+        )
+        h.bc.runAll()
+        complete(h, tmp_path / "play", "job-1")
+        complete(h, tmp_path / "play", "job-2")
+        h.bc.playItem(1)
+        assert h.bc.playingIndex == 1
+        h.bc.removeItem(0)
+        assert h.bc.playingIndex == 0
+        # Toggling index 0 now stops playback of the shifted item.
+        h.bc.playItem(0)
+        assert h.bc.playingIndex == -1
+        assert ("stop",) in h.player.calls
+
+        # clearFinished() while playing a ready item stops playback cleanly.
+        h.bc.playItem(0)
+        assert h.bc.playingIndex == 0
+        stops_before = h.player.calls.count(("stop",))
+        h.bc.clearFinished()
+        assert h.bc.playingIndex == -1
+        assert h.player.calls.count(("stop",)) == stops_before + 1
+
+        # 2. Currently rendering item index shifts when an earlier finished row is removed.
+        h2 = Harness(tmp_path / "render")
+        h2.bc.addFiles(
+            [
+                str(txt(tmp_path, "first.txt", "một")),
+                str(txt(tmp_path, "second.txt", "hai")),
+                str(txt(tmp_path, "third.txt", "ba")),
+            ]
+        )
+        h2.bc.runAll()
+        complete(h2, tmp_path / "render", "job-1")
+        assert h2.bc.items[0]["status"] == "ready"
+        assert h2.bc.items[1]["status"] == "rendering"
+        assert h2.bc.currentIndex == 1
+        assert h2.bc.currentFileName == "second.txt"
+
+        h2.bc.removeItem(0)
+        assert h2.bc.currentIndex == 0
+        assert h2.bc.currentFileName == "second.txt"
+
+    def test_run_all_stays_running_while_importing_and_inherits_run_context(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        bg = DeferredBg()
+        h = Harness(tmp_path)
+        h.bc._run_bg = bg
+        h.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "thứ nhất")),
+                str(txt(tmp_path, "b.txt", "thứ hai")),
+            ]
+        )
+        assert [i["status"] for i in h.bc.items] == ["importing", "importing"]
+
+        # Trigger runAll while files are still importing.
+        h.bc.runAll()
+        assert h.bc.running is True
+        assert h.app.submissions == []
+
+        # Settings change before imports finish must NOT alter the run's snapshotted context.
+        h.app.context_factory = lambda voice: context_for("vieneu", language="en", voice_id="Hà Vy")
+        bg.run_one()  # a.txt finishes importing -> starts synthesizing with original snapshot
+        assert h.bc.running is True
+        assert len(h.app.submissions) == 1
+        assert h.app.submissions[0]["context"].language == "vi"
+        assert h.app.submissions[0]["context"].voice_id == "Minh Đức"
+
+        # If the only importing item fails import, running drops back to False cleanly.
+        h2 = Harness(tmp_path / "fail_import")
+        bg2 = DeferredBg()
+        h2.bc._run_bg = bg2
+        h2.bc.addFiles([str(tmp_path / "missing.pdf")])
+        h2.bc.runAll()
+        assert h2.bc.running is True
+        bg2.run_one()
+        assert h2.bc.items[0]["status"] == "failed"
+        assert h2.bc.running is False

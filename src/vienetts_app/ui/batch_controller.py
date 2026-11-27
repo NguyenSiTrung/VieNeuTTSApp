@@ -33,7 +33,7 @@ from PySide6.QtCore import Property, QObject, QStandardPaths, QTimer, Signal, Sl
 
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.importers import SUPPORTED_EXTENSIONS, import_document
-from vienetts_app.core.paths import normalize_local_path
+from vienetts_app.core.paths import is_empty_path, normalize_local_path, sanitize_filename
 from vienetts_app.core.synthesis_context import SynthesisContext
 from vienetts_app.ui.bg_ops import run_on_thread_pool
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT
@@ -132,21 +132,27 @@ class BatchFileController(QObject):
         self._items: list[BatchItem] = []
         self._uid_seq = 0
         self._running = False
+        self._run_context: SynthesisContext | None = None
         self._job_id: str | None = None
         self._render_uid: int | None = None
+        self._current_uid: int | None = None
         self._progress = 0.0
         self._current_index = -1
         self._run_done = 0
         self._run_total = 0
         self._error_text = ""
         self._render_voice = ""
+        self._playing_uid: int | None = None
         self._playing_index = -1
         self._items_cache: list[dict[str, Any]] | None = None
         # Pipelined saves (Task 5.3): a finished render's WAV/MP3 export runs
         # in the background while the next item synthesizes. Saves run one at
-        # a time, in completion order; ``_save_queue`` holds the ones waiting
-        # behind the save in flight.
-        self._save_queue: deque[Callable[[], None]] = deque()
+        # a time, in completion order; ``_save_queue`` holds pending
+        # (uid, stem, artifact) jobs and targets are resolved when each save
+        # starts (plus reserved in ``_reserved_targets``) so same-stem items
+        # can never race or overwrite each other.
+        self._save_queue: deque[tuple[int, str, SynthesisArtifact]] = deque()
+        self._reserved_targets: set[Path] = set()
         self._saving = False
         # Coalesce item-model bursts (N imports landing, status+error flips):
         # one 0 ms single-shot per event-loop cycle, like Audiobook's chapters.
@@ -169,6 +175,48 @@ class BatchFileController(QObject):
             if item.uid == uid:
                 return item
         return None
+
+    def _index_of_uid(self, uid: int | None) -> int:
+        if uid is None:
+            return -1
+        for idx, item in enumerate(self._items):
+            if item.uid == uid:
+                return idx
+        return -1
+
+    def _set_current_uid(self, uid: int | None) -> None:
+        prev_uid = self._current_uid
+        self._current_uid = uid
+        new_index = self._index_of_uid(uid)
+        if new_index != self._current_index:
+            self._current_index = new_index
+            self.currentIndexChanged.emit()
+            self.currentFileNameChanged.emit()
+        elif uid != prev_uid:
+            self.currentFileNameChanged.emit()
+
+    def _set_playing_uid(self, uid: int | None) -> None:
+        self._playing_uid = uid
+        new_index = self._index_of_uid(uid)
+        if new_index != self._playing_index:
+            self._playing_index = new_index
+            self.playingIndexChanged.emit()
+
+    def _sync_tracked_indices(self) -> None:
+        new_current = self._index_of_uid(self._current_uid)
+        if new_current == -1:
+            self._current_uid = None
+        if new_current != self._current_index:
+            self._current_index = new_current
+            self.currentIndexChanged.emit()
+            self.currentFileNameChanged.emit()
+        if self._playing_uid is not None:
+            new_playing = self._index_of_uid(self._playing_uid)
+            if new_playing == -1:
+                self.stopPlay()
+            elif new_playing != self._playing_index:
+                self._playing_index = new_playing
+                self.playingIndexChanged.emit()
 
     def _items_model(self) -> list[dict[str, Any]]:
         if self._items_cache is None:
@@ -326,14 +374,18 @@ class BatchFileController(QObject):
         if item.status in (STATUS_RENDERING, STATUS_SAVING):
             return  # the active render cannot be pulled mid-flight
         self._items.pop(index)
+        self._sync_tracked_indices()
         self._refresh_run_totals()
         self._emit_items()
+        if self._running:
+            self._kick()
 
     @Slot()
     def clearFinished(self) -> None:
         kept = [i for i in self._items if i.status not in (STATUS_READY, STATUS_FAILED)]
         if len(kept) != len(self._items):
             self._items = kept
+            self._sync_tracked_indices()
             self._refresh_run_totals()
             self._emit_items()
 
@@ -356,9 +408,10 @@ class BatchFileController(QObject):
         snapshot, refused = self._snapshot_context(self._resolved_render_voice())
         if refused:
             return
+        self._run_context = snapshot
         if snapshot is not None:
             for item in self._items:
-                if item.status == STATUS_PENDING:
+                if item.status in (STATUS_PENDING, STATUS_IMPORTING):
                     item.context = snapshot
         self._running = True
         self.runningChanged.emit()
@@ -410,6 +463,7 @@ class BatchFileController(QObject):
         if not self._running and self._job_id is None:
             return
         self._running = False
+        self._run_context = None
         self.runningChanged.emit()
         job_id, self._job_id = self._job_id, None
         uid, self._render_uid = self._render_uid, None
@@ -425,18 +479,15 @@ class BatchFileController(QObject):
                     cancel(job_id)
         self._progress = 0.0
         self.progressChanged.emit()
-        self._set_current_index(-1)
+        self._set_current_uid(None)
         self._emit_items()
         self._refresh_run_totals()
 
-    def _set_current_index(self, index: int) -> None:
-        if index != self._current_index:
-            self._current_index = index
-            self.currentIndexChanged.emit()
-            self.currentFileNameChanged.emit()
-
     def _saves_owed(self) -> int:
         return len(self._save_queue) + int(self._saving)
+
+    def _has_importing(self) -> bool:
+        return any(item.status == STATUS_IMPORTING for item in self._items)
 
     def _kick(self) -> None:
         if not self._running or self._job_id is not None:
@@ -451,11 +502,12 @@ class BatchFileController(QObject):
             if self._start_render(index, item):
                 return
             # _start_render already marked the item failed — keep scanning.
-        if self._saves_owed():
-            return  # the run ends when its last file is on disk
+        if self._saves_owed() or self._has_importing():
+            return  # the run waits for in-flight imports and saves to finish
         self._running = False
+        self._run_context = None
         self.runningChanged.emit()
-        self._set_current_index(-1)
+        self._set_current_uid(None)
         self._refresh_run_totals()
 
     def _start_render(self, index: int, item: BatchItem) -> bool:
@@ -497,7 +549,7 @@ class BatchFileController(QObject):
         self._render_uid = item.uid
         self._progress = 0.0
         self.progressChanged.emit()
-        self._set_current_index(index)
+        self._set_current_uid(item.uid)
         self._emit_items()
         self._refresh_run_totals()
         return True
@@ -514,7 +566,9 @@ class BatchFileController(QObject):
     def _refresh_run_totals(self) -> None:
         done = sum(1 for i in self._items if i.status in (STATUS_READY, STATUS_FAILED))
         remaining = sum(
-            1 for i in self._items if i.status in (STATUS_PENDING, STATUS_RENDERING, STATUS_SAVING)
+            1
+            for i in self._items
+            if i.status in (STATUS_IMPORTING, STATUS_PENDING, STATUS_RENDERING, STATUS_SAVING)
         )
         total = done + remaining if self._running or self._run_done or self._run_total else 0
         if self._run_done != done:
@@ -567,7 +621,7 @@ class BatchFileController(QObject):
         else:
             message = str(getattr(event, "error", "") or "") or self.tr("Tổng hợp thất bại.")
             self._fail_item(item, message)
-            self._set_current_index(-1)
+            self._set_current_uid(None)
             self._kick()
 
     def _save_item(self, item: BatchItem | None, job_id: str | None, artifact: Any) -> None:
@@ -582,16 +636,26 @@ class BatchFileController(QObject):
         ):
             self._release_artifact_file(artifact)
             self._fail_item(item, self.tr("Tệp âm thanh vừa tạo không hợp lệ."))
-            self._set_current_index(-1)
+            self._set_current_uid(None)
             self._kick()
             return
         item.status = STATUS_SAVING
         item.job_id = None
         self._emit_items()
         self._refresh_run_totals()
-        target = self._export_target(item.source_path.stem)
+        self._save_queue.append((item.uid, item.source_path.stem, artifact))
+        self._start_next_save()
+        # The next item synthesizes while this one encodes.
+        self._kick()
+
+    def _start_next_save(self) -> None:
+        if self._saving or not self._save_queue:
+            return
+        self._saving = True
+        uid, stem, artifact = self._save_queue.popleft()
+        target = self._export_target(stem)
+        self._reserved_targets.add(target)
         source = artifact.path
-        uid = item.uid
 
         def work() -> tuple[int, str, str]:
             try:
@@ -605,6 +669,7 @@ class BatchFileController(QObject):
                 return (uid, "", str(exc))
 
         def done(result: tuple[int, str, str]) -> None:
+            self._reserved_targets.discard(target)
             ruid, wav, error = result
             it = self._by_uid(ruid)
             if error:
@@ -622,22 +687,13 @@ class BatchFileController(QObject):
             self._refresh_run_totals()
             self._finish_save()
 
-        self._save_queue.append(lambda: self._run_bg(work, done, self))
-        self._start_next_save()
-        # The next item synthesizes while this one encodes.
-        self._kick()
-
-    def _start_next_save(self) -> None:
-        if self._saving or not self._save_queue:
-            return
-        self._saving = True
-        self._save_queue.popleft()()
+        self._run_bg(work, done, self)
 
     def _finish_save(self) -> None:
         """A save landed: release the current row if nothing renders, move on."""
         self._saving = False
         if self._job_id is None:
-            self._set_current_index(-1)
+            self._set_current_uid(None)
         self._start_next_save()
         self._kick()
 
@@ -656,26 +712,24 @@ class BatchFileController(QObject):
 
     def _export_target(self, stem: str) -> Path:
         base = str(getattr(self._app, "outputDir", "") or "").strip()
-        if base:
-            directory = Path(base)
-        else:
+        directory = normalize_local_path(base) if base else Path("")
+        if is_empty_path(directory):
             music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
             directory = (Path(music) if music else Path.home() / "Music") / "VieNeuTTS"
         format = str(getattr(self._app, "exportFormat", "wav") or "wav").lower()
         ext = "mp3" if format == "mp3" else "wav"
-        safe = "".join(c if (c.isalnum() or c in ("-", "_", " ")) else "_" for c in stem)
-        safe = safe.strip() or "audio"
+        safe = sanitize_filename(stem, max_len=80, fallback="audio")
         candidate = directory / f"{safe}.{ext}"
         suffix = 2
-        while candidate.exists():
+        while candidate.exists() or candidate in self._reserved_targets:
             candidate = directory / f"{safe}_{suffix}.{ext}"
             suffix += 1
         return candidate
 
     def _on_player_state(self) -> None:
         state = str(getattr(self._player, "state", "stopped") or "stopped")
-        if state == "stopped" and self._playing_index != -1:
-            self._set_playing_index(-1)
+        if state == "stopped" and (self._playing_uid is not None or self._playing_index != -1):
+            self._set_playing_uid(None)
 
     # ── per-item preview + reveal ────────────────────────────────────────────
 
@@ -688,7 +742,7 @@ class BatchFileController(QObject):
             return
         if not Path(item.wav_path).is_file():
             return
-        if self._playing_index == index:
+        if self._playing_uid == item.uid:
             self.stopPlay()
             return
         self.stopPlay()
@@ -698,13 +752,13 @@ class BatchFileController(QObject):
             logger.exception("batch preview playback failed")
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return
-        self._set_playing_index(index)
+        self._set_playing_uid(item.uid)
 
     @Slot()
     def stopPlay(self) -> None:
-        if self._playing_index == -1:
+        if self._playing_uid is None and self._playing_index == -1:
             return  # nothing of ours is playing — no stray stop on the player
-        self._set_playing_index(-1)
+        self._set_playing_uid(None)
         with contextlib.suppress(Exception):
             self._player.stop()
 
@@ -732,10 +786,5 @@ class BatchFileController(QObject):
 
         return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))))
 
-    def _set_playing_index(self, index: int) -> None:
-        if index != self._playing_index:
-            self._playing_index = index
-            self.playingIndexChanged.emit()
-
     def _on_play_released(self) -> None:
-        self._set_playing_index(-1)
+        self._set_playing_uid(None)

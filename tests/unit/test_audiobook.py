@@ -1247,3 +1247,262 @@ class TestUpgradedMp3Export:
                 cancel_check=cancel_after_first,
             )
         assert not list(cancel_dest.rglob("*.part.mp3"))
+
+
+class TestHardeningTask33:
+    """Task 3.3 (FR-3.3): multi-part replace hygiene, safe os.replace, empty dest, cover & locks."""
+
+    def test_multipart_replace_part0_clears_ready_provenance_and_stale_siblings(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        monkeypatch.setattr(ab, "CHAPTER_CHAR_LIMIT", 60)
+        text = "\n\n".join(f"Phần {i}. " + ("abcdef " * 6) for i in range(6))
+        book = make_book(chapters=1)
+        object.__setattr__(book, "chapters", [EpubChapter(0, "Chương dài", text)])
+        object.__setattr__(book, "content_hash", "1" * 64)
+        record = library.add_book(book)
+
+        parts = library.chapter_parts(record.id, 0, text)
+        assert len(parts) >= 3
+        old_ctx = render_context("vieneu", voice_id="Minh Đức")
+        new_ctx = render_context("qwen_custom_0_6b", voice_id="Vivian")
+
+        # Seed a complete multi-part chapter under old_ctx + stale legacy file + trailing segment.
+        for i in range(len(parts)):
+            wav = library.segment_wav_path(record.id, 0, i)
+            write_wav_file(make_audio(0.02), wav)
+            library.save_chapter_timeline(
+                record.id, 0, Timeline((SegmentSpan(0, 5, 0, 100),)), segment=i
+            )
+            library.save_chapter_envelope(record.id, 0, [0.5, 0.5], segment=i)
+        library.mark_chapter_ready(record.id, 0, context=old_ctx)
+
+        legacy_wav = library.chapter_wav_path(record.id, 0)
+        write_wav_file(make_audio(0.02), legacy_wav)
+        library.save_chapter_timeline(record.id, 0, Timeline((SegmentSpan(0, 5, 0, 100),)))
+        library.save_chapter_envelope(record.id, 0, [0.25, 0.25])
+        trailing = library.segment_wav_path(record.id, 0, len(parts) + 2)
+        write_wav_file(make_audio(0.02), trailing)
+
+        # Promote Part 0 with replace=True under new_ctx (simulating engine switch re-render).
+        part0_tmp = library.segment_wav_path(record.id, 0, 0).with_name("new_part0.part.wav")
+        write_wav_file(make_audio(0.04), part0_tmp)
+        library.promote_chapter_part(
+            record.id, 0, part0_tmp, context=new_ctx, replace=True, segment=0
+        )
+
+        # Part 0 exists with replaced audio; old sidecars and ALL sibling/legacy files are gone.
+        assert library.segment_wav_path(record.id, 0, 0).is_file()
+        assert not library.timeline_path(record.id, 0, segment=0).exists()
+        assert not library.envelope_path(record.id, 0, segment=0).exists()
+        for i in range(1, len(parts)):
+            assert not library.segment_wav_path(record.id, 0, i).exists()
+            assert not library.timeline_path(record.id, 0, segment=i).exists()
+            assert not library.envelope_path(record.id, 0, segment=i).exists()
+        assert not trailing.exists()
+        assert not legacy_wav.exists()
+        assert not library.timeline_path(record.id, 0).exists()
+        assert not library.envelope_path(record.id, 0).exists()
+
+        # Chapter is NOT ready and has NO mixed/stale provenance until remaining parts land.
+        state_plain = library.load_book(record.id)
+        assert state_plain.statuses[0] == "pending"
+        assert 0 not in state_plain.contexts
+        assert library.load_book(record.id, context=old_ctx).statuses[0] == "pending"
+        assert library.load_book(record.id, context=new_ctx).statuses[0] == "pending"
+
+        # Promoting remaining parts finally marks the chapter ready with new_ctx.
+        for i in range(1, len(parts)):
+            tmp = library.segment_wav_path(record.id, 0, i).with_name(f"new_part{i}.part.wav")
+            write_wav_file(make_audio(0.02), tmp)
+            library.promote_chapter_part(
+                record.id, 0, tmp, context=new_ctx, replace=False, segment=i
+            )
+        final_state = library.load_book(record.id, context=new_ctx)
+        assert final_state.statuses[0] == "ready"
+        assert final_state.contexts[0] == new_ctx
+
+    def test_promote_chapter_part_failed_os_replace_preserves_existing_target(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        record = library.add_book(make_book())
+        target = library.save_chapter_audio(record.id, 0, make_audio(0.03))
+        original_bytes = target.read_bytes()
+
+        candidate = target.with_name("candidate.part.wav")
+        candidate.write_bytes(b"new-temp-bytes")
+
+        def locked_replace(_src, _dst):
+            raise PermissionError(32, "locked by player")
+
+        monkeypatch.setattr("vienetts_app.core.audiobook.os.replace", locked_replace)
+        monkeypatch.setattr("vienetts_app.core.audiobook.time.sleep", lambda _s: None)
+
+        with pytest.raises(PermissionError):
+            library.promote_chapter_part(record.id, 0, candidate, replace=True)
+
+        assert target.is_file()
+        assert target.read_bytes() == original_bytes
+
+    @pytest.mark.parametrize("bad_dest", ["", "   ", ".", '""', "file://", Path(""), Path(".")])
+    def test_export_rejects_empty_destination_paths(
+        self,
+        library: AudiobookLibrary,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        bad_dest: str | Path,
+    ) -> None:
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio(0.02))
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        with pytest.raises(AudiobookError, match="empty"):
+            library.export_chapter(record.id, 0, bad_dest, "wav")
+        with pytest.raises(AudiobookError, match="empty"):
+            library.export_chapter(record.id, 0, bad_dest, "mp3")
+        with pytest.raises(AudiobookError, match="empty"):
+            library.export_mp3_chapters(record.id, [0], bad_dest)
+        assert list(cwd.iterdir()) == []
+
+    def test_resolve_book_export_metadata_passes_include_cover_flag(
+        self, library: AudiobookLibrary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab
+        from vienetts_app.core.epub import EpubMetadata
+
+        epub_path = _write_rich_epub(tmp_path / "meta.epub")
+        calls: list[bool] = []
+
+        def spy_extract(source: Path, *, include_cover: bool = True) -> EpubMetadata:
+            calls.append(include_cover)
+            return EpubMetadata(
+                title="T",
+                author="A",
+                authors=("A",),
+                language="vi",
+                isbn="9781234567890",
+                year=2020,
+                description="Desc",
+                cover_bytes=_TINY_PNG if include_cover else None,
+                cover_ext="png" if include_cover else "",
+            )
+
+        monkeypatch.setattr(ab, "extract_epub_metadata", spy_extract)
+
+        # Book with persisted cover on disk + missing isbn -> include_cover=False.
+        with_cover = EpubBook(
+            title="Có bìa",
+            author="A",
+            chapters=[EpubChapter(0, "Ch 1", "Text.")],
+            source_path=str(epub_path),
+            content_hash="4" * 64,
+            authors=("A",),
+            cover_bytes=_TINY_PNG,
+            cover_ext="png",
+        )
+        rec_cover = library.add_book(with_cover)
+        meta_cover = library.resolve_book_export_metadata(rec_cover.id)
+        assert calls == [False]
+        assert meta_cover.cover_bytes == _TINY_PNG
+        assert meta_cover.isbn == "9781234567890"
+
+        # Book without persisted cover -> include_cover=True.
+        no_cover = EpubBook(
+            title="Không bìa",
+            author="A",
+            chapters=[EpubChapter(0, "Ch 1", "Text.")],
+            source_path=str(epub_path),
+            content_hash="5" * 64,
+            authors=("A",),
+        )
+        rec_no_cover = library.add_book(no_cover)
+        calls.clear()
+        meta_no_cover = library.resolve_book_export_metadata(rec_no_cover.id)
+        assert calls == [True]
+        assert meta_no_cover.cover_bytes == _TINY_PNG
+
+    def test_merged_segment_timeline_preserves_unmapped_sentinels(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        monkeypatch.setattr(ab, "CHAPTER_CHAR_LIMIT", 80)
+        text = "\n\n".join(f"Phần {i}. " + ("abcdef " * 8) for i in range(6))
+        book = make_book(chapters=1)
+        object.__setattr__(book, "chapters", [EpubChapter(0, "Chương dài", text)])
+        object.__setattr__(book, "content_hash", "6" * 64)
+        record = library.add_book(book)
+        parts = library.chapter_parts(record.id, 0, text)
+        assert len(parts) >= 2
+
+        for i in range(len(parts)):
+            write_wav_file(make_audio(0.02), library.segment_wav_path(record.id, 0, i))
+            local = Timeline(
+                (
+                    SegmentSpan(-1, -1, 0, 400),
+                    SegmentSpan(0, 10, 400, 1000),
+                ),
+                approximate=False,
+            )
+            library.save_chapter_timeline(record.id, 0, local, segment=i)
+
+        merged = library.load_chapter_timeline(record.id, 0)
+        assert merged is not None
+        assert merged.segments[0] == SegmentSpan(-1, -1, 0, 400)
+        assert merged.segments[1] == SegmentSpan(
+            parts[0].char_start, parts[0].char_start + 10, 400, 1000
+        )
+        assert merged.segments[2] == SegmentSpan(-1, -1, 1000, 1400)
+        assert merged.segments[3] == SegmentSpan(
+            parts[1].char_start, parts[1].char_start + 10, 1400, 2000
+        )
+
+    def test_concurrent_add_and_remove_book_keep_library_index_consistent(
+        self, library: AudiobookLibrary
+    ) -> None:
+        assert hasattr(library, "_index_lock")
+        peer = AudiobookLibrary(library.root)
+        books: list[EpubBook] = []
+        for i in range(10):
+            b = make_book(path=f"/books/b{i}.epub")
+            object.__setattr__(b, "title", f"Book {i}")
+            object.__setattr__(b, "content_hash", f"{i:x}" * 64)
+            books.append(b)
+
+        # Pre-add books 0..4 to remove concurrently while adding books 5..9.
+        remove_ids = [library.add_book(b).id for b in books[:5]]
+        errors: list[BaseException] = []
+
+        def adder() -> None:
+            try:
+                for b in books[5:]:
+                    library.add_book(b)
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def remover() -> None:
+            try:
+                for bid in remove_ids:
+                    peer.remove_book(bid)
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        t1 = threading.Thread(target=adder)
+        t2 = threading.Thread(target=remover)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert errors == []
+        remaining = {r.id for r in library.list_books()}
+        expected = {b.content_hash[:16] for b in books[5:]}
+        assert remaining == expected

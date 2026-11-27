@@ -61,7 +61,7 @@ from vienetts_app.core.id3 import (
     mime_for_image_ext,
     should_embed_cover,
 )
-from vienetts_app.core.paths import normalize_local_path, sanitize_filename
+from vienetts_app.core.paths import is_empty_path, normalize_local_path, sanitize_filename
 from vienetts_app.core.synthesis_context import (
     SynthesisContext,
     context_from_payload,
@@ -117,6 +117,7 @@ REPLACE_LOCK_DELAY_S = 0.25
 
 _EXPORT_FORBIDDEN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _BOOK_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_INDEX_LOCKS: dict[str, threading.RLock] = {}
 _BOOK_LOCKS_GUARD = threading.Lock()
 
 
@@ -276,6 +277,7 @@ class AudiobookLibrary:
 
     def __init__(self, root_dir: str | Path) -> None:
         self.root = Path(root_dir)
+        self._index_lock = self._get_index_lock()
         # book_id → chapter count, populated by load_book/add_book. Lets the
         # hot path (set_progress, fired every ~2 s during playback) validate
         # the chapter index WITHOUT re-parsing the full book.json (all chapter
@@ -286,6 +288,11 @@ class AudiobookLibrary:
         # thread; the memo makes repeat reads a stat. Our own writes drop the
         # entry; anyone else's atomic replace changes the inode and the stamp.
         self._state_memo: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+
+    def _get_index_lock(self) -> threading.RLock:
+        key = str(self.root.resolve())
+        with _BOOK_LOCKS_GUARD:
+            return _INDEX_LOCKS.setdefault(key, threading.RLock())
 
     # ── shelf ────────────────────────────────────────────────────────────────
 
@@ -328,73 +335,76 @@ class AudiobookLibrary:
         chapters, state, or cached audio.
         """
         book_id = book.content_hash[:16]
-        workspace = self.root / book_id
-        workspace.mkdir(parents=True, exist_ok=True)
-        book_path = workspace / BOOK_FILENAME
-        existing = _read_json(book_path)
-        incoming_authors = _normalize_authors(book.authors, book.author)
-        if isinstance(existing, dict):
-            changed = False
-            if str(existing.get("source_path") or "") != book.source_path:
-                existing["source_path"] = book.source_path
-                changed = True
-            if not existing.get("authors") and incoming_authors:
-                existing["authors"] = list(incoming_authors)
-                if book.author:
-                    existing["author"] = book.author
-                elif not str(existing.get("author") or "").strip():
-                    existing["author"] = "; ".join(incoming_authors)
-                changed = True
-            if not str(existing.get("language") or "").strip() and book.language:
-                existing["language"] = book.language
-                changed = True
-            if not str(existing.get("isbn") or "").strip() and book.isbn:
-                existing["isbn"] = book.isbn
-                changed = True
-            if _parse_optional_year(existing.get("year")) is None and book.year is not None:
-                existing["year"] = book.year
-                changed = True
-            if not str(existing.get("description") or "").strip() and book.description:
-                existing["description"] = book.description
-                changed = True
-            existing_cover = _valid_cover_filename(str(existing.get("cover_file") or ""))
-            existing_cover_path = self.cover_path(book_id, existing_cover)
-            if (existing_cover_path is None or not existing_cover_path.is_file()) and (
-                book.cover_bytes
-            ):
-                new_cover = self._persist_cover_if_valid(book_id, book.cover_bytes, book.cover_ext)
-                if new_cover:
-                    existing["cover_file"] = new_cover
+        with self._book_lock(book_id):
+            workspace = self.root / book_id
+            workspace.mkdir(parents=True, exist_ok=True)
+            book_path = workspace / BOOK_FILENAME
+            existing = _read_json(book_path)
+            incoming_authors = _normalize_authors(book.authors, book.author)
+            if isinstance(existing, dict):
+                changed = False
+                if str(existing.get("source_path") or "") != book.source_path:
+                    existing["source_path"] = book.source_path
                     changed = True
-            if changed:
-                _write_json_atomic(book_path, existing)
-            record = self._record_from_book_json(existing, book_id) or self._new_record(
-                book_id, book, cover_file=str(existing.get("cover_file") or "")
-            )
-        else:
-            cover_file = self._persist_cover_if_valid(book_id, book.cover_bytes, book.cover_ext)
-            record = self._new_record(book_id, book, cover_file=cover_file)
-            payload: dict[str, Any] = {
-                "id": record.id,
-                "title": record.title,
-                "author": record.author,
-                "authors": list(record.authors),
-                "language": record.language,
-                "isbn": record.isbn,
-                "year": record.year,
-                "description": record.description,
-                "cover_file": record.cover_file,
-                "source_path": record.source_path,
-                "content_hash": record.content_hash,
-                "added_at": record.added_at,
-                "chapters": [
-                    {"index": c.index, "title": c.title, "text": c.text} for c in book.chapters
-                ],
-            }
-            _write_json_atomic(book_path, payload)
-        self._upsert_index(record)
-        self._chapter_counts[book_id] = len(book.chapters)
-        return record
+                if not existing.get("authors") and incoming_authors:
+                    existing["authors"] = list(incoming_authors)
+                    if book.author:
+                        existing["author"] = book.author
+                    elif not str(existing.get("author") or "").strip():
+                        existing["author"] = "; ".join(incoming_authors)
+                    changed = True
+                if not str(existing.get("language") or "").strip() and book.language:
+                    existing["language"] = book.language
+                    changed = True
+                if not str(existing.get("isbn") or "").strip() and book.isbn:
+                    existing["isbn"] = book.isbn
+                    changed = True
+                if _parse_optional_year(existing.get("year")) is None and book.year is not None:
+                    existing["year"] = book.year
+                    changed = True
+                if not str(existing.get("description") or "").strip() and book.description:
+                    existing["description"] = book.description
+                    changed = True
+                existing_cover = _valid_cover_filename(str(existing.get("cover_file") or ""))
+                existing_cover_path = self.cover_path(book_id, existing_cover)
+                if (existing_cover_path is None or not existing_cover_path.is_file()) and (
+                    book.cover_bytes
+                ):
+                    new_cover = self._persist_cover_if_valid(
+                        book_id, book.cover_bytes, book.cover_ext
+                    )
+                    if new_cover:
+                        existing["cover_file"] = new_cover
+                        changed = True
+                if changed:
+                    _write_json_atomic(book_path, existing)
+                record = self._record_from_book_json(existing, book_id) or self._new_record(
+                    book_id, book, cover_file=str(existing.get("cover_file") or "")
+                )
+            else:
+                cover_file = self._persist_cover_if_valid(book_id, book.cover_bytes, book.cover_ext)
+                record = self._new_record(book_id, book, cover_file=cover_file)
+                payload: dict[str, Any] = {
+                    "id": record.id,
+                    "title": record.title,
+                    "author": record.author,
+                    "authors": list(record.authors),
+                    "language": record.language,
+                    "isbn": record.isbn,
+                    "year": record.year,
+                    "description": record.description,
+                    "cover_file": record.cover_file,
+                    "source_path": record.source_path,
+                    "content_hash": record.content_hash,
+                    "added_at": record.added_at,
+                    "chapters": [
+                        {"index": c.index, "title": c.title, "text": c.text} for c in book.chapters
+                    ],
+                }
+                _write_json_atomic(book_path, payload)
+            self._upsert_index(record)
+            self._chapter_counts[book_id] = len(book.chapters)
+            return record
 
     def resolve_book_export_metadata(
         self, book_id: str, *, book: BookState | None = None
@@ -440,7 +450,15 @@ class AudiobookLibrary:
             source = Path(record.source_path)
             if source.is_file() and source.suffix.lower() == ".epub":
                 try:
-                    extracted = extract_epub_metadata(source)
+                    extracted = extract_epub_metadata(source, include_cover=(cover_bytes is None))
+                except TypeError as exc:
+                    if "include_cover" not in str(exc):
+                        extracted = None
+                    else:
+                        try:
+                            extracted = extract_epub_metadata(source)
+                        except Exception:  # noqa: BLE001 - opportunistic legacy fallback must stay silent
+                            extracted = None
                 except Exception:  # noqa: BLE001 - opportunistic legacy fallback must stay silent
                     extracted = None
                 if extracted is not None:
@@ -477,10 +495,11 @@ class AudiobookLibrary:
             self._chapter_counts.pop(book_id, None)
             self._state_memo.pop(book_id, None)
             shutil.rmtree(self.root / book_id, ignore_errors=True)
-            index = self._read_index()
-            kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
-            if len(kept) != len(index):
-                self._write_index(kept)
+            with self._index_lock:
+                index = self._read_index()
+                kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
+                if len(kept) != len(index):
+                    self._write_index(kept)
 
     # ── load / chapter data ──────────────────────────────────────────────────
 
@@ -709,10 +728,12 @@ class AudiobookLibrary:
             self._require_book_workspace(book_id)
             if target.exists() and not replace:
                 raise AudiobookError("Chapter output already exists.")
+            replaced = False
             try:
                 for attempt in range(REPLACE_LOCK_ATTEMPTS):
                     try:
                         os.replace(part, target)
+                        replaced = True
                         break
                     except PermissionError:
                         if attempt == REPLACE_LOCK_ATTEMPTS - 1:
@@ -726,13 +747,60 @@ class AudiobookLibrary:
                     ):
                         with contextlib.suppress(OSError):
                             stale.unlink(missing_ok=True)
+                    if segment == 0:
+                        # Starting a replacement of Part 0 invalidates the old
+                        # chapter's ready/provenance state and every sibling or
+                        # legacy file so a partial/cancelled re-render never
+                        # leaves mixed-engine provenance or trailing segments.
+                        self._clear_chapter_ready_locked(book_id, index)
+                        self._unlink_stale_chapter_siblings(book_id, index, keep_segment=0)
                 if segment is None or self._all_segments_ready(book_id, index):
                     self.mark_chapter_ready(book_id, index, context=context)
             except Exception:
-                with contextlib.suppress(OSError):
-                    target.unlink(missing_ok=True)
+                if replaced:
+                    with contextlib.suppress(OSError):
+                        target.unlink(missing_ok=True)
                 raise
         return target
+
+    def _clear_chapter_ready_locked(self, book_id: str, index: int) -> None:
+        """Remove prior ready/error/provenance entries for ``index`` (under book lock)."""
+        state = self._parse_state(book_id)
+        key = str(index)
+        changed = False
+        for bucket in ("statuses", "errors", RENDERS_KEY):
+            mapping = state.get(bucket)
+            if isinstance(mapping, dict) and key in mapping:
+                mapping.pop(key, None)
+                changed = True
+        if changed:
+            self._write_state(book_id, state)
+
+    def _unlink_stale_chapter_siblings(
+        self, book_id: str, index: int, *, keep_segment: int | None
+    ) -> None:
+        """Delete stale legacy WAV/sidecars and sibling segment WAVs/sidecars."""
+        workspace = self.root / book_id
+        for legacy in (
+            self.chapter_wav_path(book_id, index),
+            self.timeline_path(book_id, index, segment=None),
+            self.envelope_path(book_id, index, segment=None),
+        ):
+            with contextlib.suppress(OSError):
+                legacy.unlink(missing_ok=True)
+        seg_re = re.compile(
+            rf"^ch_{index:04d}_s(\d+)(?:\.wav|{re.escape(TIMELINE_SUFFIX)}|{re.escape(WAVEFORM_SUFFIX)})$"
+        )
+        if workspace.is_dir():
+            for entry in workspace.iterdir():
+                match = seg_re.match(entry.name)
+                if not match:
+                    continue
+                seg_num = int(match.group(1))
+                if keep_segment is not None and seg_num == keep_segment:
+                    continue
+                with contextlib.suppress(OSError):
+                    entry.unlink(missing_ok=True)
 
     def _all_segments_ready(self, book_id: str, index: int) -> bool:
         return self.has_chapter_audio(book_id, index)
@@ -812,10 +880,15 @@ class AudiobookLibrary:
             shift = int(item.get("charStart", 0))
             duration = 0
             for span in piece.segments:
+                if span.char_start < 0 or span.char_end < 0:
+                    char_start, char_end = -1, -1
+                else:
+                    char_start = span.char_start + shift
+                    char_end = span.char_end + shift
                 merged.append(
                     SegmentSpan(
-                        char_start=span.char_start + shift,
-                        char_end=span.char_end + shift,
+                        char_start=char_start,
+                        char_end=char_end,
                         start_ms=span.start_ms + offset_ms,
                         end_ms=span.end_ms + offset_ms,
                     )
@@ -854,7 +927,14 @@ class AudiobookLibrary:
         — the player loads the active part's overview instead.
         """
         plan = self.load_segment_plan(book_id, index)
-        if segment is None and plan:
+        if (
+            segment is None
+            and plan
+            and (
+                self.segment_wav_path(book_id, index, 0).is_file()
+                or not self.chapter_wav_path(book_id, index).is_file()
+            )
+        ):
             segment = 0
         path = self.envelope_path(book_id, index, segment=segment)
         if segment is not None:
@@ -933,12 +1013,16 @@ class AudiobookLibrary:
         MP3 export stream-merges all parts of a chapter into one ID3v2.4-tagged
         ``NN - Title.mp3`` file flat in ``dest_dir``.
         """
+        if is_empty_path(dest_dir):
+            raise AudiobookError("Destination folder for chapter export must not be empty.")
+        dest = normalize_local_path(dest_dir)
+        if is_empty_path(dest):
+            raise AudiobookError("Destination folder for chapter export must not be empty.")
         state = self.load_book(book_id) if book is None else book
         chapter = self._chapter(state, index)
         chapter_state = self.read_state(book_id)
         sources = self._resolve_chapter_sources(book_id, chapter, chapter_state)
         ext = "mp3" if str(format).lower() == "mp3" else "wav"
-        dest = normalize_local_path(dest_dir)
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
 
         if ext == "mp3":
@@ -1019,6 +1103,11 @@ class AudiobookLibrary:
         """
         if cancel_check is not None and cancel_check():
             raise ExportCancelled("Audio export cancelled.")
+        if is_empty_path(dest_dir):
+            raise AudiobookError("Destination folder for MP3 export must not be empty.")
+        dest = normalize_local_path(dest_dir)
+        if is_empty_path(dest):
+            raise AudiobookError("Destination folder for MP3 export must not be empty.")
         ordered = list(indices)
         if not ordered:
             return []
@@ -1026,7 +1115,7 @@ class AudiobookLibrary:
         meta = self.resolve_book_export_metadata(book_id, book=state)
         chapter_state = self.read_state(book_id)
         folder_name = sanitize_filename(meta.title, max_len=80, fallback=f"audiobook-{book_id}")
-        out_dir = normalize_local_path(dest_dir) / folder_name
+        out_dir = dest / folder_name
         pad = max(2, len(str(max(1, len(state.chapters)))))
         total_tracks = len(ordered)
         cover_mime = mime_for_image_ext(meta.cover_ext)
@@ -1134,31 +1223,34 @@ class AudiobookLibrary:
         )
 
     def _read_index(self) -> list[Any]:
-        data = _read_json(self.root / LIBRARY_INDEX_FILENAME)
+        with self._index_lock:
+            data = _read_json(self.root / LIBRARY_INDEX_FILENAME)
         if isinstance(data, dict):
             data = data.get("books")
         return data if isinstance(data, list) else []
 
     def _write_index(self, books: list[Any]) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(self.root / LIBRARY_INDEX_FILENAME, {"books": books})
+        with self._index_lock:
+            self.root.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(self.root / LIBRARY_INDEX_FILENAME, {"books": books})
 
     def _upsert_index(self, record: BookRecord) -> None:
-        index = self._read_index()
-        kept = [e for e in index if not (isinstance(e, dict) and e.get("id") == record.id)]
-        entry: dict[str, Any] = {
-            "id": record.id,
-            "title": record.title,
-            "author": record.author,
-            "chapter_count": record.chapter_count,
-            "added_at": record.added_at,
-            "source_path": record.source_path,
-            "content_hash": record.content_hash,
-        }
-        if record.cover_file:
-            entry["cover_file"] = record.cover_file
-        kept.append(entry)
-        self._write_index(kept)
+        with self._index_lock:
+            index = self._read_index()
+            kept = [e for e in index if not (isinstance(e, dict) and e.get("id") == record.id)]
+            entry: dict[str, Any] = {
+                "id": record.id,
+                "title": record.title,
+                "author": record.author,
+                "chapter_count": record.chapter_count,
+                "added_at": record.added_at,
+                "source_path": record.source_path,
+                "content_hash": record.content_hash,
+            }
+            if record.cover_file:
+                entry["cover_file"] = record.cover_file
+            kept.append(entry)
+            self._write_index(kept)
 
     def read_state(self, book_id: str) -> Mapping[str, Any]:
         """Parsed state.json for ``book_id``; READ-ONLY and shared.

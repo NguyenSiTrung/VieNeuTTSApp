@@ -783,7 +783,11 @@ class TestRender:
             book_id = ab.currentBookId
             assert harness.audiobook_lib.segment_wav_path(book_id, 0, 0).is_file()
             assert harness.audiobook_lib.segment_wav_path(book_id, 0, 1).is_file()
-            assert not Path(ab.chapterWavPath(0)).is_file()
+            assert not harness.audiobook_lib.chapter_wav_path(book_id, 0).is_file()
+            assert Path(ab.chapterWavPath(0)) == harness.audiobook_lib.segment_wav_path(
+                book_id, 0, 0
+            )
+            assert Path(ab.chapterWavPath(0)).is_file()
         finally:
             ab_mod.CHAPTER_CHAR_LIMIT = original
 
@@ -1082,7 +1086,14 @@ class TestRenderTimelineCapture:
 
         harness.open_sample()
         ab = harness.audiobook
-        monkeypatch.setattr(ab_module, "split_text_for_streaming", lambda _text: ["AA.", "BB."])
+        monkeypatch.setattr(
+            ab_module,
+            "split_text_for_profile",
+            lambda _text, *_a, **_k: [
+                "First paragraph of chapter one.",
+                "Second paragraph of chapter one.",
+            ],
+        )
         ab.renderChapter(0)
         self._drive_measured_render(harness)
 
@@ -1090,10 +1101,10 @@ class TestRenderTimelineCapture:
         assert timeline is not None
         assert timeline.approximate is False
         # 4800 samples @ 48 kHz = 100 ms per segment; char offsets come from
-        # the lock-step token map ("AA." → "First", "BB." → "paragraph").
+        # the character lock-step scan against chapter one's two paragraphs.
         assert timeline.segments == (
-            SegmentSpan(0, 5, 0, 100),
-            SegmentSpan(6, 15, 100, 200),
+            SegmentSpan(0, 31, 0, 100),
+            SegmentSpan(33, 65, 100, 200),
         )
 
     def test_sample_mismatch_falls_back_to_estimated_timeline(self, harness: Harness) -> None:
@@ -1120,7 +1131,14 @@ class TestRenderTimelineCapture:
 
         harness.open_sample()
         ab = harness.audiobook
-        monkeypatch.setattr(ab_module, "split_text_for_streaming", lambda _text: ["AA.", "BB."])
+        monkeypatch.setattr(
+            ab_module,
+            "split_text_for_profile",
+            lambda _text, *_a, **_k: [
+                "First paragraph of chapter one.",
+                "Second paragraph of chapter one.",
+            ],
+        )
         ab.renderChapter(0)
         job = harness.worker.submitted[-1]
         assert job.artifact_path is not None
@@ -2349,17 +2367,22 @@ class TestBooksReaderExportAndCancel:
         assert ab.exportAudiobook(str(dest), "epub3") is True
         assert ab.exporting is True
 
-        # Cancel before background work runs: immediate silent reset + cancel_check flipped.
+        # Cancel before background work runs: exporting stays True until worker exits
+        # so no overlapping second export can start while the first unwinds.
         ab.cancelExport()
-        assert ab.exporting is False
+        assert ab.exporting is True
         assert ab.errorText == ""
-        assert finished == [(0, "")]
+        assert finished == []
+        assert ab.exportAudiobook(str(tmp_path / "overlap_epub"), "epub3") is False
+        assert "đang xuất" in ab.errorText.lower()
 
         # When the background callable executes after cancel, it raises ExportCancelled,
-        # produces no output, and does not double-emit exportFinished.
+        # produces no output, clears exporting, and emits exportFinished(0, "") once.
         runner.run()
         assert captured_cancel and captured_cancel[0]() is True
         assert not (dest / "Sách thử nghiệm.epub").exists()
+        assert ab.exporting is False
+        assert ab.errorText == ""
         assert finished == [(0, "")]
 
         # shutdown() cancels an active export and calls terminate_children().
@@ -2370,3 +2393,344 @@ class TestBooksReaderExportAndCancel:
         ab.shutdown()
         assert ab.exporting is False
         assert terminated == [1]
+
+
+class TestTask33Hardening:
+    """Task 3.3 (FR-3.3, FR-3.4, FR-3.5): persist resilience, multi-part, timelines & offloads."""
+
+    def test_persist_job_catches_artifact_write_error_and_emits_signal(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.chapter_persist as persist_module
+        from vienetts_app.core.artifacts import ArtifactWriteError
+
+        harness.open_sample()
+        ab = harness.audiobook
+        real_validate = persist_module.validate_wav_artifact
+        seen: list[Path] = []
+
+        def fail_on_copy(path: Path) -> tuple[int, int]:
+            seen.append(Path(path))
+            if len(seen) >= 2:
+                raise ArtifactWriteError("copied part corrupted")
+            return real_validate(path)
+
+        monkeypatch.setattr(persist_module, "validate_wav_artifact", fail_on_copy)
+        ab.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        harness.worker.complete_last(make_artifact(job.artifact_path, job_id=job.id, samples=480))
+
+        assert ab.chapters[0]["status"] == "failed"
+        assert "copied part corrupted" in ab.chapters[0]["error"]
+        assert (ab.currentBookId, 0) not in ab._pending_artifacts
+
+    def test_save_timeline_guards_segment_count_mismatch_without_raising(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.chapter_persist as persist_module
+        from vienetts_app.ui.chapter_persist import (
+            ChapterPersistSignals,
+            RenderSnapshot,
+            _ChapterPersistJob,
+        )
+
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        harness.audiobook_lib.save_chapter_audio(book_id, 0, make_audio(0.2))
+        build_calls: list[int] = []
+        real_build = persist_module.build_timeline
+
+        def spy_build(*args: Any, **kwargs: Any):
+            build_calls.append(1)
+            return real_build(*args, **kwargs)
+
+        monkeypatch.setattr(persist_module, "build_timeline", spy_build)
+        snap = RenderSnapshot(
+            text="First paragraph of chapter one.\n\nSecond paragraph of chapter one.",
+            segments=("First", "paragraph", "Second"),
+            segment_samples=(4800, 4800),  # sum == 9600 == frames, len 2 != 3
+        )
+        job = _ChapterPersistJob(
+            harness.audiobook_lib,
+            book_id,
+            0,
+            SynthesisArtifact(
+                job_id="j1",
+                path=Path("/unused.wav"),
+                sample_rate=48_000,
+                samples=9600,
+                duration_ms=200,
+            ),
+            snap,
+            ChapterPersistSignals(),
+        )
+        job._save_timeline(9600)
+
+        assert build_calls == []
+        loaded = harness.audiobook_lib.load_chapter_timeline(book_id, 0)
+        assert loaded is not None
+        assert loaded.approximate is True
+
+    def test_multipart_continuation_guarded_by_target_and_cleared_on_cancel_fail_switch(
+        self, tmp_path: Path, qcoreapp, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab_mod
+        from vienetts_app.ui.chapter_persist import PersistExecutor, _ChapterPersistJob
+
+        class DeferredPersist(PersistExecutor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.jobs: list[_ChapterPersistJob] = []
+
+            def submit_artifact(self, *args: Any, **kwargs: Any) -> None:
+                self.jobs.append(_ChapterPersistJob(*args, self.signals, **kwargs))
+
+            def submit_legacy_envelope(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+            def flush(self, timeout_ms: int = 5000) -> None:
+                while self.jobs:
+                    self.jobs.pop(0).run()
+
+        monkeypatch.setattr(ab_mod, "CHAPTER_CHAR_LIMIT", 20)
+        persist = DeferredPersist()
+        harness = Harness(tmp_path, persist_executor=persist)
+        harness.open_sample()
+        ab = harness.audiobook
+        text = "Câu một đủ dài. Câu hai cũng đủ dài."
+        ab._state.chapters[0].__dict__["text"] = text  # type: ignore[index]
+
+        # 1. Cancel during persist gap prevents Part 1 from starting and clears play_after_render.
+        ab.playChapter(0)
+        assert len(harness.worker.submitted) == 1
+        harness.worker.complete_last(make_audio(0.02))
+        assert len(persist.jobs) == 1
+        ab.cancelRender()
+        assert ab._chapter_parts == []
+        assert ab._render_segment is None
+        assert ab._render_parts_continue is False
+        assert ab._next_part is None
+        assert ab._play_after_render == -1
+        persist.flush()
+        assert len(harness.worker.submitted) == 1  # Part 1 NOT submitted after cancel
+        assert ab.playerState == "stopped"
+
+        # 2. Failure on Part 1 clears all multi-part continuation state.
+        ab.playChapter(0)  # Part 0 exists, so resumes at Part 1
+        assert len(harness.worker.submitted) == 2
+        harness.worker.fail_last("engine exploded")
+        assert ab._chapter_parts == []
+        assert ab._render_segment is None
+        assert ab._render_parts_continue is False
+        assert ab._next_part is None
+        assert ab._play_after_render == -1
+
+        # 3. Unrelated chapter persist completion cannot hijack Ch 0's multi-part continuation.
+        harness.audiobook_lib.segment_wav_path(ab.currentBookId, 0, 0).unlink()
+        ab.renderChapter(0)
+        harness.worker.complete_last(make_audio(0.02))  # Ch 0 Part 0 now queued in persist
+        assert len(persist.jobs) == 1
+        before_subs = len(harness.worker.submitted)
+        ab._on_chapter_persisted(ab.currentBookId, 1, True, "")
+        assert len(harness.worker.submitted) == before_subs
+
+        # 4. Book switch / selectBook("") / removeBook clears all multi-part state.
+        book_a = ab.currentBookId
+        ab.selectBook("")
+        assert ab._chapter_parts == []
+        assert ab._render_segment is None
+        assert ab._render_parts_continue is False
+        assert ab._next_part is None
+        assert ab._play_after_render == -1
+        persist.flush()
+        assert len(harness.worker.submitted) == before_subs
+
+        # Re-open, trigger persist gap, then removeBook clears state cleanly.
+        assert ab.openBook(book_a) is True
+        ab._state.chapters[0].__dict__["text"] = text  # type: ignore[index]
+        ab.playChapter(0)
+        harness.worker.complete_last(make_audio(0.02))
+        ab.removeBook(book_a)
+        assert ab._chapter_parts == []
+        assert ab._render_segment is None
+        assert ab._render_parts_continue is False
+        assert ab._next_part is None
+        assert ab._play_after_render == -1
+        persist.flush()
+
+    def test_multipart_playback_populates_durations_before_timeline_and_swaps_envelopes(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab_mod
+
+        monkeypatch.setattr(ab_mod, "CHAPTER_CHAR_LIMIT", 20)
+        harness.open_sample()
+        ab = harness.audiobook
+        text = "Câu một đủ dài. Câu hai cũng đủ dài."
+        ab._state.chapters[0].__dict__["text"] = text  # type: ignore[index]
+
+        # Part 0 = 0.2s descending loudness; Part 1 = 0.4s ascending loudness.
+        part0_audio = np.concatenate(
+            [np.full(4800, 0.8, dtype=np.float32), np.zeros(4800, dtype=np.float32)]
+        )
+        part1_audio = np.concatenate(
+            [np.zeros(9600, dtype=np.float32), np.full(9600, 0.8, dtype=np.float32)]
+        )
+        ab.renderChapter(0)
+        harness.worker.complete_last(part0_audio)
+        harness.worker.complete_last(part1_audio)
+        book_id = ab.currentBookId
+
+        # Remove timelines AND envelopes to test both full-chapter timeline estimation
+        # and legacy segment-0 / segment-1 envelope loading.
+        for seg in (0, 1):
+            harness.audiobook_lib.timeline_path(book_id, 0, segment=seg).unlink(missing_ok=True)
+            harness.audiobook_lib.envelope_path(book_id, 0, segment=seg).unlink(missing_ok=True)
+
+        ab.playChapter(0)
+        # Segment 0 envelope computed from ch_0000_s00.wav (loud start, silent end).
+        env0 = list(ab.chapterEnvelope)
+        assert env0 and env0[0] > env0[-1]
+        assert harness.audiobook_lib.envelope_path(book_id, 0, segment=0).is_file()
+
+        # Duration announcement for Part 0 (200 ms) must include Part 1 (400 ms) -> 600 ms total
+        # BEFORE estimating the timeline.
+        harness.fake_player.announce(200)
+        assert ab.durationMs == 600
+        assert ab._timeline is not None
+        assert ab._timeline.segments[-1].end_ms == 600
+
+        # Finishing Part 0 transitions to Part 1 and swaps to Part 1's envelope.
+        harness.fake_player.finish()
+        env1 = list(ab.chapterEnvelope)
+        assert env1 and env1[-1] > env1[0]
+        assert env1 != env0
+        assert harness.audiobook_lib.envelope_path(book_id, 0, segment=1).is_file()
+
+        # Seeking back into Part 0 swaps envelope back to Part 0.
+        ab.seek(50)
+        assert ab.chapterEnvelope == env0
+
+    def test_qwen_render_uses_split_text_for_profile_for_cjk_segments(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.text_segmentation import segment_limit_for, split_text_for_profile
+
+        harness = Harness(tmp_path, app_kwargs=qwen_app_kwargs(tmp_path))
+        harness.open_sample()
+        ab = harness.audiobook
+        assert harness.app.switchEngineProfile(QWEN_CUSTOM) is True
+        assert harness.app.setSynthesisLanguage("zh") is True
+        ab.renderVoice = "Vivian"
+
+        # Construct CJK text with no ASCII spaces exceeding 512 chars so CJK boundary rules
+        # differ from VieNeu whitespace splitting.
+        zh_text = "".join(f"第{i}句测试内容用于验证分段逻辑。" for i in range(45))
+        ab._state.chapters[0].__dict__["text"] = zh_text  # type: ignore[index]
+
+        ab.renderChapter(0)
+        expected = split_text_for_profile(
+            zh_text,
+            language="zh",
+            max_chars=segment_limit_for(QWEN_CUSTOM),
+            progressive=False,
+        )
+        assert len(expected) > 1
+        assert ab._render_segments == expected
+
+    def test_save_progress_and_remove_book_offload_and_invalidate_inflight_open(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness.open_sample()
+        first = harness.audiobook.currentBookId
+        ab = harness.audiobook
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        # _save_progress offloads set_progress via _run_bg (not synchronously on GUI thread).
+        saved: list[tuple[str, int, int, str]] = []
+        real_set = harness.audiobook_lib.set_progress
+
+        def spy_progress(book_id: str, current_chapter: int, position_ms: int, voice: str) -> None:
+            saved.append((book_id, current_chapter, position_ms, voice))
+            real_set(book_id, current_chapter, position_ms, voice)
+
+        monkeypatch.setattr(harness.audiobook_lib, "set_progress", spy_progress)
+        ab._save_progress(force=True)
+        assert saved == []
+        assert len(runner.pending) == 1
+        runner.run()
+        assert len(saved) == 1
+
+        # selectBook("") bumps _open_generation and clears loadingBookId so stale open drops.
+        ab.selectBook("")
+        assert ab.currentBookId == ""
+        ab.openBook(first)
+        assert ab.loading is True
+        assert ab.loadingBookId == first
+        gen_before = ab._open_generation
+        ab.selectBook("")
+        assert ab._open_generation > gen_before
+        assert ab.loading is False
+        assert ab.loadingBookId == ""
+        runner.run()  # stale open completes
+        assert ab.currentBookId == ""
+
+        # removeBook() bumps _open_generation, clears loadingBookId, and offloads rmtree.
+        removed: list[str] = []
+        real_remove = harness.audiobook_lib.remove_book
+
+        def spy_remove(book_id: str) -> None:
+            removed.append(book_id)
+            real_remove(book_id)
+
+        monkeypatch.setattr(harness.audiobook_lib, "remove_book", spy_remove)
+        ab.openBook(first)
+        assert ab.loading is True
+        gen_before = ab._open_generation
+        ab.removeBook(first)
+        assert ab._open_generation > gen_before
+        assert ab.loading is False
+        assert ab.loadingBookId == ""
+        assert removed == []  # offloaded via _run_bg
+        assert (harness.audiobook_lib.root / first).exists()
+
+        # Run stale open first, then removal: book never resurrects and directory is deleted.
+        runner.run(0)
+        assert ab.currentBookId == ""
+        runner.run(0)
+        assert removed == [first]
+        assert not (harness.audiobook_lib.root / first).exists()
+
+    def test_chapters_model_caches_readiness_across_ui_refreshes(self, harness: Harness) -> None:
+        harness.open_sample()
+        ab = harness.audiobook
+        lib = harness.audiobook_lib
+        real = lib.segment_ready_count
+        stats: list[int] = []
+
+        def counting(book_id: str, index: int, **kwargs: Any) -> tuple[int, int]:
+            stats.append(index)
+            return real(book_id, index, **kwargs)
+
+        lib.segment_ready_count = counting  # type: ignore[method-assign]
+        _ = ab.chapters
+        assert stats == [0, 1, 2]
+
+        # A pure UI refresh (e.g. cursor change / cache invalidation) reuses readiness cache.
+        stats.clear()
+        ab._chapters_cache = None
+        _ = ab.chapters
+        assert stats == []
+
+        # Rendering chapter 0 invalidates only chapter 0, not chapters 1 and 2.
+        ab.renderChapter(0)
+        _ = ab.chapters
+        assert stats == [0]
+
+        stats.clear()
+        harness.worker.complete_last(make_audio())
+        rows = ab.chapters
+        assert stats == [0]
+        assert rows[0]["ready"] is True

@@ -86,9 +86,10 @@ class _ChapterPersistJob(QRunnable):
 
     def run(self) -> None:
         ok, error = True, ""
+        frames = 0
         try:
             frames = self._promote_artifact()
-        except AudiobookError as exc:
+        except Exception as exc:  # noqa: BLE001 - persist signal must always emit
             logger.exception("promoting rendered chapter artifact failed")
             ok, error = False, str(exc)
         if ok:
@@ -157,7 +158,7 @@ class _ChapterPersistJob(QRunnable):
                 raise
         except AudiobookError:
             raise
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - normalize ArtifactWriteError/OSError into AudiobookError
             raise AudiobookError(f"Could not save the rendered chapter: {exc}") from exc
         return source_frames
 
@@ -166,11 +167,17 @@ class _ChapterPersistJob(QRunnable):
         if not snap.segments or frames <= 0:
             return
         timeline: Timeline
-        if sum(snap.segment_samples) == frames:
+        if len(snap.segment_samples) == len(snap.segments) and sum(snap.segment_samples) == frames:
             timeline = build_timeline(
                 snap.text, list(snap.segments), list(snap.segment_samples), DEFAULT_SAMPLE_RATE
             )
         else:
+            if len(snap.segment_samples) != len(snap.segments):
+                logger.debug(
+                    "segment sample count mismatch (%d != %d); falling back to estimated timeline",
+                    len(snap.segment_samples),
+                    len(snap.segments),
+                )
             timeline = estimate_timeline(
                 snap.text,
                 round(frames * 1000 / DEFAULT_SAMPLE_RATE),
@@ -196,6 +203,8 @@ class _LegacyEnvelopeJob(QRunnable):
         index: int,
         wav_path: Path,
         signals: ChapterPersistSignals,
+        *,
+        segment: int | None = None,
     ) -> None:
         super().__init__()
         self._library = library
@@ -203,6 +212,7 @@ class _LegacyEnvelopeJob(QRunnable):
         self._index = index
         self._wav_path = wav_path
         self._signals = signals
+        self._segment = segment
 
     def run(self) -> None:
         try:
@@ -214,8 +224,10 @@ class _LegacyEnvelopeJob(QRunnable):
             return
         self._signals.envelopeComputed.emit(self._book_id, self._index, buckets)
         try:
-            self._library.save_chapter_envelope(self._book_id, self._index, buckets)
-        except AudiobookError:  # noqa: BLE001 - persistence is best-effort
+            self._library.save_chapter_envelope(
+                self._book_id, self._index, buckets, segment=self._segment
+            )
+        except Exception:  # noqa: BLE001 - persistence is best-effort
             logger.exception("saving computed chapter waveform failed")
 
 
@@ -240,7 +252,13 @@ class PersistExecutor:
         raise NotImplementedError
 
     def submit_legacy_envelope(
-        self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path
+        self,
+        library: AudiobookLibrary,
+        book_id: str,
+        index: int,
+        wav_path: Path,
+        *,
+        segment: int | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -284,9 +302,17 @@ class ThreadPoolPersistExecutor(PersistExecutor):
         )
 
     def submit_legacy_envelope(
-        self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path
+        self,
+        library: AudiobookLibrary,
+        book_id: str,
+        index: int,
+        wav_path: Path,
+        *,
+        segment: int | None = None,
     ) -> None:
-        self._pool.start(_LegacyEnvelopeJob(library, book_id, index, wav_path, self.signals))
+        self._pool.start(
+            _LegacyEnvelopeJob(library, book_id, index, wav_path, self.signals, segment=segment)
+        )
 
     def flush(self, timeout_ms: int = 5000) -> None:
         self._pool.waitForDone(timeout_ms)
@@ -320,9 +346,15 @@ class SyncPersistExecutor(PersistExecutor):
         ).run()
 
     def submit_legacy_envelope(
-        self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path
+        self,
+        library: AudiobookLibrary,
+        book_id: str,
+        index: int,
+        wav_path: Path,
+        *,
+        segment: int | None = None,
     ) -> None:
-        _LegacyEnvelopeJob(library, book_id, index, wav_path, self.signals).run()
+        _LegacyEnvelopeJob(library, book_id, index, wav_path, self.signals, segment=segment).run()
 
     def flush(self, timeout_ms: int = 5000) -> None:
         return None

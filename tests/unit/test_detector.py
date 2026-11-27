@@ -254,3 +254,41 @@ def test_probe_note_and_managed_readiness() -> None:
     assert hw.kind == "none"
     eng = resolve_engine(hw, Settings(), Workload(char_count=5000))
     assert (eng.backend, eng.device) == ("onnx", "cpu")
+
+
+def test_which_nvidia_smi_checks_windows_install_dirs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from vienetts_app.core import detector
+
+    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
+    monkeypatch.setattr(detector.sys, "platform", "win32")
+
+    pf = tmp_path / "Program Files"
+    sysroot = tmp_path / "Windows"
+    monkeypatch.setenv("PROGRAMFILES", str(pf))
+    monkeypatch.delenv("PROGRAMW6432", raising=False)
+    monkeypatch.setenv("SYSTEMROOT", str(sysroot))
+    monkeypatch.delenv("WINDIR", raising=False)
+
+    assert detector._which_nvidia_smi() is False
+
+    nvsmi_exe = pf / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"
+    nvsmi_exe.parent.mkdir(parents=True)
+    nvsmi_exe.write_bytes(b"mz")
+    assert detector._which_nvidia_smi() is True
+
+    # Non-Windows hosts do not probe Windows install directories.
+    monkeypatch.setattr(detector.sys, "platform", "linux")
+    assert detector._which_nvidia_smi() is False
+
+    # DCH drivers place nvidia-smi.exe in System32.
+    monkeypatch.setattr(detector.sys, "platform", "win32")
+    nvsmi_exe.unlink()
+    assert detector._which_nvidia_smi() is False
+    sys32_exe = sysroot / "System32" / "nvidia-smi.exe"
+    sys32_exe.parent.mkdir(parents=True)
+    sys32_exe.write_bytes(b"mz")
+    assert detector._which_nvidia_smi() is True

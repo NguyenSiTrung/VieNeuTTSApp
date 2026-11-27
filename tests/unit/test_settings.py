@@ -152,6 +152,123 @@ class TestCorruptOrInvalid:
         assert loaded == Settings()
         assert caplog.records
 
+    def test_load_retries_permission_error_and_degrades_on_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        import vienetts_app.core.settings as settings_module
+
+        save_settings(Settings(theme="dark"), data_dir=tmp_path)
+        monkeypatch.setattr(settings_module, "_LOAD_RETRY_DELAY", 0.0, raising=False)
+        real_read_text = Path.read_text
+        attempts = {"count": 0}
+
+        def flaky_read(self: Path, *args, **kwargs) -> str:
+            if self.name == "settings.json":
+                attempts["count"] += 1
+                if attempts["count"] <= 2:
+                    raise PermissionError("sharing violation")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read)
+        assert load_settings(data_dir=tmp_path).theme == "dark"
+        assert attempts["count"] == 3
+
+        def always_locked(self: Path, *args, **kwargs) -> str:
+            if self.name == "settings.json":
+                raise PermissionError("locked permanently")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", always_locked)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert load_settings(data_dir=tmp_path) == Settings()
+        assert any("settings" in r.message.lower() for r in caplog.records)
+
+        def io_error(self: Path, *args, **kwargs) -> str:
+            if self.name == "settings.json":
+                raise OSError("disk read failed")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", io_error)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert load_settings(data_dir=tmp_path) == Settings()
+        assert any("settings" in r.message.lower() for r in caplog.records)
+
+    def test_legacy_migration_is_serialized_and_atomic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        import platformdirs
+
+        import vienetts_app.core.settings as settings_module
+        from vienetts_app.core.settings import APP_NAME, default_data_dir
+
+        new_dir = tmp_path / "AppData" / "Local" / APP_NAME
+        legacy_dir = new_dir / APP_NAME
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+
+        def fake_user_data_dir(appname, appauthor=None, **kwargs):
+            return str(new_dir) if appauthor is False else str(legacy_dir)
+
+        monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+        monkeypatch.setattr(settings_module, "_MIGRATED_TARGETS", set())
+
+        # Failed atomic promote must not leave a partial settings.json or .tmp file.
+        def fail_replace(_src, _dst):
+            raise OSError("atomic rename failed")
+
+        monkeypatch.setattr(settings_module.os, "replace", fail_replace)
+        default_data_dir()
+        assert not (new_dir / "settings.json").exists()
+        assert list(new_dir.glob("*.tmp")) == []
+
+        # Concurrent callers must wait for migration to complete (no early return
+        # before the first caller finishes migrating).
+        monkeypatch.undo()
+        monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+        monkeypatch.setattr(settings_module, "_MIGRATED_TARGETS", set())
+        started = threading.Event()
+        release = threading.Event()
+        real_migrate = settings_module._migrate_legacy_data_dir
+        call_count = 0
+
+        def slow_migrate(target: Path) -> None:
+            nonlocal call_count
+            call_count += 1
+            started.set()
+            release.wait(timeout=5.0)
+            real_migrate(target)
+
+        monkeypatch.setattr(settings_module, "_migrate_legacy_data_dir", slow_migrate)
+
+        t2_finished = threading.Event()
+        t2_saw_settings = {"present": False}
+
+        def worker_a() -> None:
+            default_data_dir()
+
+        def worker_b() -> None:
+            started.wait(timeout=5.0)
+            default_data_dir()
+            t2_saw_settings["present"] = (new_dir / "settings.json").is_file()
+            t2_finished.set()
+
+        ta = threading.Thread(target=worker_a)
+        tb = threading.Thread(target=worker_b)
+        ta.start()
+        tb.start()
+        assert started.wait(timeout=5.0)
+        # Worker B must block while worker A is still inside migration.
+        assert not t2_finished.wait(timeout=0.1)
+        release.set()
+        ta.join(timeout=5.0)
+        tb.join(timeout=5.0)
+        assert call_count == 1
+        assert t2_saw_settings["present"] is True
+
 
 class TestDefaultLocation:
     def test_platformdirs_location(self, tmp_path: Path, monkeypatch) -> None:

@@ -9,6 +9,7 @@ because the app is offline-first and a failed check must stay silent.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import platform as _platform
@@ -17,6 +18,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from urllib.parse import unquote, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,13 @@ GITHUB_REPO = "VieNeuTTSApp"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 KOFI_URL = "https://ko-fi.com/ares9x"
 REQUEST_TIMEOUT_SECONDS = 10.0
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MiB ceiling for release metadata JSON
+
+_REPO_PREFIX = f"/{GITHUB_OWNER}/{GITHUB_REPO}/".lower()
+_REPO_RELEASES_PREFIX = f"/{GITHUB_OWNER}/{GITHUB_REPO}/releases/".lower()
+_ALLOWED_ASSET_CDN_HOSTS = frozenset(
+    {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+)
 
 PLATFORM_WINDOWS_X64 = "windows-x64"
 PLATFORM_LINUX_X64 = "linux-x64"
@@ -142,6 +151,63 @@ def asset_platform_key(asset_name: object) -> str | None:
     return None
 
 
+def _parse_https_url(url: object):
+    if not isinstance(url, str):
+        return None
+    stripped = url.strip()
+    if not stripped or any(ch.isspace() or ord(ch) < 32 for ch in stripped):
+        return None
+    try:
+        parsed = urlsplit(stripped)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https":
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if port not in (None, 443) or not parsed.hostname:
+        return None
+    if ".." in unquote(parsed.path).split("/"):
+        return None
+    return parsed
+
+
+def _is_allowed_release_url(url: object) -> bool:
+    parsed = _parse_https_url(url)
+    if parsed is None or parsed.hostname is None:
+        return False
+    return parsed.hostname.lower() == "github.com" and parsed.path.lower().startswith(
+        _REPO_RELEASES_PREFIX
+    )
+
+
+def _is_allowed_asset_url(url: object) -> bool:
+    parsed = _parse_https_url(url)
+    if parsed is None or parsed.hostname is None:
+        return False
+    host = parsed.hostname.lower()
+    if host == "github.com":
+        return parsed.path.lower().startswith(_REPO_RELEASES_PREFIX)
+    if host == "codeload.github.com":
+        return parsed.path.lower().startswith(_REPO_PREFIX)
+    if host in _ALLOWED_ASSET_CDN_HOSTS:
+        return bool(parsed.path and parsed.path != "/")
+    return False
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow HTTPS redirects only; reject ``https -> http`` or non-HTTPS targets."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlsplit(newurl)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise urllib.error.URLError(
+                f"refused redirect to non-HTTPS URL ({parsed.scheme or 'relative'})"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _parse_release_payload(data: object) -> _ParsedRelease:
     if not isinstance(data, dict):
         raise ValueError("unexpected release payload (not an object)")
@@ -158,21 +224,32 @@ def _parse_release_payload(data: object) -> _ParsedRelease:
             name = entry.get("name")
             if not isinstance(url, str) or not url or not isinstance(name, str) or not name:
                 continue
+            if not _is_allowed_asset_url(url):
+                logger.warning("Ignoring update asset %r with untrusted URL", name)
+                continue
             size = entry.get("size")
             assets.append(
-                ReleaseAsset(name=name, url=url, size=size if isinstance(size, int) else -1)
+                ReleaseAsset(name=name, url=url.strip(), size=size if isinstance(size, int) else -1)
             )
     notes = data.get("body")
     page = data.get("html_url")
+    release_url = ""
+    if isinstance(page, str) and page:
+        if _is_allowed_release_url(page):
+            release_url = page.strip()
+        else:
+            logger.warning("Ignoring untrusted release html_url")
     return _ParsedRelease(
         tag_version=tag,
-        release_url=page if isinstance(page, str) else "",
+        release_url=release_url,
         release_notes=notes if isinstance(notes, str) else "",
         assets=tuple(assets),
     )
 
 
 def _http_get_json(url: str) -> dict:
+    if _parse_https_url(url) is None:
+        raise ValueError("update URL must use HTTPS")
     request = urllib.request.Request(
         url,
         headers={
@@ -181,20 +258,30 @@ def _http_get_json(url: str) -> dict:
             "Accept": "application/vnd.github+json",
         },
     )
+    opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            raw = response.read().decode("utf-8")
+        with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            final_url = response.geturl() if hasattr(response, "geturl") else url
+            if isinstance(final_url, str) and urlsplit(final_url).scheme.lower() != "https":
+                raise urllib.error.URLError("refused non-HTTPS response URL")
+            raw_bytes = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise ConnectionError(
             "Could not check for updates: the update server rejected the "
             f"request (HTTP {exc.code}). Try again later."
         ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise ConnectionError(
             "Could not check for updates: no connection to the update server. "
             f"Check the network connection and try again. ({exc})"
         ) from exc
+    if len(raw_bytes) > MAX_RESPONSE_BYTES:
+        raise ValueError(
+            "Could not check for updates: the update server returned an "
+            "oversized response. Try again later."
+        )
     try:
+        raw = raw_bytes.decode("utf-8")
         return json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(

@@ -1,8 +1,14 @@
 """Unit tests for crash diagnostic reporter and unhandled exception handler."""
 
+import os
+import stat
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from vienetts_app.crash import (
     format_crash_report,
@@ -30,6 +36,25 @@ class TestFormatCrashReport:
         assert "Exception Message: Test crash message" in report
         assert "Traceback:" in report
         assert "raise ValueError" in report
+
+    def test_redacts_bearer_tokens_and_api_keys(self, tmp_path: Path) -> None:
+        try:
+            raise RuntimeError(
+                "Auth failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret "
+                "llm_api_key='my-llm-secret' asr_api_key=\"my-asr-secret\" "
+                "token=sk-proj-1234567890abcdef1234"
+            )
+        except RuntimeError as exc:
+            report = format_crash_report(type(exc), exc, exc.__traceback__)
+            log_path = write_crash_report(type(exc), exc, exc.__traceback__, data_dir=tmp_path)
+
+        disk = log_path.read_text(encoding="utf-8")
+        for text in (report, disk):
+            assert "eyJhbGciOiJIUzI1NiJ9.secret" not in text
+            assert "my-llm-secret" not in text
+            assert "my-asr-secret" not in text
+            assert "sk-proj-1234567890abcdef1234" not in text
+            assert "[REDACTED]" in text
 
 
 class TestWriteCrashReport:
@@ -60,6 +85,70 @@ class TestWriteCrashReport:
         assert log_file.is_file()
         content = log_file.read_text(encoding="utf-8")
         assert "New crash" in content
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions and O_NOFOLLOW")
+    def test_posix_permissions_symlink_protection_and_secure_temp_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # Crash log is written with owner-only 0o600 permissions.
+        previous_umask = os.umask(0)
+        try:
+            try:
+                raise RuntimeError("Perm check")
+            except RuntimeError as exc:
+                log_path = write_crash_report(type(exc), exc, exc.__traceback__, data_dir=tmp_path)
+        finally:
+            os.umask(previous_umask)
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
+        # Pre-existing symlink target is never followed.
+        symlink_dir = tmp_path / "symcase"
+        symlink_dir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("precious", encoding="utf-8")
+        (symlink_dir / "crash.log").symlink_to(victim)
+        try:
+            raise RuntimeError("Symlink attack")
+        except RuntimeError as exc:
+            write_crash_report(type(exc), exc, exc.__traceback__, data_dir=symlink_dir)
+        assert victim.read_text(encoding="utf-8") == "precious"
+
+        # Unwritable data_dir falls back to a per-user 0o700 subdir, not shared /tmp/crash.log.
+        blocked = tmp_path / "not-a-dir"
+        blocked.write_text("file", encoding="utf-8")
+        try:
+            raise RuntimeError("Fallback check")
+        except RuntimeError as exc:
+            fallback_log = write_crash_report(type(exc), exc, exc.__traceback__, data_dir=blocked)
+        assert fallback_log.parent != Path(tempfile.gettempdir())
+        assert stat.S_IMODE(fallback_log.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(fallback_log.stat().st_mode) == 0o600
+
+    def test_write_crash_report_is_thread_safe(self, tmp_path: Path) -> None:
+        import vienetts_app.crash as crash_module
+
+        assert isinstance(crash_module._WRITE_LOCK, type(threading.Lock()))
+        errors: list[Exception] = []
+
+        def worker(i: int) -> None:
+            try:
+                try:
+                    raise RuntimeError(f"Concurrent crash {i}")
+                except RuntimeError as exc:
+                    write_crash_report(type(exc), exc, exc.__traceback__, data_dir=tmp_path)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+        assert errors == []
+        content = (tmp_path / "crash.log").read_text(encoding="utf-8")
+        assert content.count("VIENEUTTS CRASH REPORT") == 8
+        for i in range(8):
+            assert f"Concurrent crash {i}" in content
 
 
 class TestHandleUnhandledException:
@@ -102,11 +191,19 @@ class TestShowNativeErrorDialog:
         monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
         monkeypatch.setattr(crash_module.sys, "platform", "darwin")
         monkeypatch.setattr(subprocess, "run", fake_run)
-        show_native_error_dialog('Lỗi "nặng"', r"body \ with 'quotes'")
+        title = '-e Lỗi "nặng"'
+        body = 'body \\ with "quotes" & do shell script "id"\nline2'
+        show_native_error_dialog(title, body)
         assert calls and calls[0][0] == "/usr/bin/osascript"
-        script = calls[0][-1]
-        assert 'display alert "Lỗi \\"nặng\\""' in script
-        assert "body \\\\ with" in script  # backslash escaped for AppleScript
+        cmd = calls[0]
+        assert cmd[1] == "-e"
+        script = cmd[2]
+        assert "on run {t, m}" in script
+        assert "display alert t message m" in script
+        # Untrusted title/body are passed strictly via argv, never interpolated into script.
+        assert title not in script
+        assert "do shell script" not in script
+        assert cmd[-3:] == ["--", title, body]
 
     def test_headless_qt_never_opens_a_native_dialog(self, monkeypatch, capsys) -> None:
         """Offscreen/minimal Qt has no screen to dismiss a modal dialog on, so

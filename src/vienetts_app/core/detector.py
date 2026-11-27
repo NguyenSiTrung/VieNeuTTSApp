@@ -89,10 +89,36 @@ def _cuda_at_least(version: str | None, required: tuple[int, int]) -> bool:
     return parts >= required
 
 
+def _windows_nvidia_smi_paths() -> tuple[Path, ...]:
+    """Well-known Windows install locations for ``nvidia-smi.exe`` outside PATH."""
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for env_var in ("PROGRAMFILES", "PROGRAMW6432"):
+        base = os.environ.get(env_var)
+        if base:
+            candidate = Path(base) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"
+            key = str(candidate).lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(candidate)
+    system_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR")
+    if system_root:
+        candidate = Path(system_root) / "System32" / "nvidia-smi.exe"
+        key = str(candidate).lower()
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
 def _which_nvidia_smi() -> bool:
     import shutil
 
-    return shutil.which("nvidia-smi") is not None
+    if shutil.which("nvidia-smi") is not None:
+        return True
+    if sys.platform == "win32":
+        return any(candidate.is_file() for candidate in _windows_nvidia_smi_paths())
+    return False
 
 
 def _nvml_cuda_version() -> str | None:
@@ -127,14 +153,11 @@ def _nvml_cuda_version() -> str | None:
 
 
 def _nvidia_smi_commands() -> tuple[tuple[str, ...], ...]:
-    """nvidia-smi lookup candidates: PATH search first, then the install dir."""
+    """nvidia-smi lookup candidates: PATH search first, then standard Windows dirs."""
     commands: list[tuple[str, ...]] = [("nvidia-smi",)]
     if sys.platform == "win32":
-        program_files = os.environ.get("PROGRAMFILES") or os.environ.get("PROGRAMW6432")
-        if program_files:
-            commands.append(
-                (str(Path(program_files) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"),)
-            )
+        for candidate in _windows_nvidia_smi_paths():
+            commands.append((str(candidate),))
     return tuple(commands)
 
 

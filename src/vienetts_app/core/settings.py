@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -26,8 +27,34 @@ logger = logging.getLogger(__name__)
 SETTINGS_FILENAME = "settings.json"
 APP_NAME = "VieNeuTTSApp"
 
-
+_MIGRATION_LOCK = threading.Lock()
 _MIGRATED_TARGETS: set[Path] = set()
+_LOAD_RETRY_ATTEMPTS = 5
+_LOAD_RETRY_DELAY = 0.05
+
+
+def _atomic_copy_file(source: Path, target: Path) -> None:
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source, temp)
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                temp.chmod(0o600)
+        os.replace(temp, target)
+    except Exception:
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_copy_tree(source: Path, target: Path) -> None:
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copytree(source, temp)
+        os.replace(temp, target)
+    except Exception:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
 
 
 def _migrate_legacy_data_dir(target: Path) -> None:
@@ -39,16 +66,16 @@ def _migrate_legacy_data_dir(target: Path) -> None:
         legacy_settings = legacy / SETTINGS_FILENAME
         target_settings = target / SETTINGS_FILENAME
         if legacy_settings.is_file() and not target_settings.is_file():
-            shutil.copy2(legacy_settings, target_settings)
+            _atomic_copy_file(legacy_settings, target_settings)
         legacy_voices = legacy / "voices"
         target_voices = target / "voices"
         if legacy_voices.is_dir() and not target_voices.exists():
-            shutil.copytree(legacy_voices, target_voices)
+            _atomic_copy_tree(legacy_voices, target_voices)
         legacy_models = legacy / "models" / "official-v1"
         target_models = target / "models" / "official-v1"
         if (legacy_models / "install.json").is_file() and not target_models.exists():
             target_models.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(legacy_models, target_models)
+            _atomic_copy_tree(legacy_models, target_models)
     except Exception as exc:  # pragma: no cover
         logger.debug("Legacy data dir migration skipped: %s", exc)
 
@@ -64,14 +91,16 @@ def _ensure_legacy_migration(target: Path) -> None:
 
     ``default_data_dir()`` is on every path — settings load/save, the crash
     log, the single-instance lock — and the copy-tree walk must not repeat
-    on each call. The first caller for a given target pays; later calls get
-    the pure path. Keyed per target (not per process) so relocated profiles
-    and isolated test dirs each migrate exactly once.
+    on each call. Serialized under ``_MIGRATION_LOCK`` so concurrent callers
+    wait for migration to finish instead of racing on a half-copied profile.
     """
-    if target in _MIGRATED_TARGETS:
-        return
-    _MIGRATED_TARGETS.add(target)
-    _migrate_legacy_data_dir(target)
+    with _MIGRATION_LOCK:
+        if target in _MIGRATED_TARGETS:
+            return
+        try:
+            _migrate_legacy_data_dir(target)
+        finally:
+            _MIGRATED_TARGETS.add(target)
 
 
 def _settings_path(data_dir: Path) -> Path:
@@ -257,26 +286,42 @@ def _clamp_recent_voices(data: dict) -> dict:
     return {**data, "recent_voices": cleaned}
 
 
+def _read_settings_text(path: Path) -> str:
+    """Read ``path`` with bounded retries for transient Windows sharing locks."""
+    for attempt in range(_LOAD_RETRY_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt + 1 == _LOAD_RETRY_ATTEMPTS:
+                raise
+            time.sleep(_LOAD_RETRY_DELAY)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def load_settings(data_dir: Path | None = None) -> Settings:
     """Load settings from ``data_dir`` (default: platform data dir).
 
     Missing file or directory → defaults. Corrupt JSON, non-dict JSON, unknown
-    fields, or values that fail validation → defaults + logged warning, except
-    for the engine fields and ``recent_voices``, which are clamped individually
-    so a stale profile id or a garbled recents list never discards the rest of
-    the file.
+    fields, unreadable/locked files, or values that fail validation → defaults
+    + logged warning, except for the engine fields and ``recent_voices``, which
+    are clamped individually so a stale profile id or a garbled recents list
+    never discards the rest of the file.
     """
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
-    if not path.is_file():
-        return Settings()
-    if os.name != "nt":
-        with contextlib.suppress(OSError):
-            path.chmod(0o600)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        if not path.is_file():
+            return Settings()
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                path.chmod(0o600)
+        raw_text = _read_settings_text(path)
+        data = json.loads(raw_text)
         if not isinstance(data, dict):
             raise TypeError(f"expected a JSON object, got {type(data).__name__}")
         return Settings(**_clamp_recent_voices(_clamp_engine_fields(data)))
+    except OSError as exc:
+        logger.warning("Could not read settings file %s (%s); using defaults", path, exc)
+        return Settings()
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("Ignoring invalid settings file %s (%s); using defaults", path, exc)
         return Settings()

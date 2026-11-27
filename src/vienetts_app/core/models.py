@@ -241,7 +241,7 @@ class Settings:
     asr_device: str = "auto"
     asr_threads: int = 0
     asr_api_base_url: str = ""
-    asr_api_key: str = ""
+    asr_api_key: str = dataclass_field(default="", repr=False)
     asr_api_model: str = ""
     # Opt-in (FR-3.4): auto mode may upload the audio to the configured Whisper
     # API only when this is set — a local backend failure never does it silently.
@@ -257,7 +257,7 @@ class Settings:
     diarization_threads: int = 0
     subtitle_export_speaker_labels: bool = False
     llm_base_url: str = "http://localhost:11434/v1"
-    llm_api_key: str = ""
+    llm_api_key: str = dataclass_field(default="", repr=False)
     llm_model: str = "qwen2.5:7b"
     llm_model_refine: str = ""
     llm_model_translate: str = ""
@@ -421,8 +421,7 @@ class TTSRequest:
                     "a cloned context must not also carry a preset voice — "
                     "drop the voice or clear the clone"
                 )
-            return
-        if self.voice is not None and context.voice_id and self.voice != context.voice_id:
+        elif self.voice is not None and context.voice_id and self.voice != context.voice_id:
             raise ValueError(
                 f"voice {self.voice!r} contradicts the context voice {context.voice_id!r}"
             )

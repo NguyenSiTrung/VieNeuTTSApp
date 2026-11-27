@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -53,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import soundfile as sf
 
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.engine_profiles import EngineId, EngineProfileError, get_capabilities
@@ -147,12 +149,15 @@ class CloneProfile:
             return None
         if not created_at:
             return None
+        reference_path = _resolve_reference(reference, root)
+        if reference_path is None:
+            return None
         return cls(
             clone_id=clone_id,
             name=name,
             profile=profile,
             transcript=transcript,
-            reference_path=_resolve_reference(reference, root),
+            reference_path=reference_path,
             content_hash=content_hash,
             duration_seconds=duration,
             sample_rate=sample_rate,
@@ -170,19 +175,36 @@ def _is_engine_profile(value: str) -> bool:
     return capabilities.supports_cloning
 
 
-def _resolve_reference(reference: str, root: Path) -> Path:
-    """Absolute path for a stored reference (never escapes the store root).
+def _resolve_reference(reference: str, root: Path) -> Path | None:
+    """Resolve a stored reference strictly to a regular non-symlink file inside ``references/``.
 
-    Index entries are always relative; an absolute or escaping path means the
-    file was hand-edited, so it is treated as a bare name inside ``references``
-    rather than letting the host read an arbitrary file.
+    Returns ``None`` if the reference is blank, absolute, traverses outside
+    ``<root>/references``, contains or targets any symlink, or is not an
+    existing regular file.
     """
-    candidate = Path(reference)
-    if candidate.is_absolute():
-        return root / REFERENCE_DIRNAME / candidate.name
-    resolved = (root / candidate).resolve()
-    if not resolved.is_relative_to(root.resolve()):
-        return root / REFERENCE_DIRNAME / candidate.name
+    raw = str(reference or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    refs_dir = root / REFERENCE_DIRNAME
+    if refs_dir.is_symlink():
+        return None
+    current = root
+    for part in candidate.parts:
+        current = current / part
+        if current.is_symlink():
+            return None
+    try:
+        refs_root = refs_dir.resolve()
+        resolved = current.resolve()
+    except OSError:
+        return None
+    if resolved == refs_root or not resolved.is_relative_to(refs_root):
+        return None
+    if current.is_symlink() or not current.is_file():
+        return None
     return resolved
 
 
@@ -211,6 +233,7 @@ class CloneStore:
         self._references_dir = self._root / REFERENCE_DIRNAME
         self._now = now or (lambda: datetime.now(UTC))
         self._clones: dict[str, CloneProfile] | None = None
+        self._lock = threading.RLock()
 
     # ── reads ──────────────────────────────────────────────────────────────
 
@@ -220,20 +243,25 @@ class CloneStore:
 
     def list(self, profile: EngineId | None = None) -> tuple[CloneProfile, ...]:
         """Enrolled clones, optionally for one profile, in stable name order."""
-        clones = self._entries().values()
-        selected: Iterable[CloneProfile] = (
-            clones if profile is None else (c for c in clones if c.profile == profile)
-        )
-        return tuple(sorted(selected, key=lambda clone: (clone.name.casefold(), clone.clone_id)))
+        with self._lock:
+            clones = self._entries().values()
+            selected: Iterable[CloneProfile] = (
+                clones if profile is None else (c for c in clones if c.profile == profile)
+            )
+            return tuple(
+                sorted(selected, key=lambda clone: (clone.name.casefold(), clone.clone_id))
+            )
 
     def get(self, clone_id: str) -> CloneProfile:
         """One clone by id; unknown ids raise with the enrolled names."""
-        key = str(clone_id or "").strip()
-        clone = self._entries().get(key)
-        if clone is None:
-            known = ", ".join(sorted(clone.name for clone in self._entries().values())) or "none"
-            raise CloneStoreError(f"clone {key!r} is not enrolled — enrolled clones: {known}")
-        return clone
+        with self._lock:
+            key = str(clone_id or "").strip()
+            entries = self._entries()
+            clone = entries.get(key)
+            if clone is None:
+                known = ", ".join(sorted(clone.name for clone in entries.values())) or "none"
+                raise CloneStoreError(f"clone {key!r} is not enrolled — enrolled clones: {known}")
+            return clone
 
     def prompt_for(self, clone_id: str) -> ClonePrompt:
         """Reference clip + transcript for the model host, or an actionable error.
@@ -243,27 +271,37 @@ class CloneStore:
         payload it enrolled with — is reported as such instead of silently
         synthesizing with the wrong voice.
         """
-        clone = self.get(clone_id)
-        if not clone.reference_path.is_file():
-            raise CloneStoreError(
-                f"the reference clip for clone {clone.name!r} is missing "
-                f"({clone.reference_path}) — re-enroll it"
+        with self._lock:
+            clone = self.get(clone_id)
+            refs_root = self._references_dir.resolve()
+            ref_path = clone.reference_path
+            try:
+                in_refs = ref_path.resolve().is_relative_to(refs_root)
+            except OSError:
+                in_refs = False
+            if ref_path.is_symlink() or not ref_path.is_file() or not in_refs:
+                raise CloneStoreError(
+                    f"the reference clip for clone {clone.name!r} is missing "
+                    f"({clone.reference_path}) — re-enroll it"
+                )
+            try:
+                audio, sample_rate = read_wav(clone.reference_path)
+            except Exception as exc:  # noqa: BLE001 - soundfile error taxonomy varies
+                raise CloneStoreError(
+                    f"the reference clip for clone {clone.name!r} is unreadable "
+                    f"({exc}) — re-enroll it"
+                ) from exc
+            if audio.ndim == 2:
+                audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
+            audio = np.ascontiguousarray(audio, dtype=np.float32)
+            if _payload_digest(audio, sample_rate) != clone.content_hash:
+                raise CloneStoreError(
+                    f"the reference clip for clone {clone.name!r} changed since enrollment "
+                    f"({clone.reference_path}) — re-enroll it"
+                )
+            return ClonePrompt(
+                reference_path=str(clone.reference_path), transcript=clone.transcript
             )
-        try:
-            audio, sample_rate = read_wav(clone.reference_path)
-        except Exception as exc:  # noqa: BLE001 - soundfile error taxonomy varies
-            raise CloneStoreError(
-                f"the reference clip for clone {clone.name!r} is unreadable ({exc}) — re-enroll it"
-            ) from exc
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
-        audio = np.ascontiguousarray(audio, dtype=np.float32)
-        if _payload_digest(audio, sample_rate) != clone.content_hash:
-            raise CloneStoreError(
-                f"the reference clip for clone {clone.name!r} changed since enrollment "
-                f"({clone.reference_path}) — re-enroll it"
-            )
-        return ClonePrompt(reference_path=str(clone.reference_path), transcript=clone.transcript)
 
     # ── writes ─────────────────────────────────────────────────────────────
 
@@ -282,51 +320,53 @@ class CloneStore:
         existing clone is returned, no second file). A different clip under a
         name already used *by that profile* is rejected.
         """
-        capabilities = self._capabilities(profile)
-        clean_name = self._check_name(name)
-        clean_transcript = self._check_transcript(capabilities, transcript)
-        self._check_consent(capabilities, consent)
-        source, content_hash, audio, sample_rate = self._read_reference(reference_clip)
-        duration = len(audio) / sample_rate
+        with self._lock:
+            capabilities = self._capabilities(profile)
+            clean_name = self._check_name(name)
+            clean_transcript = self._check_transcript(capabilities, transcript)
+            self._check_consent(capabilities, consent)
+            source, content_hash, audio, sample_rate = self._read_reference(reference_clip)
+            duration = len(audio) / sample_rate
 
-        existing = self._find_by_content(profile, content_hash, clean_transcript)
-        if existing is not None:
-            return existing
-        for clone in self._entries().values():
-            if clone.profile == profile and clone.name.casefold() == clean_name.casefold():
-                raise CloneStoreError(
-                    f"a {capabilities.label} clone named {clean_name!r} already exists — "
-                    "remove it first or enroll this clip under another name"
-                )
+            entries = self._entries(require_readable=True)
+            existing = self._find_by_content(profile, content_hash, clean_transcript)
+            if existing is not None:
+                return existing
+            for clone in entries.values():
+                if clone.profile == profile and clone.name.casefold() == clean_name.casefold():
+                    raise CloneStoreError(
+                        f"a {capabilities.label} clone named {clean_name!r} already exists — "
+                        "remove it first or enroll this clip under another name"
+                    )
 
-        timestamp = self._timestamp()
-        clone_id = uuid.uuid4().hex
-        reference_path = self._references_dir / _reference_filename(clean_name, clone_id)
-        clone = CloneProfile(
-            clone_id=clone_id,
-            name=clean_name,
-            profile=profile,
-            transcript=clean_transcript,
-            reference_path=reference_path,
-            content_hash=content_hash,
-            duration_seconds=duration,
-            sample_rate=sample_rate,
-            created_at=timestamp,
-            updated_at=timestamp,
-        )
-        self._write_reference(audio, sample_rate, reference_path, source=source)
-        updated = dict(self._entries())
-        updated[clone_id] = clone
-        try:
-            self._write_index(updated)
-        except Exception:
-            # Never leave a reference file behind for an unindexed clone.
-            with contextlib.suppress(OSError):
-                reference_path.unlink(missing_ok=True)
-            raise
-        self._clones = updated
-        logger.info("Enrolled clone %r for %s (%s)", clean_name, profile, clone_id)
-        return clone
+            timestamp = self._timestamp()
+            clone_id = uuid.uuid4().hex
+            reference_path = self._references_dir / _reference_filename(clean_name, clone_id)
+            clone = CloneProfile(
+                clone_id=clone_id,
+                name=clean_name,
+                profile=profile,
+                transcript=clean_transcript,
+                reference_path=reference_path,
+                content_hash=content_hash,
+                duration_seconds=duration,
+                sample_rate=sample_rate,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self._write_reference(audio, sample_rate, reference_path, source=source)
+            updated = dict(entries)
+            updated[clone_id] = clone
+            try:
+                self._write_index(updated)
+            except Exception:
+                # Never leave a reference file behind for an unindexed clone.
+                with contextlib.suppress(OSError):
+                    reference_path.unlink(missing_ok=True)
+                raise
+            self._clones = updated
+            logger.info("Enrolled clone %r for %s (%s)", clean_name, profile, clone_id)
+            return clone
 
     def remove(self, clone_id: str) -> bool:
         """Drop one clone (index first, then its reference copy).
@@ -335,45 +375,65 @@ class CloneStore:
         deleted is left behind as an orphan rather than failing the removal
         the index already committed.
         """
-        key = str(clone_id or "").strip()
-        entries = self._entries()
-        clone = entries.get(key)
-        if clone is None:
-            return False
-        updated = {cid: entry for cid, entry in entries.items() if cid != key}
-        self._write_index(updated)
-        self._clones = updated
-        try:
-            clone.reference_path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning(
-                "Could not delete reference clip %s; the clone is removed from the index",
-                clone.reference_path,
-            )
-        return True
+        with self._lock:
+            key = str(clone_id or "").strip()
+            entries = self._entries(require_readable=True)
+            clone = entries.get(key)
+            if clone is None:
+                return False
+            updated = {cid: entry for cid, entry in entries.items() if cid != key}
+            self._write_index(updated)
+            self._clones = updated
+            try:
+                clone.reference_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Could not delete reference clip %s; the clone is removed from the index",
+                    clone.reference_path,
+                )
+            return True
 
     # ── index handling ─────────────────────────────────────────────────────
 
-    def _entries(self) -> dict[str, CloneProfile]:
-        if self._clones is None:
-            self._clones = self._load()
-        return self._clones
+    def _entries(self, *, require_readable: bool = False) -> dict[str, CloneProfile]:
+        with self._lock:
+            if self._clones is None:
+                loaded, transient_error = self._load_index()
+                if transient_error is not None:
+                    if require_readable:
+                        raise transient_error
+                    return {}
+                self._clones = loaded
+            return self._clones
 
     def _load(self) -> dict[str, CloneProfile]:
         """Read the index; a corrupt file is quarantined, never overwritten."""
-        if not self._index_path.is_file():
-            return {}
+        loaded, _ = self._load_index()
+        return loaded
+
+    def _load_index(self) -> tuple[dict[str, CloneProfile], OSError | None]:
+        """Read the index, distinguishing corrupt data from transient OS locks."""
         try:
-            raw = json.loads(self._index_path.read_text(encoding="utf-8"))
+            if not self._index_path.is_file():
+                return {}, None
+            raw_text = self._index_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
             entries = raw["clones"] if isinstance(raw, dict) else None
             if not isinstance(entries, list):
                 raise TypeError(f"expected {{'clones': [...]}}, got {type(raw).__name__}")
-        except (OSError, json.JSONDecodeError, TypeError, KeyError) as exc:
+        except OSError as exc:
+            # Never quarantine on transient OS/sharing lock errors; leave the
+            # index intact so subsequent calls recover once the lock clears.
             logger.warning(
-                "Clone index %s is unreadable (%s); moving it aside", self._index_path, exc
+                "Could not read clone index %s (%s); leaving it untouched",
+                self._index_path,
+                exc,
             )
+            return {}, exc
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, KeyError) as exc:
+            logger.warning("Clone index %s is corrupt (%s); moving it aside", self._index_path, exc)
             self._quarantine_index()
-            return {}
+            return {}, None
         clones: dict[str, CloneProfile] = {}
         for entry in entries:
             clone = CloneProfile.from_json(entry, root=self._root)
@@ -381,7 +441,7 @@ class CloneStore:
                 logger.warning("Dropping invalid clone entry from %s", self._index_path)
                 continue
             clones[clone.clone_id] = clone
-        return clones
+        return clones, None
 
     def _quarantine_index(self) -> None:
         target = self._index_path.with_name(self._index_path.name + CORRUPT_SUFFIX)
@@ -479,6 +539,27 @@ class CloneStore:
         if source.suffix.lower() != ".wav":
             raise CloneStoreError(
                 f"the reference clip must be a WAV file, got {source.suffix or 'no extension'!r}"
+            )
+        # Inspect the WAV header BEFORE decoding PCM into RAM so a huge or
+        # excessively long clip is rejected without allocating gigabytes.
+        try:
+            info = sf.info(str(source))
+        except Exception as exc:  # noqa: BLE001 - soundfile error taxonomy varies
+            raise CloneStoreError(
+                f"the reference clip {source.name} is not a readable WAV file ({exc})"
+            ) from exc
+        if info.samplerate <= 0 or info.frames <= 0:
+            raise CloneStoreError(f"the reference clip {source.name} has no audio")
+        header_duration = info.frames / info.samplerate
+        if header_duration < MIN_REFERENCE_SECONDS:
+            raise CloneStoreError(
+                f"the reference clip is {header_duration:.2f}s long — use at least "
+                f"{MIN_REFERENCE_SECONDS:.0f}s of clean speech"
+            )
+        if header_duration > MAX_REFERENCE_SECONDS:
+            raise CloneStoreError(
+                f"the reference clip is {header_duration:.1f}s long — use at most "
+                f"{MAX_REFERENCE_SECONDS:.0f}s of clean speech"
             )
         try:
             audio, sample_rate = read_wav(source)

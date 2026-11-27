@@ -7,6 +7,7 @@ percent-encoded characters, surrounding quotes, Windows extended-length paths
 
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 from pathlib import Path
@@ -107,22 +108,34 @@ def normalize_local_path(path_or_url: str | Path | None) -> Path:
 def to_extended(path_or_url: str | Path | None) -> Path:
     """Windows extended-length form of ``path`` (``\\\\?\\`` prefix).
 
-    On non-Windows hosts (or for empty/relative paths) the normalized path
-    is returned unchanged. Already-extended paths pass through; UNC shares
-    map to ``\\\\?\\UNC\\server\\share``. Use before filesystem calls that
-    must survive the legacy 260-char ``MAX_PATH`` limit on Windows.
+    On non-Windows hosts (or for empty paths) the normalized path is returned
+    unchanged. Relative paths and ``.``/``..`` segments are normalized via
+    ``os.path.abspath`` before prepending ``\\\\?\\`` or ``\\\\?\\UNC\\``
+    (Win32 skips path normalization for extended-length spellings). Use before
+    filesystem calls that must survive the legacy 260-char ``MAX_PATH`` limit
+    on Windows.
     """
     path = normalize_local_path(path_or_url)
     if os.name != "nt" or is_empty_path(path):
         return path
     raw = str(path)
-    if raw.startswith("\\\\?\\"):
+    if raw.startswith("\\\\?\\") or raw.startswith("\\\\.\\"):
         return path
+    if os.path.__name__ == "ntpath":
+        raw = os.path.abspath(raw)
+    elif re.match(r"^[A-Za-z]:[\\/]", raw) or raw.startswith("\\\\"):
+        raw = ntpath.normpath(raw)
+    else:
+        raw = os.path.abspath(raw)
+        if re.match(r"^[A-Za-z]:[\\/]", raw) or raw.startswith("\\\\"):
+            raw = ntpath.normpath(raw)
+    if raw.startswith("\\\\?\\") or raw.startswith("\\\\.\\"):
+        return Path(raw)
     if raw.startswith("\\\\"):
         return Path("\\\\?\\UNC\\" + raw[2:])
-    if re.match(r"^[A-Za-z]:[\\/]", raw):
+    if re.match(r"^[A-Za-z]:\\", raw):
         return Path("\\\\?\\" + raw)
-    return path
+    return Path(raw)
 
 
 def to_short_path(path_or_url: str | Path | None) -> Path:
@@ -141,14 +154,26 @@ def to_short_path(path_or_url: str | Path | None) -> Path:
         return path
     import ctypes  # kernel32 exists only on Windows
 
+    extended = to_extended(path)
+    source = str(extended)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_short = kernel32.GetShortPathNameW
+    get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    get_short.restype = ctypes.c_uint32
+
     buffer = ctypes.create_unicode_buffer(1024)
-    needed = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+    needed = int(get_short(source, buffer, len(buffer)))
     if needed > len(buffer):
         # Return value is the required buffer size when it did not fit.
         buffer = ctypes.create_unicode_buffer(needed)
-        needed = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, needed)
-    if needed:
-        return Path(buffer.value)
+        needed = int(get_short(source, buffer, needed))
+    if 0 < needed < len(buffer):
+        value = buffer.value
+        if value.startswith("\\\\?\\"):
+            stripped = normalize_local_path(value)
+            if len(str(stripped)) < 260:
+                return stripped
+        return Path(value)
     return path
 
 
@@ -182,7 +207,7 @@ def path_to_file_url(path_or_url: str | Path | None) -> str:
         # Ensure 3 slashes before Windows drive letter: file:///C:/...
         if re.match(r"^[A-Za-z]:[/\\]", after_scheme):
             normalized_after = after_scheme.replace("\\", "/")
-            return f"file:///{quote(normalized_after, safe='/%')}"
+            return f"file:///{quote(normalized_after, safe='/:%')}"
         return raw
 
     # Handle Windows extended-length paths
@@ -216,29 +241,87 @@ def path_to_file_url(path_or_url: str | Path | None) -> str:
     return f"file:///{encoded}"
 
 
-def sanitize_filename(name: str, max_len: int = 80, fallback: str = "file") -> str:
+_SHORT_EXT_RE = re.compile(r"^[A-Za-z0-9]{1,10}$")
+
+
+def _truncate_utf8(text: str, max_chars: int, max_bytes: int) -> str:
+    """Truncate ``text`` to at most ``max_chars`` chars and ``max_bytes`` UTF-8 bytes."""
+    if max_chars <= 0 or max_bytes <= 0:
+        return ""
+    text = text[:max_chars]
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _is_windows_reserved(name: str) -> bool:
+    """True when the stem before the first dot (minus trailing spaces/dots) is reserved."""
+    base_stem = name.split(".", 1)[0].rstrip(" .").upper()
+    return base_stem in _WINDOWS_RESERVED_STEMS
+
+
+def _split_extension(name: str) -> tuple[str, str]:
+    """Return ``(stem, suffix)`` if ``name`` ends with a short ASCII extension."""
+    stem, dot, ext = name.rpartition(".")
+    if dot and stem and _SHORT_EXT_RE.fullmatch(ext):
+        return stem, f".{ext}"
+    return name, ""
+
+
+def _bound_filename(cleaned: str, max_len: int, max_bytes: int) -> str:
+    """Apply character and UTF-8 byte bounds while preserving a short extension."""
+    stem, suffix = _split_extension(cleaned)
+    if suffix and len(suffix) < max_len and len(suffix.encode("utf-8")) < max_bytes:
+        suffix_bytes = len(suffix.encode("utf-8"))
+        trimmed_stem = _truncate_utf8(
+            stem,
+            max_len - len(suffix),
+            max_bytes - suffix_bytes,
+        ).rstrip(" .")
+        if trimmed_stem:
+            return f"{trimmed_stem}{suffix}"
+    return _truncate_utf8(cleaned, max_len, max_bytes).rstrip(" .")
+
+
+def sanitize_filename(
+    name: str,
+    max_len: int = 80,
+    fallback: str = "file",
+    *,
+    max_bytes: int | None = None,
+) -> str:
     """Sanitize a candidate string into a safe, valid cross-platform filename.
 
     - Replaces forbidden characters (\\ / : * ? " < > | and control chars) with space
     - Collapses multiple whitespaces
-    - Trims leading/trailing whitespace and trailing dots (forbidden on Windows)
+    - Trims leading/trailing whitespace and dots (including before the extension dot)
     - Checks against Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
-    - Bounds length to ``max_len`` characters
+    - Bounds length to ``max_len`` characters and a safe UTF-8 byte ceiling
     """
     cleaned = _FORBIDDEN_CHARS_RE.sub(" ", str(name or ""))
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     if not cleaned:
         cleaned = fallback
 
-    # Truncate to max_len
-    cleaned = cleaned[:max_len].rstrip(" .")
+    # Strip trailing whitespace/dots before an extension dot (e.g. "CON .txt" -> "CON.txt").
+    stem, suffix = _split_extension(cleaned)
+    if suffix:
+        stripped_stem = stem.rstrip(" .")
+        cleaned = f"{stripped_stem}{suffix}" if stripped_stem else suffix.lstrip(".")
+
+    if _is_windows_reserved(cleaned):
+        cleaned = f"_{cleaned}"
+
+    effective_max_bytes = (
+        max_bytes if max_bytes is not None else (200 if max_len <= 200 else min(max_len, 255))
+    )
+    cleaned = _bound_filename(cleaned, max_len, effective_max_bytes)
     if not cleaned:
         cleaned = fallback
 
-    # Check for Windows reserved device names
-    # e.g., "CON", "con.wav", "aux.txt"
-    base_stem = cleaned.split(".")[0].upper()
-    if base_stem in _WINDOWS_RESERVED_STEMS:
-        cleaned = f"_{cleaned}"
+    # Guard against truncation exposing a Windows reserved stem.
+    if _is_windows_reserved(cleaned):
+        cleaned = _bound_filename(f"_{cleaned}", max_len, effective_max_bytes)
 
     return cleaned

@@ -102,6 +102,16 @@ class TestSettings:
             with pytest.raises(ValueError, match="qwen_device"):
                 Settings(qwen_device=bad)
 
+    def test_api_keys_excluded_from_repr(self) -> None:
+        settings = Settings(asr_api_key="sk-asr-topsecret", llm_api_key="sk-llm-topsecret")
+        rendered = repr(settings)
+        assert "sk-asr-topsecret" not in rendered
+        assert "sk-llm-topsecret" not in rendered
+        assert "asr_api_key" not in rendered
+        assert "llm_api_key" not in rendered
+        assert settings.asr_api_key == "sk-asr-topsecret"
+        assert settings.llm_api_key == "sk-llm-topsecret"
+
 
 class TestTTSRequest:
     def test_request_construction(self) -> None:
@@ -145,6 +155,8 @@ class TestTTSRequest:
         clone = context_for(ep.QWEN_BASE, language="zh", clone_id="clone-1")
         with pytest.raises(ValueError, match="clone"):
             TTSRequest(text="你好", voice="Vivian", context=clone)
+        with pytest.raises(ValueError, match="ref_audio"):
+            TTSRequest(text="你好", ref_audio="/tmp/ref.wav", context=clone)
 
         with pytest.raises(TypeError, match="context"):
             TTSRequest(text="hi", context={"profile": "vieneu"})  # type: ignore[arg-type]

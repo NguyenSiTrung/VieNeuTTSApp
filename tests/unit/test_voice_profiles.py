@@ -416,18 +416,124 @@ def test_unreadable_entries_are_dropped_without_touching_audio(store, clip: Path
     assert clone.reference_path.is_file()
 
 
-def test_an_absolute_or_escaping_reference_stays_inside_the_store(store, clip: Path) -> None:
+def test_an_absolute_or_escaping_reference_stays_inside_the_store(
+    store, clip: Path, tmp_path: Path
+) -> None:
     clone = enroll(store, clip)
     index_path = store.root / INDEX_FILENAME
-    payload = json.loads(index_path.read_text(encoding="utf-8"))
-    payload["clones"][0]["reference"] = "../../../etc/passwd"
-    index_path.write_text(json.dumps(payload), encoding="utf-8")
+    original_payload = json.loads(index_path.read_text(encoding="utf-8"))
+
+    # Parent traversal, sibling file outside references/, and absolute paths are rejected.
+    for bad_ref in ("../../../etc/passwd", "clones.json", str(clip)):
+        payload = json.loads(json.dumps(original_payload))
+        payload["clones"][0]["reference"] = bad_ref
+        index_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert CloneStore(store.root).list() == (), bad_ref
+
+    # Symlinks inside references/ (whether pointing outside or inside) are rejected.
+    if hasattr(os, "symlink"):
+        outside = tmp_path / "outside.wav"
+        make_clip(outside, tone=0.4)
+        outside_link = store.root / "references" / "evil-outside.wav"
+        outside_link.symlink_to(outside)
+        payload = json.loads(json.dumps(original_payload))
+        payload["clones"][0]["reference"] = "references/evil-outside.wav"
+        index_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert CloneStore(store.root).list() == ()
+
+        inside_link = store.root / "references" / "evil-inside.wav"
+        inside_link.symlink_to(clone.reference_path)
+        payload["clones"][0]["reference"] = "references/evil-inside.wav"
+        index_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert CloneStore(store.root).list() == ()
+
+        # Replacing an enrolled file with a symlink after load is blocked by prompt_for.
+        index_path.write_text(json.dumps(original_payload), encoding="utf-8")
+        reopened = CloneStore(store.root)
+        assert len(reopened.list()) == 1
+        clone.reference_path.unlink()
+        clone.reference_path.symlink_to(outside)
+        with pytest.raises(CloneStoreError, match="re-enroll it"):
+            reopened.prompt_for(clone.clone_id)
+
+
+def test_corrupt_utf8_is_quarantined_but_transient_oserror_is_not(
+    store, clip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = enroll(store, clip)
+    index_path = store.root / INDEX_FILENAME
+
+    # Transient PermissionError (e.g. Windows sharing lock) must NEVER quarantine clones.json.
+    real_read_text = Path.read_text
+
+    def locked(self: Path, *args, **kwargs) -> str:
+        if self == index_path:
+            raise PermissionError("sharing violation")
+        return real_read_text(self, *args, **kwargs)
 
     reopened = CloneStore(store.root)
-    (entry,) = reopened.list()
+    monkeypatch.setattr(Path, "read_text", locked)
+    assert reopened.list() == ()
+    assert index_path.is_file()
+    assert not (store.root / (INDEX_FILENAME + ".corrupt")).exists()
 
-    assert entry.reference_path == (store.root / "references" / "passwd").resolve()
-    assert entry.clone_id == clone.clone_id
+    # Once the lock clears, the store recovers without data loss.
+    monkeypatch.undo()
+    assert [c.clone_id for c in reopened.list()] == [clone.clone_id]
+
+    # Invalid UTF-8 bytes ARE genuinely corrupt and get quarantined cleanly.
+    index_path.write_bytes(b"\xff\xfe\x00\x80not-utf8")
+    corrupt_reopened = CloneStore(store.root)
+    assert corrupt_reopened.list() == ()
+    assert (store.root / (INDEX_FILENAME + ".corrupt")).is_file()
+
+
+def test_duration_checked_via_soundfile_info_before_decoding(
+    store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import soundfile as sf
+
+    import vienetts_app.core.voice_profiles as voice_profiles
+
+    clip = make_clip(tmp_path / "huge.wav", seconds=2.0)
+
+    class FakeInfo:
+        samplerate = 24_000
+        frames = 24_000 * 3600  # 1 hour
+
+    monkeypatch.setattr(sf, "info", lambda *_a, **_kw: FakeInfo())
+
+    def must_not_decode(*_a, **_kw):
+        raise AssertionError("read_wav must not be called for an oversized clip")
+
+    monkeypatch.setattr(voice_profiles, "read_wav", must_not_decode)
+
+    with pytest.raises(CloneStoreError, match="use at most 30s"):
+        enroll(store, clip)
+
+
+def test_clone_store_concurrent_access_is_locked(store, tmp_path: Path) -> None:
+    import threading
+
+    assert hasattr(store, "_lock")
+    clips = [make_clip(tmp_path / f"c{i}.wav", tone=0.1 + 0.05 * i) for i in range(6)]
+    errors: list[Exception] = []
+
+    def worker(idx: int) -> None:
+        try:
+            enroll(store, clips[idx], name=f"Voice {idx}", transcript=f"Line {idx}")
+            store.list()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(clips))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+    assert errors == []
+    assert len(store.list()) == len(clips)
+    assert len(CloneStore(store.root).list()) == len(clips)
 
 
 def test_a_failed_index_write_leaves_no_reference_copy(store, clip: Path, monkeypatch) -> None:

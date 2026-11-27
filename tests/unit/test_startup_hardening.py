@@ -153,6 +153,44 @@ class TestCrashHandlerInstall:
         assert mock_write.call_count == 0
         assert mock_dialog.call_count == 0
 
+    def test_unraisablehook_logs_without_modal_dialog(self, tmp_path: Path) -> None:
+        import threading
+        from types import SimpleNamespace
+
+        import vienetts_app.crash as crash_module
+        from vienetts_app.crash import install_crash_handler
+
+        orig_sys, orig_thread, orig_unraisable = (
+            sys.excepthook,
+            threading.excepthook,
+            sys.unraisablehook,
+        )
+        orig_installed, orig_dir = crash_module._INSTALLED, crash_module._ACTIVE_DATA_DIR
+        try:
+            install_crash_handler(data_dir=tmp_path)
+            try:
+                raise RuntimeError("GC destructor failure")
+            except RuntimeError as exc:
+                unraisable = SimpleNamespace(
+                    exc_type=type(exc),
+                    exc_value=exc,
+                    exc_traceback=exc.__traceback__,
+                )
+            with patch("vienetts_app.crash.show_native_error_dialog") as mock_dialog:
+                sys.unraisablehook(unraisable)  # type: ignore[arg-type]
+            assert mock_dialog.call_count == 0
+            log_file = tmp_path / "crash.log"
+            assert log_file.is_file()
+            assert "GC destructor failure" in log_file.read_text(encoding="utf-8")
+        finally:
+            sys.excepthook, threading.excepthook, sys.unraisablehook = (
+                orig_sys,
+                orig_thread,
+                orig_unraisable,
+            )
+            crash_module._INSTALLED = orig_installed
+            crash_module._ACTIVE_DATA_DIR = orig_dir
+
 
 class TestLazyMigration:
     def test_migration_runs_once_per_target(

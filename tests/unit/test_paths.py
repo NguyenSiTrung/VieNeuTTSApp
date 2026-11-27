@@ -1,13 +1,19 @@
 """Unit tests for cross-platform path normalization and filename sanitization."""
 
+import ctypes
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from vienetts_app.core import paths as paths_module
 from vienetts_app.core.paths import (
     is_empty_path,
     normalize_local_path,
     path_to_file_url,
     sanitize_filename,
+    to_extended,
     to_short_path,
 )
 
@@ -92,6 +98,47 @@ class TestSanitizeFilename:
         assert sanitize_filename(':::???***"""', fallback="chapter-1") == "chapter-1"
         long_title = "A" * 100
         assert len(sanitize_filename(long_title, max_len=50)) == 50
+        # Trailing spaces/dots before the extension dot must not bypass
+        # Windows reserved-device detection (e.g. "CON .txt" -> "_CON.txt").
+        assert sanitize_filename("CON .txt") == "_CON.txt"
+        assert sanitize_filename("aux   .wav") == "_aux.wav"
+        assert sanitize_filename("NUL . .tar.gz").startswith("_")
+        assert sanitize_filename("report   .txt") == "report.txt"
+        # UTF-8 byte length cap: multi-byte Vietnamese/emoji names must stay
+        # under OS NAME_MAX without splitting codepoints, preserving extension.
+        viet_with_ext = "ệ" * 100 + ".wav"
+        capped_ext = sanitize_filename(viet_with_ext, max_len=255)
+        assert capped_ext.endswith(".wav")
+        assert len(capped_ext.encode("utf-8")) <= 255
+        emoji_name = "🎵" * 80
+        capped_emoji = sanitize_filename(emoji_name)
+        assert len(capped_emoji.encode("utf-8")) <= 200
+        reserved_long = "CON." + "a" * 255
+        capped_reserved = sanitize_filename(reserved_long, max_len=255)
+        assert capped_reserved.startswith("_CON")
+        assert len(capped_reserved.encode("utf-8")) <= 255
+
+
+class TestToExtended:
+    def test_to_extended_normalizes_segments_and_relative_paths(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(paths_module.os, "name", "nt")
+        assert to_extended(r"C:/Users/test/./sub/../file.wav") == Path(
+            r"\\?\C:\Users\test\file.wav"
+        )
+        assert to_extended(r"\\server\share\dir\..\file.wav") == Path(
+            r"\\?\UNC\server\share\file.wav"
+        )
+        seen_rel: list[str] = []
+
+        def fake_abspath(p: str) -> str:
+            seen_rel.append(p)
+            return r"C:\Work\dir\..\file.wav"
+
+        monkeypatch.setattr(paths_module.os.path, "abspath", fake_abspath)
+        assert to_extended("relative/./file.wav") == Path(r"\\?\C:\Work\file.wav")
+        assert seen_rel == [r"relative\file.wav"]
 
 
 class TestToShortPath:
@@ -115,6 +162,39 @@ class TestToShortPath:
         spelled = to_short_path(non_ascii)
         assert spelled.exists()
         assert os.path.samefile(spelled, non_ascii)
+
+    def test_to_short_path_uses_to_extended_and_local_typed_windll(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(paths_module.os, "name", "nt")
+        calls: list[tuple[str, int]] = []
+        dll_args: list[tuple[str, bool]] = []
+
+        class FakeGetShort:
+            argtypes = None
+            restype = None
+
+            def __call__(self, source: str, buf: object, size: int) -> int:
+                calls.append((source, size))
+                short = r"\\?\C:\Users\NGUYEN~1\file.wav"
+                buf.value = short  # type: ignore[attr-defined]
+                return len(short)
+
+        fake_fn = FakeGetShort()
+
+        def fake_windll(name: str, *, use_last_error: bool = False) -> SimpleNamespace:
+            dll_args.append((name, use_last_error))
+            return SimpleNamespace(GetShortPathNameW=fake_fn)
+
+        monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+
+        result = to_short_path(r"C:/Users/Nguyễn/./sub/../file.wav")
+        assert dll_args == [("kernel32", True)]
+        assert fake_fn.argtypes is not None and len(fake_fn.argtypes) == 3
+        assert fake_fn.restype is not None
+        assert calls and calls[0][0] == r"\\?\C:\Users\Nguyễn\file.wav"
+        assert result == Path(r"C:\Users\NGUYEN~1\file.wav")
 
 
 class TestPathToFileUrl:
@@ -141,3 +221,12 @@ class TestPathToFileUrl:
         assert path_to_file_url("/home/user/Music") == "file:///home/user/Music"
         assert path_to_file_url("file:///C:/Users/test/Music") == "file:///C:/Users/test/Music"
         assert path_to_file_url("file:///home/user/Music") == "file:///home/user/Music"
+        # Two-slash Windows drive URLs keep the drive colon and existing percent escapes.
+        assert (
+            path_to_file_url("file://C:/Users/User%20Name/a.wav")
+            == "file:///C:/Users/User%20Name/a.wav"
+        )
+        assert (
+            path_to_file_url(r"file://C:\Users\test\my file.wav")
+            == "file:///C:/Users/test/my%20file.wav"
+        )

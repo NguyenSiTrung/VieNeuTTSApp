@@ -41,7 +41,7 @@ from vienetts_app.core.audiobook import (
 )
 from vienetts_app.core.epub import MAX_COVER_BYTES, sniff_image_ext
 from vienetts_app.core.id3 import mime_for_image_ext
-from vienetts_app.core.paths import normalize_local_path, sanitize_filename
+from vienetts_app.core.paths import is_empty_path, normalize_local_path, sanitize_filename
 from vienetts_app.core.timeline import SegmentSpan, Timeline, estimate_timeline, split_paragraphs
 
 #: Hard BooksReader parser caps for Tier T0 Media Overlays.
@@ -663,6 +663,12 @@ def export_epub_media_overlays(
 
     _check_cancelled()
 
+    if is_empty_path(dest_dir):
+        raise AudiobookError("Destination folder for EPUB 3 export must not be empty.")
+    dest = normalize_local_path(dest_dir)
+    if is_empty_path(dest):
+        raise AudiobookError("Destination folder for EPUB 3 export must not be empty.")
+
     state = library.load_book(book_id) if book is None else book
     chapter_state = library.read_state(book_id)
 
@@ -697,14 +703,13 @@ def export_epub_media_overlays(
             cover_ext = detected_ext
             cover_mime = detected_mime
 
-    dest = normalize_local_path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     book_stem = sanitize_filename(title, max_len=80, fallback=f"audiobook-{book_id}")
     target_path = dest / f"{book_stem}.epub"
 
     token = uuid.uuid4().hex
-    work_dir = dest / f".{book_stem}.{token}.epubwork"
-    part_epub = dest / f".{book_stem}.{token}.part.epub"
+    work_dir = dest / f".{token}.epubwork"
+    part_epub = dest / f".{token}.part.epub"
     total_steps = len(ready_chapters) + 1
 
     sf = _sf()

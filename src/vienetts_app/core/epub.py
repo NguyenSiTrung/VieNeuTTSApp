@@ -96,14 +96,26 @@ _BLOCK_TAGS = frozenset(
         "td",
         "th",
         "figcaption",
+        "figure",
         "section",
         "article",
         "header",
         "footer",
         "aside",
+        "main",
+        "nav",
         "dt",
         "dd",
     }
+)
+
+# Exceptions raised by zipfile/zlib when opening or reading corrupt/unsupported archives.
+_CORRUPT_ARCHIVE_ERRORS = (
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    zlib.error,
+    EOFError,
+    RuntimeError,
 )
 
 # Headings, in the order h1..h6 — the first present becomes the title.
@@ -335,93 +347,83 @@ def _extract_xhtml(raw: bytes) -> tuple[str | None, str]:
 
     Rules (mirrored by the fallback extractor):
     - The FIRST h1–h6 anywhere in the document becomes the chapter title and
-      is not re-spoken; later headings stay in the text as line breaks.
-    - Each block element contributes one text block; blocks join with a
-      blank line; ``<br/>`` and nested blocks become single newlines inside
-      a block; script/style/svg/head content is dropped.
+      is not re-spoken; later headings stay in the text as separate blocks.
+    - Block and container elements flush inline runs on entry and exit so
+      nested ``<p>``/block elements inside ``<section>``/``<div>``/``<article>``
+      stay distinct paragraphs joined with a blank line; inline elements flow
+      naturally; ``<br/>`` becomes a single newline; script/style/svg/head
+      content is dropped.
     """
     try:
         root = ElementTree.fromstring(raw)
     except ElementTree.ParseError:
         return _extract_html_fallback(raw)
 
-    heading_el = next((el for el in root.iter() if _local_name(el.tag) in _HEADING_TAGS), None)
+    heading_el = next(
+        (el for el in root.iter() if _local_name(el.tag).lower() in _HEADING_TAGS), None
+    )
     heading = None if heading_el is None else _collapse_block_text(" ".join(heading_el.itertext()))
 
     blocks: list[str] = []
+    inline_buf: list[str] = []
 
-    def _inline_text(element: Any) -> str:
-        """All descendant text of a block as one normalized string."""
-        parts: list[str] = []
-
-        def collect(node: Any) -> None:
-            if node.text:
-                parts.append(_norm_source_text(node.text))
-            for child in node:
-                tag = _local_name(child.tag)
-                if tag in _SKIPPED_TAGS or child is heading_el:
-                    if child.tail:
-                        parts.append(_norm_source_text(child.tail))
-                    continue
-                if tag in _BREAK_TAGS or tag in _BLOCK_TAGS:
-                    parts.append("\n")
-                collect(child)
-                if tag in _BLOCK_TAGS:
-                    parts.append("\n")
-                if child.tail:
-                    parts.append(_norm_source_text(child.tail))
-
-        collect(element)
-        return _collapse_block_text("".join(parts))
-
-    def _emit(text: str) -> None:
-        collapsed = _collapse_block_text(text)
-        if collapsed:
-            blocks.append(collapsed)
+    def _flush_inline() -> None:
+        if inline_buf:
+            collapsed = _collapse_block_text("".join(inline_buf))
+            if collapsed:
+                blocks.append(collapsed)
+            inline_buf.clear()
 
     def walk(node: Any) -> None:
-        # Stray text directly inside a non-block wrapper (body/span/…) still
-        # becomes a block — never lose readable text.
-        if node is not heading_el and node.text and node.text.strip():
-            _emit(_norm_source_text(node.text))
+        if node is heading_el:
+            _flush_inline()
+            return
+        tag = _local_name(node.tag).lower()
+        if tag in _SKIPPED_TAGS:
+            return
+        is_block = tag in _BLOCK_TAGS or tag in _HEADING_TAGS
+        if is_block:
+            _flush_inline()
+        if node.text:
+            inline_buf.append(_norm_source_text(node.text))
         for child in node:
+            child_tag = _local_name(child.tag).lower()
+            if child_tag in _SKIPPED_TAGS:
+                if child.tail:
+                    inline_buf.append(_norm_source_text(child.tail))
+                continue
             if child is heading_el:
-                if child.tail and child.tail.strip():
-                    _emit(_norm_source_text(child.tail))
+                _flush_inline()
+                if child.tail:
+                    inline_buf.append(_norm_source_text(child.tail))
                 continue
-            tag = _local_name(child.tag)
-            if tag in _SKIPPED_TAGS:
+            if child_tag in _BREAK_TAGS:
+                inline_buf.append("\n")
+                if child.tail:
+                    inline_buf.append(_norm_source_text(child.tail))
                 continue
-            if tag in _BLOCK_TAGS or tag in _HEADING_TAGS:
-                text = _inline_text(child)
-                if text:
-                    blocks.append(text)
-            else:
-                walk(child)
-            if child.tail and child.tail.strip():
-                _emit(_norm_source_text(child.tail))
+            walk(child)
+            if child.tail:
+                inline_buf.append(_norm_source_text(child.tail))
+        if is_block:
+            _flush_inline()
 
     walk(root)
+    _flush_inline()
     return heading, "\n\n".join(blocks)
 
 
-def _normalize_zip_name(name: str) -> str:
-    """OPF-relative href → zip entry name: percent-decode, forward slashes."""
-    decoded = unquote(name).replace("\\", "/")
-    while decoded.startswith("./"):
-        decoded = decoded[2:]
-    return decoded.lstrip("/")
-
-
 def _resolve_href(opf_dir: str, href: str) -> str:
-    href = _normalize_zip_name(href.split("#", 1)[0])
-    joined = f"{opf_dir}/{href}" if opf_dir else href
-    if ".." in joined.split("/"):
-        normalized = posixpath.normpath(joined)
-        if normalized in ("", ".", "..") or normalized.startswith("../"):
-            return ""
-        return normalized.lstrip("/")
-    return joined
+    """Resolve an OPF-relative ``href`` to a normalized POSIX ZIP entry name."""
+    raw = unquote(href.split("#", 1)[0]).replace("\\", "/")
+    cleaned = raw.lstrip("/")
+    if not cleaned:
+        return ""
+    joined = f"{opf_dir}/{cleaned}" if opf_dir else cleaned
+    normalized = posixpath.normpath(joined)
+    if normalized in ("", ".", "..") or normalized.startswith("../"):
+        return ""
+    return normalized.lstrip("/")
 
 
 def _collapse_ws(text: str) -> str:
@@ -546,15 +548,7 @@ def _extract_cover(
                 continue
             with zf.open(info, "r") as stream:
                 data = stream.read(MAX_COVER_BYTES + 1)
-        except (
-            KeyError,
-            zipfile.BadZipFile,
-            zipfile.LargeZipFile,
-            zlib.error,
-            OSError,
-            EOFError,
-            RuntimeError,
-        ):
+        except (KeyError, OSError, *_CORRUPT_ARCHIVE_ERRORS):
             continue
         if not data or len(data) > MAX_COVER_BYTES:
             continue
@@ -582,7 +576,9 @@ def _find_opf_path(zf: zipfile.ZipFile, path: Path) -> str:
     for rootfile in root.iter(f"{_OCF_NS}rootfile"):
         full_path = rootfile.get("full-path", "").strip()
         if full_path:
-            return _normalize_zip_name(full_path)
+            normalized = _resolve_href("", full_path)
+            if normalized:
+                return normalized
     raise DocumentImportError(
         f"Could not read '{path.name}': container.xml names no package (OPF) file."
     )
@@ -666,6 +662,8 @@ def _parse_metadata(
     names: set[str],
     opf_dir: str,
     fallback_title: str,
+    *,
+    include_cover: bool = True,
 ) -> EpubMetadata:
     metadata_el = _find_child(package, "metadata")
     elements = _iter_metadata_elements(metadata_el) if metadata_el is not None else []
@@ -760,12 +758,15 @@ def _parse_metadata(
             if candidate:
                 description = candidate
 
-    cover_candidates = list(epub3_cover_hrefs)
-    for cover_id in epub2_cover_ids:
-        item = manifest.get(cover_id)
-        if item and item["href"]:
-            cover_candidates.append(item["href"])
-    cover_bytes, cover_ext = _extract_cover(zf, names, opf_dir, cover_candidates)
+    if include_cover:
+        cover_candidates = list(epub3_cover_hrefs)
+        for cover_id in epub2_cover_ids:
+            item = manifest.get(cover_id)
+            if item and item["href"]:
+                cover_candidates.append(item["href"])
+        cover_bytes, cover_ext = _extract_cover(zf, names, opf_dir, cover_candidates)
+    else:
+        cover_bytes, cover_ext = None, ""
 
     authors = tuple(authors_list)
     year = (
@@ -797,12 +798,13 @@ def _parse_spine(package: Any, manifest: dict[str, dict[str, str]]) -> list[dict
     return spine_entries
 
 
-def extract_epub_metadata(path: str | Path) -> EpubMetadata:
-    """Extract OPF metadata and cover image without reading or parsing chapter XHTML.
+def extract_epub_metadata(path: str | Path, *, include_cover: bool = True) -> EpubMetadata:
+    """Extract OPF metadata and optionally cover image without reading chapter XHTML.
 
     Validates path, ``.epub`` suffix, ZIP structure, DRM, ``container.xml``,
     and OPF package identically to :func:`import_epub`, then returns an
-    :class:`EpubMetadata` instance.
+    :class:`EpubMetadata` instance. When ``include_cover`` is ``False``, the
+    cover image entry is not read from the archive.
     """
     epub_path = _validate_epub_path(path)
     try:
@@ -818,13 +820,14 @@ def extract_epub_metadata(path: str | Path) -> EpubMetadata:
                 names,
                 opf_dir,
                 fallback_title=epub_path.stem,
+                include_cover=include_cover,
             )
     except DocumentImportError:
         raise
-    except zipfile.BadZipFile as exc:
+    except _CORRUPT_ARCHIVE_ERRORS as exc:
         raise DocumentImportError(
             f"Could not open '{epub_path.name}': it is not a valid EPUB "
-            "(the file is not a readable ZIP archive)."
+            f"(corrupt or unsupported ZIP archive: {exc})."
         ) from exc
     except OSError as exc:
         raise DocumentImportError(f"Could not read '{epub_path.name}': {exc}.") from exc
@@ -858,10 +861,10 @@ def import_epub(path: str | Path) -> EpubBook:
             chapters = _extract_chapters(zf, names, opf_dir, spine_entries)
     except DocumentImportError:
         raise
-    except zipfile.BadZipFile as exc:
+    except _CORRUPT_ARCHIVE_ERRORS as exc:
         raise DocumentImportError(
             f"Could not open '{epub_path.name}': it is not a valid EPUB "
-            "(the file is not a readable ZIP archive)."
+            f"(corrupt or unsupported ZIP archive: {exc})."
         ) from exc
     except OSError as exc:
         raise DocumentImportError(f"Could not read '{epub_path.name}': {exc}.") from exc

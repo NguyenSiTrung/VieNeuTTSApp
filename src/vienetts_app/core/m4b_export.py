@@ -512,12 +512,14 @@ def export_m4b_audiobook(
     if is_empty_path(dest_dir):
         raise AudiobookError("Destination folder for M4B export must not be empty.")
     dest = normalize_local_path(dest_dir)
+    if is_empty_path(dest):
+        raise AudiobookError("Destination folder for M4B export must not be empty.")
     dest.mkdir(parents=True, exist_ok=True)
 
     book_stem = sanitize_filename(meta.title, max_len=80, fallback=f"audiobook-{book_id}")
     target_path = dest / f"{book_stem}.m4b"
     work_dir = dest / f".{uuid.uuid4().hex}.m4bwork"
-    part_path = dest / f".{book_stem}.{uuid.uuid4().hex}.part.m4b"
+    part_path = dest / f".{uuid.uuid4().hex}.part.m4b"
     promoted = False
 
     try:

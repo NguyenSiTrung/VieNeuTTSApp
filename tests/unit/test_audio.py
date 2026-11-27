@@ -78,6 +78,29 @@ class TestReadBack:
         assert data.dtype == np.float32
         assert np.allclose(data, original, atol=1e-6)
 
+    def test_wav_duration_seconds_reads_header_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wav_1s = write_wav_file(tone(48_000, sr=48_000), tmp_path / "one.wav", sample_rate=48_000)
+        wav_half = write_wav_file(
+            tone(12_000, sr=24_000), tmp_path / "half.wav", sample_rate=24_000
+        )
+
+        def _forbid_decode(*_args, **_kwargs):
+            raise AssertionError("wav_duration_seconds must not decode PCM samples")
+
+        monkeypatch.setattr(sf, "read", _forbid_decode)
+        monkeypatch.setattr(sf.SoundFile, "read", _forbid_decode)
+        monkeypatch.setattr(sf.SoundFile, "buffer_read", _forbid_decode)
+
+        assert wav_duration_seconds(wav_1s) == pytest.approx(1.0)
+        assert wav_duration_seconds(wav_half) == pytest.approx(0.5)
+
+        with pytest.raises(FileNotFoundError):
+            wav_duration_seconds(tmp_path / "missing.wav")
+        with pytest.raises(FileNotFoundError):
+            wav_duration_seconds(tmp_path)
+
 
 class TestValidation:
     @pytest.mark.parametrize(
@@ -239,6 +262,36 @@ class TestTimeStretchAudio:
         assert np.all(np.isfinite(stretched))
         assert np.max(np.abs(stretched)) <= 1.05
 
+    @pytest.mark.parametrize("rate", [0.5, 0.75, 0.8])
+    def test_slow_rates_preserve_continuous_tail_energy(self, rate: float) -> None:
+        sr = 48_000
+        for sig in (
+            tone(sr, sr=sr),
+            speechy(1.5, sr=sr),
+            speechy(300 / sr, sr=sr, seed=300),
+            speechy(7_000 / sr, sr=sr, seed=7_000),
+        ):
+            stretched = time_stretch_audio(sig, rate=rate, sample_rate=sr)
+            assert stretched.dtype == np.float32
+            assert stretched.size == int(round(sig.size / rate))
+            assert np.all(np.isfinite(stretched))
+
+            # Trailing zeros may only come from the 2 ms edge micro-fade endpoint.
+            nz = np.flatnonzero(np.abs(stretched) > 1e-7)
+            assert nz.size > 0
+            tail_zeros = stretched.size - 1 - int(nz[-1])
+            assert tail_zeros <= 4, f"rate={rate} n_in={sig.size} had {tail_zeros} trailing zeros"
+
+            # Final 15% before the micro-fade must retain strong continuous energy
+            # (no 50 ms or ~40-50% zero-padded tail truncation).
+            fade_len = min(stretched.size // 4, int(sr * 0.002))
+            tail_start = max(fade_len, int(stretched.size * 0.85))
+            tail_end = stretched.size - fade_len
+            if tail_end > tail_start:
+                tail_rms = float(np.sqrt(np.mean(stretched[tail_start:tail_end] ** 2)))
+                overall_rms = float(np.sqrt(np.mean(stretched**2)))
+                assert tail_rms > 0.1 * overall_rms
+
 
 def speechy(seconds: float, sr: int = 48_000, seed: int = 0) -> np.ndarray:
     """A voiced, gliding, amplitude-modulated signal with a little breath noise."""
@@ -260,14 +313,40 @@ STRETCH_RATES = (0.5, 0.8, 1.25, 2.0)
 
 
 class TestWsolaParity:
-    @pytest.mark.parametrize("rate", [0.8])
+    @staticmethod
+    def _reference_non_truncated_end(expected: np.ndarray, n_in: int, sr: int = 48_000) -> int:
+        """Index up to which the frozen pre-fix reference did not break early.
+
+        ``wsola_reference.reference_time_stretch`` keeps the legacy early-break
+        at ``target_pos + frame_len > n_in`` (leaving trailing zeros for slow
+        rates). Everything before the last reference frame's overlap region must
+        still match the oracle bit-for-bit within float rounding.
+        """
+        frame_len = int(sr * 0.025)
+        if frame_len % 2 != 0:
+            frame_len += 1
+        if n_in < frame_len * 2:
+            frame_len = max(32, (n_in // 3) & ~1)
+        nz = np.flatnonzero(np.abs(expected) > 1e-9)
+        if nz.size == 0:
+            return expected.size
+        last_nz = int(nz[-1])
+        tail_zeros = expected.size - 1 - last_nz
+        if tail_zeros <= 4:
+            return expected.size
+        return max(0, last_nz + 1 - frame_len)
+
+    @pytest.mark.parametrize("rate", [0.8, 1.25])
     def test_matches_the_reference_within_tolerance(self, rate: float) -> None:
         signal = speechy(1.5)
         expected = reference_time_stretch(signal, rate)
         got = time_stretch_audio(signal, rate)
         assert got.dtype == np.float32
         assert got.size == expected.size == int(round(signal.size / rate))
-        error = np.sqrt(np.mean((got - expected) ** 2)) / np.sqrt(np.mean(expected**2))
+        prefix = self._reference_non_truncated_end(expected, signal.size)
+        error = np.sqrt(np.mean((got[:prefix] - expected[:prefix]) ** 2)) / np.sqrt(
+            np.mean(expected[:prefix] ** 2)
+        )
         assert error <= WSOLA_PARITY_REL_RMS
 
     @pytest.mark.parametrize("samples", [300, 7_000])
@@ -278,7 +357,12 @@ class TestWsolaParity:
             expected = reference_time_stretch(signal, rate)
             got = time_stretch_audio(signal, rate)
             assert got.size == expected.size
-            assert np.allclose(got, expected, atol=1e-5)
+            if rate >= 1.0:
+                assert np.allclose(got, expected, atol=1e-5)
+            else:
+                prefix = self._reference_non_truncated_end(expected, signal.size)
+                assert prefix > 0
+                assert np.allclose(got[:prefix], expected[:prefix], atol=1e-5)
 
     @pytest.mark.parametrize("rate", [1.25])
     def test_chunk_joins_stay_click_free(self, rate: float) -> None:
@@ -429,6 +513,34 @@ class TestExportWavFile:
         monkeypatch.undo()
         with pytest.raises(FileNotFoundError):
             export_wav_file(tmp_path / "does_not_exist.wav", tmp_path / "out.wav")
+
+    def test_long_cjk_filename_uses_short_uuid_temp_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src = tmp_path / "source.wav"
+        write_wav_file(tone(1_200), src)
+        # 80 CJK chars = 240 UTF-8 bytes; + ".wav" = 244 bytes (valid POSIX NAME_MAX <= 255),
+        # whereas embedding the stem in ".<stem>.<uuid>.part.wav" overflows 255 bytes.
+        cjk_stem = "漢" * 80
+        dst = tmp_path / f"{cjk_stem}.wav"
+
+        opened_write_names: list[str] = []
+        orig_soundfile = sf.SoundFile
+
+        def _spy_soundfile(path, *args, **kwargs):
+            if kwargs.get("mode") == "w":
+                opened_write_names.append(Path(path).name)
+            return orig_soundfile(path, *args, **kwargs)
+
+        monkeypatch.setattr(sf, "SoundFile", _spy_soundfile)
+        out = export_wav_file(src, dst)
+        assert out == dst
+        assert dst.is_file()
+        assert len(opened_write_names) == 1
+        part_name = opened_write_names[0]
+        assert part_name.endswith(".part.wav")
+        assert len(part_name.encode("utf-8")) < 64
+        assert cjk_stem not in part_name
 
 
 class TestExportAudioFile:
@@ -655,6 +767,47 @@ class TestExportMp3Parts:
         assert info.duration == pytest.approx(9_500 / 48_000, abs=0.15)
         assert list(tmp_path.glob("*.part.mp3")) == []
 
+    def test_long_cjk_filename_uses_short_uuid_temp_paths_with_id3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wav1 = write_wav_file(tone(4_800), tmp_path / "p1.wav")
+        cjk_stem = "漢" * 80
+        dest = tmp_path / f"{cjk_stem}.mp3"
+        tag = _minimal_id3v24_tag("CJK Book")
+
+        opened_write_names: list[str] = []
+        orig_soundfile = sf.SoundFile
+
+        def _spy_soundfile(path, *args, **kwargs):
+            if kwargs.get("mode") == "w":
+                opened_write_names.append(Path(path).name)
+            return orig_soundfile(path, *args, **kwargs)
+
+        import os
+
+        replaced_src_names: list[str] = []
+        orig_replace = os.replace
+
+        def _spy_replace(src, dst):
+            replaced_src_names.append(Path(src).name)
+            return orig_replace(src, dst)
+
+        monkeypatch.setattr(sf, "SoundFile", _spy_soundfile)
+        monkeypatch.setattr(os, "replace", _spy_replace)
+
+        out = export_mp3_parts([wav1], dest, id3_bytes=tag)
+        assert out == dest
+        assert dest.is_file()
+        assert dest.read_bytes().startswith(tag)
+        assert len(opened_write_names) == 1
+        assert opened_write_names[0].endswith(".part.mp3")
+        assert len(opened_write_names[0].encode("utf-8")) < 64
+        assert cjk_stem not in opened_write_names[0]
+        assert len(replaced_src_names) == 1
+        assert replaced_src_names[0].endswith(".tagged.part.mp3")
+        assert len(replaced_src_names[0].encode("utf-8")) < 64
+        assert cjk_stem not in replaced_src_names[0]
+
 
 class TestTrimSpeechEdges:
     def test_strips_leading_and_trailing_silence_keeping_pad_guard(self) -> None:
@@ -704,6 +857,72 @@ class TestTrimSpeechEdges:
             trim_speech_edges(np.zeros((10, 2), dtype=np.float32))
         with pytest.raises(ValueError, match="sample_rate"):
             trim_speech_edges(np.zeros(10, dtype=np.float32), sample_rate=0)
+
+    def test_block_wise_scan_matches_reference_without_full_array_abs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sr = 48_000
+        threshold_db = -45.0
+        pad_ms = 15
+        threshold = float(10.0 ** (threshold_db / 20.0))
+        pad_frames = int(round(sr * (pad_ms / 1000.0)))
+
+        def _reference_trim(arr: np.ndarray) -> np.ndarray:
+            mono = np.ascontiguousarray(arr, dtype=np.float32)
+            if mono.size == 0:
+                return mono
+            active = np.flatnonzero(np.abs(mono) > threshold)
+            if active.size == 0:
+                return mono
+            start = max(0, int(active[0]) - pad_frames)
+            end = min(mono.size, int(active[-1]) + 1 + pad_frames)
+            return np.ascontiguousarray(mono[start:end], dtype=np.float32)
+
+        # Multi-block clips: interior speech, block-boundary spikes, single-sample edges,
+        # NaN alongside active sample in the same block, and multi-block all-silence.
+        cases: list[np.ndarray] = [
+            np.concatenate(
+                [
+                    np.zeros(25_000, dtype=np.float32),
+                    tone(40_000, sr=sr),
+                    np.zeros(35_000, dtype=np.float32),
+                ]
+            ),
+            np.zeros(50_000, dtype=np.float32),
+        ]
+        # Exact boundary indices around 16_384
+        for idx_pair in [(0, 0), (49_999, 49_999), (16_383, 16_384), (16_384, 32_768)]:
+            buf = np.zeros(50_000, dtype=np.float32)
+            buf[idx_pair[0]] = 0.2
+            buf[idx_pair[1]] = -0.2
+            cases.append(buf)
+        # NaN in the same block before an active sample must not mask the active sample
+        nan_buf = np.zeros(40_000, dtype=np.float32)
+        nan_buf[10] = np.nan
+        nan_buf[50] = 0.5
+        nan_buf[39_900] = -0.5
+        nan_buf[39_950] = np.nan
+        cases.append(nan_buf)
+
+        expected_results = [_reference_trim(c) for c in cases]
+
+        abs_sizes: list[int] = []
+        real_abs = np.abs
+
+        def _spying_abs(arr, *args, **kwargs):
+            if isinstance(arr, np.ndarray):
+                abs_sizes.append(arr.size)
+            return real_abs(arr, *args, **kwargs)
+
+        monkeypatch.setattr(np, "abs", _spying_abs)
+        for case, expected in zip(cases, expected_results, strict=True):
+            got = trim_speech_edges(case, sample_rate=sr, threshold_db=threshold_db, pad_ms=pad_ms)
+            assert got.dtype == np.float32
+            assert got.flags["C_CONTIGUOUS"]
+            assert np.array_equal(got, expected, equal_nan=True)
+
+        assert abs_sizes, "expected block-wise scan to inspect chunks"
+        assert max(abs_sizes) <= 16_384, f"allocated full-array abs of size {max(abs_sizes)}"
 
 
 class TestApplyMicroFade:

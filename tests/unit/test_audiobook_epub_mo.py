@@ -894,3 +894,72 @@ class TestExportEpubMediaOverlays:
             )
 
         assert not dest_dir.exists() or list(dest_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("bad_dest", ["", "   ", ".", Path(""), Path("."), '""', "file://"])
+    def test_rejects_empty_dest_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_dest: str | Path
+    ) -> None:
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        lib = AudiobookLibrary(tmp_path / "lib")
+        book = EpubBook(
+            title="Sách Kiểm Tra Đường Dẫn",
+            author="Tác Giả",
+            chapters=[EpubChapter(index=0, title="Chương 1", text="Nội dung 1.")],
+            source_path="/books/path.epub",
+            content_hash="1" * 64,
+        )
+        record = lib.add_book(book)
+        lib.save_chapter_audio(record.id, 0, _make_audio(0.2))
+
+        with pytest.raises(AudiobookError, match="(?i)destination|empty"):
+            export_epub_media_overlays(lib, record.id, bad_dest)
+        assert list(cwd.iterdir()) == []
+
+    def test_cjk_title_uses_short_uuid_temp_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import epub_export
+
+        lib = AudiobookLibrary(tmp_path / "lib")
+        cjk_title = "漢" * 80
+        book = EpubBook(
+            title=cjk_title,
+            author="作者",
+            chapters=[EpubChapter(index=0, title="第一章", text="正文内容。")],
+            source_path="/books/cjk.epub",
+            content_hash="2" * 64,
+        )
+        record = lib.add_book(book)
+        lib.save_chapter_audio(record.id, 0, _make_audio(0.2))
+
+        observed_part_names: list[str] = []
+        observed_work_dirs: set[str] = set()
+        orig_replace = epub_export._replace_with_lock_retry
+        orig_mkdir = Path.mkdir
+
+        def _spy_replace(src: Path, dst: Path) -> None:
+            observed_part_names.append(src.name)
+            orig_replace(src, dst)
+
+        def _spy_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self.name.endswith(".epubwork"):
+                observed_work_dirs.add(self.name)
+            orig_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(epub_export, "_replace_with_lock_retry", _spy_replace)
+        monkeypatch.setattr(Path, "mkdir", _spy_mkdir)
+
+        dest_dir = tmp_path / "cjk_out"
+        out = export_epub_media_overlays(lib, record.id, dest_dir)
+        assert out.is_file()
+        assert len(observed_part_names) == 1
+        assert observed_part_names[0].endswith(".part.epub")
+        assert len(observed_part_names[0].encode("utf-8")) < 64
+        assert "漢" not in observed_part_names[0]
+        assert len(observed_work_dirs) == 1
+        work_dir_name = next(iter(observed_work_dirs))
+        assert work_dir_name.endswith(".epubwork")
+        assert len(work_dir_name.encode("utf-8")) < 64
+        assert "漢" not in work_dir_name

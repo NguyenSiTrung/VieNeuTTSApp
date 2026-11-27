@@ -363,7 +363,7 @@ def export_mp3_parts(
     dest_path = Path(destination)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    raw_part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.mp3"
+    raw_part_path = dest_path.parent / f".{uuid.uuid4().hex}.part.mp3"
     temp_paths: list[Path] = [raw_part_path]
 
     sf = _sf()
@@ -422,9 +422,7 @@ def export_mp3_parts(
         final_part_path = raw_part_path
         if id3_bytes:
             _check_cancelled()
-            tagged_part_path = (
-                dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.tagged.part.mp3"
-            )
+            tagged_part_path = dest_path.parent / f".{uuid.uuid4().hex}.tagged.part.mp3"
             temp_paths.append(tagged_part_path)
             with (
                 raw_part_path.open("rb") as src_fh,
@@ -503,7 +501,7 @@ def export_wav_file(
     dest_path = Path(destination)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.wav"
+    part_path = dest_path.parent / f".{uuid.uuid4().hex}.part.wav"
 
     sf = _sf()
     try:
@@ -587,9 +585,17 @@ def compute_waveform_envelope_from_wav(
 
 
 def wav_duration_seconds(path: str | Path) -> float:
-    """Duration of a WAV file in seconds (via soundfile metadata)."""
-    data, sr = read_wav(path)
-    return len(data) / sr
+    """Duration of a WAV file in seconds (header-only via soundfile metadata)."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    info = _sf().info(str(path))
+    if info.samplerate <= 0:
+        return 0.0
+    return float(info.frames) / float(info.samplerate)
+
+
+_TRIM_SCAN_BLOCK = 16_384
 
 
 def trim_speech_edges(
@@ -603,6 +609,8 @@ def trim_speech_edges(
 
     Returns the 1-D ``np.float32`` array untouched when empty or all samples fall
     at or below the linear amplitude threshold ``10 ** (threshold_db / 20.0)``.
+    Scans inward from both ends in fixed-size blocks so long buffers never
+    allocate a full-array ``abs`` temporary or boolean mask.
     """
     if not isinstance(audio, np.ndarray):
         raise ValueError(f"audio must be a numpy array, got {type(audio).__name__}")
@@ -611,15 +619,31 @@ def trim_speech_edges(
     if sample_rate <= 0:
         raise ValueError(f"sample_rate must be > 0, got {sample_rate}")
     mono = np.ascontiguousarray(audio, dtype=np.float32)
-    if mono.size == 0:
+    n = mono.size
+    if n == 0:
         return mono
     threshold = float(10.0 ** (float(threshold_db) / 20.0))
-    active = np.flatnonzero(np.abs(mono) > threshold)
-    if active.size == 0:
+
+    first_active = -1
+    for offset in range(0, n, _TRIM_SCAN_BLOCK):
+        hits = np.flatnonzero(np.abs(mono[offset : offset + _TRIM_SCAN_BLOCK]) > threshold)
+        if hits.size > 0:
+            first_active = offset + int(hits[0])
+            break
+    if first_active < 0:
         return mono
+
+    last_active = first_active
+    for end_offset in range(n, first_active, -_TRIM_SCAN_BLOCK):
+        start_offset = max(first_active, end_offset - _TRIM_SCAN_BLOCK)
+        hits = np.flatnonzero(np.abs(mono[start_offset:end_offset]) > threshold)
+        if hits.size > 0:
+            last_active = start_offset + int(hits[-1])
+            break
+
     pad_frames = max(0, int(round(sample_rate * (pad_ms / 1000.0))))
-    start = max(0, int(active[0]) - pad_frames)
-    end = min(mono.size, int(active[-1]) + 1 + pad_frames)
+    start = max(0, first_active - pad_frames)
+    end = min(n, last_active + 1 + pad_frames)
     return np.ascontiguousarray(mono[start:end], dtype=np.float32)
 
 
@@ -722,8 +746,20 @@ def time_stretch_audio(
         # WSOLA continues from the segment it chose last: tau + delta == best.
         target_pos = best_pos + s_syn
         if target_pos + frame_len > n_in:
-            break
-        best_pos = search.best(frame, mono[target_pos : target_pos + frame_len])
+            if rate >= 1.0 and last_frame * s_syn + frame_len >= target_len:
+                break
+            # Correlate against the remaining in-bounds overlap suffix (at least
+            # s_syn samples; _WsolaSearch's rfft zero-pads to self._span) so
+            # slow rates keep continuous phase-aligned tail energy up to
+            # target_len instead of breaking early into zero-padded silence.
+            target = (
+                mono[target_pos:n_in]
+                if target_pos < n_in
+                else mono[max(0, n_in - frame_len) : n_in]
+            )
+        else:
+            target = mono[target_pos : target_pos + frame_len]
+        best_pos = search.best(frame, target)
         out_start = frame * s_syn
         output[out_start : out_start + frame_len] += mono[best_pos : best_pos + frame_len] * win
         last_frame = frame

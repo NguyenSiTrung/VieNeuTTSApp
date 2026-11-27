@@ -820,6 +820,37 @@ class TestExportM4bStub:
         with pytest.raises(ExportCancelled):
             export_m4b_audiobook(library, record.id, tmp_path / "out", cancel_check=lambda: True)
 
+    def test_cjk_title_uses_short_uuid_temp_and_rejects_empty_dest_dir(
+        self, library: AudiobookLibrary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cjk_title = "漢" * 80
+        book = _make_book(title=cjk_title, content_hash="9" * 64)
+        record = library.add_book(book)
+        library.save_chapter_audio(record.id, 0, _make_tone(24_000))
+
+        capture = tmp_path / "cap"
+        stub = _write_stub_ffmpeg(tmp_path / "stub_ffmpeg", capture)
+        monkeypatch.setattr(m4b_export, "resolve_ffmpeg", lambda _d=None: stub)
+        monkeypatch.setattr(m4b_export, "resolve_ffprobe", lambda _d=None: None)
+
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        for bad_dest in ("", "   ", ".", Path(""), Path("."), '""', "file://"):
+            with pytest.raises(AudiobookError, match="(?i)destination|empty"):
+                export_m4b_audiobook(library, record.id, bad_dest)
+        assert list(cwd.iterdir()) == []
+
+        out_dir = tmp_path / "cjk_m4b_out"
+        out_path = export_m4b_audiobook(library, record.id, out_dir)
+        assert out_path.is_file()
+        calls = _read_recorded_calls(capture)
+        assert len(calls) == 1
+        part_name = Path(calls[0][-1]).name
+        assert part_name.endswith(".part.m4b")
+        assert len(part_name.encode("utf-8")) < 64
+        assert "漢" not in part_name
+
 
 # ── Real-ffmpeg integration test ─────────────────────────────────────────────
 

@@ -224,6 +224,96 @@ class TestVariantBooks:
         )
         assert import_epub(path).chapters[0].text == "nested body."
 
+        # ./, /./, //, and ../ segments normalize cleanly via posixpath.normpath()
+        path = write_epub(
+            tmp_path / "norm_hrefs.epub",
+            {
+                "OEBPS/content.opf": minimal_opf(
+                    [
+                        "./text/./a.xhtml",
+                        "/./text/b.xhtml",
+                        "text//c.xhtml#frag",
+                        "sub/../text/d.xhtml",
+                        "../../outside.xhtml",
+                    ]
+                ),
+                "OEBPS/text/a.xhtml": chapter_xhtml("Ch A", ["Body A."]),
+                "OEBPS/text/b.xhtml": chapter_xhtml("Ch B", ["Body B."]),
+                "OEBPS/text/c.xhtml": chapter_xhtml("Ch C", ["Body C."]),
+                "OEBPS/text/d.xhtml": chapter_xhtml("Ch D", ["Body D."]),
+            },
+            opf_path="/./OEBPS/./content.opf",
+        )
+        norm_book = import_epub(path)
+        assert [c.text for c in norm_book.chapters] == ["Body A.", "Body B.", "Body C.", "Body D."]
+
+    def test_nested_containers_preserve_distinct_paragraphs(self, tmp_path: Path) -> None:
+        # Real-world EPUB3 chapters wrap <p> elements inside <section>, <div>, <article>, etc.
+        xhtml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<section>"
+            "<h1>Chương Một</h1>"
+            "<p>Đoạn một với <em>chữ nghiêng</em> và <strong>chữ đậm</strong>.</p>"
+            "<p>Đoạn hai độc lập.</p>"
+            '<div class="nested">'
+            "<article>"
+            "<blockquote><p>Trích dẫn một.</p><p>Trích dẫn hai.</p></blockquote>"
+            "<aside><p>Ghi chú bên lề.</p></aside>"
+            "</article>"
+            "<main><figure><figcaption>Chú thích ảnh.</figcaption></figure></main>"
+            "<header><p>Phần đầu.</p></header>"
+            "<footer><p>Phần cuối.</p></footer>"
+            "<nav><p>Điều hướng.</p></nav>"
+            "</div>"
+            "</section>"
+            "</body></html>"
+        )
+        path = write_epub(
+            tmp_path / "containers.epub",
+            {"content.opf": minimal_opf(["a.xhtml"]), "a.xhtml": xhtml},
+        )
+        ch = import_epub(path).chapters[0]
+        assert ch.title == "Chương Một"
+        assert ch.text == "\n\n".join(
+            [
+                "Đoạn một với chữ nghiêng và chữ đậm.",
+                "Đoạn hai độc lập.",
+                "Trích dẫn một.",
+                "Trích dẫn hai.",
+                "Ghi chú bên lề.",
+                "Chú thích ảnh.",
+                "Phần đầu.",
+                "Phần cuối.",
+                "Điều hướng.",
+            ]
+        )
+
+        # Mixed inline text + nested block inside a wrapper div, plus leaf div with inline tags
+        mixed_xhtml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<div>Mở đầu <em>nhấn mạnh</em><p>Đoạn lồng giữa.</p>Kết thúc <b>đậm</b></div>"
+            "<div>Khối lá có <span>nội tuyến</span> không tách đoạn.</div>"
+            "<p>Trước <span>giữa <div>Hộp con</div> sau</span> cuối.</p>"
+            "</body></html>"
+        )
+        mixed_path = write_epub(
+            tmp_path / "mixed.epub",
+            {"content.opf": minimal_opf(["a.xhtml"]), "a.xhtml": mixed_xhtml},
+        )
+        assert import_epub(mixed_path).chapters[0].text == "\n\n".join(
+            [
+                "Mở đầu nhấn mạnh",
+                "Đoạn lồng giữa.",
+                "Kết thúc đậm",
+                "Khối lá có nội tuyến không tách đoạn.",
+                "Trước giữa",
+                "Hộp con",
+                "sau cuối.",
+            ]
+        )
+
     def test_text_extraction(self, tmp_path: Path) -> None:
         malformed = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -377,6 +467,55 @@ class TestErrors:
         )
         with pytest.raises(DocumentImportError, match="no readable text"):
             import_epub(path)
+
+    def test_corrupt_archive_errors_wrapped_as_document_import_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import zlib
+
+        # Real corrupt deflate stream (raises zlib.error when reading chapter entry)
+        deflated = tmp_path / "corrupt_deflate.epub"
+        with zipfile.ZipFile(deflated, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("META-INF/container.xml", CONTAINER_XML.format(opf="content.opf"))
+            zf.writestr("content.opf", minimal_opf(["a.xhtml"]))
+            zf.writestr("a.xhtml", chapter_xhtml("Ch1", ["Some text " * 40]))
+        _corrupt_zip_entry_crc(deflated, "a.xhtml")
+        with pytest.raises(DocumentImportError, match="not a valid EPUB") as excinfo:
+            import_epub(deflated)
+        assert isinstance(excinfo.value.__cause__, (zlib.error, zipfile.BadZipFile, EOFError))
+
+        # Corrupt deflate stream on content.opf -> both metadata and full import wrap it
+        deflated_opf = tmp_path / "corrupt_opf_deflate.epub"
+        with zipfile.ZipFile(deflated_opf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("META-INF/container.xml", CONTAINER_XML.format(opf="content.opf"))
+            zf.writestr("content.opf", minimal_opf(["a.xhtml"]) + (" " * 200))
+            zf.writestr("a.xhtml", chapter_xhtml("Ch1", ["Body."]))
+        _corrupt_zip_entry_crc(deflated_opf, "content.opf")
+        for fn in (extract_epub_metadata, import_epub):
+            with pytest.raises(DocumentImportError, match="not a valid EPUB") as excinfo:
+                fn(deflated_opf)
+            assert isinstance(excinfo.value.__cause__, (zlib.error, zipfile.BadZipFile, EOFError))
+
+        # Explicit wrapping of zlib.error, EOFError, RuntimeError (encrypted ZIP), LargeZipFile
+        valid = write_epub(
+            tmp_path / "valid_for_faults.epub",
+            {"content.opf": minimal_opf(["a.xhtml"]), "a.xhtml": chapter_xhtml("C", ["Body."])},
+        )
+        for err in (
+            zlib.error("corrupt deflate stream"),
+            EOFError("unexpected end of archive"),
+            RuntimeError("File 'content.opf' is encrypted, password required for extraction"),
+            zipfile.LargeZipFile("ZIP64 required"),
+        ):
+
+            def _raise_err(self: zipfile.ZipFile, _name: str, _e: Exception = err) -> bytes:
+                raise _e
+
+            monkeypatch.setattr(zipfile.ZipFile, "read", _raise_err)
+            for fn in (extract_epub_metadata, import_epub):
+                with pytest.raises(DocumentImportError, match="not a valid EPUB") as excinfo:
+                    fn(valid)
+                assert excinfo.value.__cause__ is err
 
 
 _JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
@@ -843,6 +982,13 @@ class TestExtendedMetadataAndCover:
             cover_bytes=_WEBP_BYTES,
             cover_ext="webp",
         )
+
+        # include_cover=False skips reading the cover entry while keeping OPF metadata
+        meta_no_cover = extract_epub_metadata(path, include_cover=False)
+        assert meta_no_cover.cover_bytes is None
+        assert meta_no_cover.cover_ext == ""
+        assert meta_no_cover.title == meta.title
+        assert meta_no_cover.isbn == meta.isbn
 
         # Validation errors match import_epub
         with pytest.raises(FileNotFoundError):

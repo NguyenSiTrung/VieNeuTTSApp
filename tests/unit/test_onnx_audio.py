@@ -113,6 +113,122 @@ def test_speaker_embedding_feeds_80_dim_fbank_and_l2_normalizes(tmp_path: Path) 
     assert len(made) == 1
 
 
+def test_speaker_embedding_caps_long_input_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = FixedEmbedding()
+    model = tmp_path / "campplus_cap.onnx"
+    model.write_bytes(b"onnx")
+    embedder = onnx_audio.SpeakerEmbedder(model, session_factory=lambda _p, _t: session)
+
+    max_s = onnx_audio.MAX_EMBED_SECONDS
+    assert 10.0 <= max_s <= 60.0
+    assert int(round(onnx_audio.SAMPLE_RATE * max_s)) == onnx_audio.MAX_EMBED_SAMPLES
+
+    # 90 s at 16 kHz must be capped to MAX_EMBED_SECONDS before fbank/ONNX.
+    rng = np.random.default_rng(1)
+    long_16k = (0.1 * rng.standard_normal(int(onnx_audio.SAMPLE_RATE * (max_s + 30.0)))).astype(
+        np.float32
+    )
+    vec = embedder.embed(long_16k, onnx_audio.SAMPLE_RATE)
+    assert vec is not None and vec.shape == (512,)
+    assert float(np.linalg.norm(vec)) == pytest.approx(1.0)
+    capped_frames = session.calls[-1].shape[1]
+    # Kaldi 25 ms window / 10 ms shift with snip_edges=True: 1 + (N - 400) // 160 frames.
+    expected_frames = 1 + (onnx_audio.MAX_EMBED_SAMPLES - 400) // 160
+    assert capped_frames == expected_frames
+
+    # Non-16 kHz inputs must be truncated BEFORE resampling so huge clips never blow up RAM.
+    seen_input_lengths: list[int] = []
+    real_to_16k = onnx_audio.to_16k
+
+    def spy_to_16k(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+        seen_input_lengths.append(int(np.asarray(samples).size))
+        return real_to_16k(samples, sample_rate)
+
+    monkeypatch.setattr(onnx_audio, "to_16k", spy_to_16k)
+    long_48k = np.zeros(int(48_000 * (max_s + 20.0)), dtype=np.float32)
+    vec_48k = embedder.embed(long_48k, 48_000)
+    assert vec_48k is not None and vec_48k.shape == (512,)
+    assert seen_input_lengths == [int(round(48_000 * max_s))]
+    assert session.calls[-1].shape[1] <= expected_frames
+
+
+def test_get_session_evicts_stale_entries_on_file_update_and_release_clears_cache(
+    tmp_path: Path,
+) -> None:
+    import gc
+    import weakref
+
+    class _DummySession:
+        pass
+
+    onnx_audio.release_onnx_sessions()
+    try:
+        created: list[_DummySession] = []
+
+        def factory(_path: Path, _threads: int) -> _DummySession:
+            sess = _DummySession()
+            created.append(sess)
+            return sess
+
+        model = tmp_path / "model.onnx"
+        other = tmp_path / "other.onnx"
+        model.write_bytes(b"v1")
+        other.write_bytes(b"other")
+
+        s1 = onnx_audio.get_session(model, session_factory=factory)
+        s_other = onnx_audio.get_session(other, session_factory=factory)
+        assert onnx_audio.get_session(model, session_factory=factory) is s1
+        assert len(created) == 2
+
+        weak_s1 = weakref.ref(s1)
+        # Replace model file with different size + newer mtime -> old entry must be evicted.
+        model.write_bytes(b"v2-replaced-bytes")
+        st = model.stat()
+        os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+        s2 = onnx_audio.get_session(model, session_factory=factory)
+        assert s2 is not s1
+        assert len(created) == 3
+        resolved = str(model.resolve())
+        assert sum(1 for key in onnx_audio._sessions if key[1] == resolved) == 1
+        assert sum(1 for key in onnx_audio._sessions if key[1] == str(other.resolve())) == 1
+        del s1
+        created.pop(0)
+        gc.collect()
+        assert weak_s1() is None
+
+        # Same size, updated mtime only -> also evicts s2.
+        weak_s2 = weakref.ref(s2)
+        st2 = model.stat()
+        os.utime(model, ns=(st2.st_atime_ns, st2.st_mtime_ns + 2_000_000_000))
+        s3 = onnx_audio.get_session(model, session_factory=factory)
+        assert s3 is not s2
+        assert sum(1 for key in onnx_audio._sessions if key[1] == resolved) == 1
+        del s2
+        created.pop(1)
+        gc.collect()
+        assert weak_s2() is None
+
+        # release_onnx_sessions() clears all cached sessions cleanly.
+        weak_s3 = weakref.ref(s3)
+        weak_other = weakref.ref(s_other)
+        onnx_audio.release_onnx_sessions()
+        assert len(onnx_audio._sessions) == 0
+        del s3, s_other
+        created.clear()
+        gc.collect()
+        assert weak_s3() is None
+        assert weak_other() is None
+
+        # Subsequent get_session creates a brand-new session.
+        s4 = onnx_audio.get_session(model, session_factory=factory)
+        assert len(created) == 1 and s4 is created[0]
+    finally:
+        onnx_audio.release_onnx_sessions()
+
+
 def _real_models_dir() -> Path | None:
     raw = os.environ.get("VIENETTS_AUDIO_MODELS_DIR", "")
     if raw:

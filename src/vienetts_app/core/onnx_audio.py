@@ -32,6 +32,10 @@ SILERO_FRAME = 512
 SILERO_CONTEXT = 64
 #: Shortest clip worth embedding; shorter speech is tiled up to it.
 MIN_EMBED_SAMPLES = SAMPLE_RATE // 2
+#: Longest clip embedded per call; longer speech is truncated so a huge cue
+#: cannot blow up fbank / ONNX Runtime memory.
+MAX_EMBED_SECONDS = 30.0
+MAX_EMBED_SAMPLES = int(round(SAMPLE_RATE * MAX_EMBED_SECONDS))
 
 SessionFactory = Callable[[Path, int], Any]
 
@@ -66,7 +70,9 @@ def get_session(
     """The shared session for ``path``, created on first use.
 
     Keyed by the factory and the file's size and mtime too, so a replaced
-    model file (or a test's fake factory) never reuses another session.
+    model file (or a test's fake factory) never reuses another session. Any
+    stale entries for the same resolved path are evicted before loading the
+    replacement so re-downloaded models do not leak old ORT sessions in RAM.
     """
     factory = session_factory or default_session_factory
     model = Path(path)
@@ -74,13 +80,26 @@ def get_session(
         stat = model.stat()
     except OSError as exc:
         raise OnnxAudioError(f"Model file is missing: {model}") from exc
-    key = (factory, str(model.resolve()), stat.st_size, stat.st_mtime_ns, int(threads))
+    resolved = str(model.resolve())
+    key = (factory, resolved, stat.st_size, stat.st_mtime_ns, int(threads))
     with _sessions_lock:
         session = _sessions.get(key)
         if session is None:
+            for stale_key in [k for k in _sessions if k[1] == resolved]:
+                _sessions.pop(stale_key, None)
             session = factory(model, int(threads))
             _sessions[key] = session
         return session
+
+
+def release_onnx_sessions() -> None:
+    """Drop all cached ONNX Runtime sessions (app shutdown, memory pressure).
+
+    An in-flight VAD or speaker-embedding call keeps its own session reference
+    until it finishes.
+    """
+    with _sessions_lock:
+        _sessions.clear()
 
 
 def to_16k(samples: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -245,9 +264,19 @@ class SpeakerEmbedder:
 
     def embed(self, samples: np.ndarray, sample_rate: int) -> np.ndarray | None:
         """L2-normalised embedding of ``samples``; ``None`` for empty audio."""
-        audio = to_16k(samples, sample_rate)
+        raw = np.asarray(samples).reshape(-1)
+        if raw.size == 0:
+            return None
+        rate = int(sample_rate)
+        if rate > 0:
+            max_input = int(round(rate * MAX_EMBED_SECONDS))
+            if max_input > 0 and raw.size > max_input:
+                raw = raw[:max_input]
+        audio = to_16k(raw, rate)
         if audio.size == 0:
             return None
+        if audio.size > MAX_EMBED_SAMPLES:
+            audio = audio[:MAX_EMBED_SAMPLES]
         if audio.size < MIN_EMBED_SAMPLES:
             audio = np.tile(audio, -(-MIN_EMBED_SAMPLES // audio.size))[:MIN_EMBED_SAMPLES]
         feats = fbank_features(audio * np.float32(self._scale))

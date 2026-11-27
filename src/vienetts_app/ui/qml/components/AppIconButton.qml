@@ -5,10 +5,10 @@ import ".."
 
 // Compact icon-only action — same skin as AppButton variant "icon" but
 // with a guaranteed hit-target and an accessible tooltip.
+// Inherits AppButton's tooltipText, disabledReason, ToolTip (including
+// disabled hover via HoverHandler) and Accessible contracts without shadowing.
 AppButton {
     id: root
-
-    property string tooltipText: ""
 
     variant: "icon"
     size: "md"
@@ -21,7 +21,5 @@ AppButton {
         size === "lg" ? Theme.controlHeightLg : Theme.controlHitTarget)
     implicitHeight: implicitWidth
 
-    ToolTip.text: root.tooltipText
-    ToolTip.visible: root.hovered && root.tooltipText !== ""
     ToolTip.delay: 350
 }

@@ -156,31 +156,53 @@ Button {
         spacing: Theme.spacingSm
         anchors.centerIn: parent
 
-        AppIcon {
-            id: normalIcon
-            visible: root.iconKind !== "" && !root.busy
-            kind: root.iconKind
-            iconColor: root.contentTextColor
+        Loader {
+            id: normalIconLoader
+
+            objectName: "normalIconLoader"
+            active: !root.busy && root.iconKind !== ""
+            visible: active
             Layout.preferredWidth: root._iconS
             Layout.preferredHeight: root._iconS
-            opacity: root.enabled ? 1.0 : 0.55
+            Layout.alignment: Qt.AlignVCenter
+
+            sourceComponent: AppIcon {
+                id: normalIcon
+
+                width: root._iconS
+                height: root._iconS
+                kind: root.iconKind
+                iconColor: root.contentTextColor
+                opacity: root.enabled ? 1.0 : 0.55
+            }
         }
 
-        AppIcon {
-            id: busySpinner
-            visible: root.busy
-            kind: "spinner"
-            iconColor: root.contentTextColor
+        Loader {
+            id: busySpinnerLoader
+
+            objectName: "busySpinnerLoader"
+            active: root.busy
+            visible: active
             Layout.preferredWidth: 16
             Layout.preferredHeight: 16
-            opacity: root.enabled ? 1.0 : 0.6
+            Layout.alignment: Qt.AlignVCenter
 
-            RotationAnimation on rotation {
-                running: root.busy
-                loops: Animation.Infinite
-                from: 0
-                to: 360
-                duration: 800
+            sourceComponent: AppIcon {
+                id: busySpinner
+
+                width: 16
+                height: 16
+                kind: "spinner"
+                iconColor: root.contentTextColor
+                opacity: root.enabled ? 1.0 : 0.6
+
+                RotationAnimation on rotation {
+                    running: root.visible && root.busy
+                    loops: Animation.Infinite
+                    from: 0
+                    to: 360
+                    duration: 800
+                }
             }
         }
 
@@ -256,6 +278,6 @@ Button {
     // without it a disabledReason tooltip never surfaces (CUDA install case).
     ToolTip.visible: (root.hovered || hoverHandler.hovered) && (ToolTip.text !== "")
 
-    Accessible.name: root.accessibleLabel
-    Accessible.description: !root.enabled ? root.disabledReason : ""
+    Accessible.name: root.accessibleLabel !== "" ? root.accessibleLabel : root.tooltipText
+    Accessible.description: !root.enabled && root.disabledReason !== "" ? root.disabledReason : ""
 }

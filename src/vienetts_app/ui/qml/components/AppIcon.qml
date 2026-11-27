@@ -11,6 +11,7 @@ Canvas {
     property string kind: "text"
     property color iconColor: Theme.textMuted
     property real strokeWidth: 1.5
+    property bool _dirty: true
 
     width: 20
     height: 20
@@ -19,16 +20,41 @@ Canvas {
     // texture. A framebuffer-object target gave every icon its own FBO
     // (dozens per window) for no visual gain.
 
-    onKindChanged: requestPaint()
-    onIconColorChanged: requestPaint()
-    onWidthChanged: requestPaint()
-    onHeightChanged: requestPaint()
-    Component.onCompleted: requestPaint()
+    function _schedulePaint() {
+        if (root.visible && root.kind !== "") {
+            root._dirty = false;
+            root.requestPaint();
+        } else {
+            root._dirty = true;
+        }
+    }
+
+    onKindChanged: _schedulePaint()
+    onIconColorChanged: _schedulePaint()
+    onStrokeWidthChanged: _schedulePaint()
+    onWidthChanged: _schedulePaint()
+    onHeightChanged: _schedulePaint()
+    onVisibleChanged: {
+        if (root.visible && root.kind !== "" && root._dirty) {
+            root._dirty = false;
+            root.requestPaint();
+        }
+    }
+    Component.onCompleted: _schedulePaint()
 
     onPaint: {
+        if (!root.visible || root.kind === "") {
+            root._dirty = true;
+            return;
+        }
+        if (root.width <= 0 || root.height <= 0) {
+            root._dirty = true;
+            return;
+        }
+        root._dirty = false;
         const ctx = getContext("2d");
+        if (!ctx) return;
         ctx.reset();
-        if (root.width <= 0 || root.height <= 0) return;
         ctx.save();
         ctx.scale(root.width / 20.0, root.height / 20.0);
         ctx.strokeStyle = String(root.iconColor);

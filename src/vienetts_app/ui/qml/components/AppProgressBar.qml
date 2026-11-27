@@ -14,6 +14,7 @@ ProgressBar {
     id: root
 
     property string accessibleLabel: ""
+    readonly property bool indeterminateRunning: indetAnimator.running
 
     implicitHeight: 6
     from: 0
@@ -51,11 +52,20 @@ ProgressBar {
             color: Theme.accent
 
             XAnimator on x {
+                id: indetAnimator
+
+                objectName: "indeterminateAnimator"
                 from: -indetBar.width
                 to: progressTrack.width
                 duration: 900
                 loops: Animation.Infinite
-                running: root.indeterminate
+                running: false
+            }
+
+            Binding {
+                target: indetAnimator
+                property: "running"
+                value: root.visible && root.indeterminate
             }
         }
     }

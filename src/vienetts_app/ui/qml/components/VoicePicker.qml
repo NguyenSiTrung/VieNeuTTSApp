@@ -82,6 +82,64 @@ ComboBox {
         return rows;
     }
 
+    readonly property var filteredModel: {
+        const rows = root.flatModel || [];
+        const needle = root.filterText.trim().toLocaleLowerCase();
+        const out = [];
+        if (needle === "") {
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                out.push({
+                    id: row.id,
+                    label: row.label,
+                    region: row.region !== undefined ? row.region : "",
+                    gender: row.gender !== undefined ? row.gender : "",
+                    style: row.style !== undefined ? row.style : "",
+                    flatIndex: i
+                });
+            }
+            return out;
+        }
+        let pendingGroup = null;
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (row.id === "") {
+                pendingGroup = {
+                    id: "",
+                    label: row.label,
+                    region: "",
+                    gender: "",
+                    style: "",
+                    flatIndex: i
+                };
+                continue;
+            }
+            if (rowMatches(row)) {
+                if (pendingGroup !== null) {
+                    out.push(pendingGroup);
+                    pendingGroup = null;
+                }
+                out.push({
+                    id: row.id,
+                    label: row.label,
+                    region: row.region !== undefined ? row.region : "",
+                    gender: row.gender !== undefined ? row.gender : "",
+                    style: row.style !== undefined ? row.style : "",
+                    flatIndex: i
+                });
+            }
+        }
+        return out;
+    }
+    readonly property int filteredVoiceCount: {
+        let count = 0;
+        const rows = root.filteredModel;
+        for (let i = 0; i < rows.length; i++)
+            if (rows[i].id !== "")
+                count++;
+        return count;
+    }
+
     // Initials for the compact chip's avatar ("Ngọc Huyền" → "NH",
     // "Adam" → "AD").
     readonly property string voiceInitials: {
@@ -259,21 +317,37 @@ ComboBox {
 
     function rowMatches(row) {
         const needle = filterText.trim().toLocaleLowerCase();
-        return needle === "" || (row && row.label
-            && row.label.toLocaleLowerCase().includes(needle));
+        if (needle === "")
+            return true;
+        if (!row)
+            return false;
+        if (row.label && row.label.toLocaleLowerCase().includes(needle))
+            return true;
+        if (row.region && regionLabel(row.region).toLocaleLowerCase().includes(needle))
+            return true;
+        if (row.gender && genderLabel(row.gender).toLocaleLowerCase().includes(needle))
+            return true;
+        if (row.style && styleLabel(row.style).toLocaleLowerCase().includes(needle))
+            return true;
+        return false;
     }
 
-    function groupHasMatchingVoice(groupIndex) {
-        if (filterText.trim() === "")
-            return true;
-        for (let i = groupIndex + 1; i < flatModel.length; i++) {
-            const row = flatModel[i];
-            if (row.id === "")
-                return false;
-            if (rowMatches(row))
-                return true;
-        }
-        return false;
+    function filteredIndexForFlat(flatIdx) {
+        if (flatIdx < 0)
+            return -1;
+        const rows = root.filteredModel;
+        for (let i = 0; i < rows.length; i++)
+            if (rows[i].flatIndex === flatIdx)
+                return i;
+        return -1;
+    }
+
+    function firstSelectableFilteredFlatIndex() {
+        const rows = root.filteredModel;
+        for (let i = 0; i < rows.length; i++)
+            if (rows[i].id !== "")
+                return rows[i].flatIndex;
+        return -1;
     }
 
     function openPopup() {
@@ -330,6 +404,18 @@ ComboBox {
     // adopted the new model yet — an index set then is clamped away, which
     // leaves the picker on a group header while a run would use another voice.
     // Qt.callLater runs once the model has settled.
+    onHighlightedIndexChanged: {
+        voiceList.activeFlatIndex = root.highlightedIndex;
+    }
+
+    onFilteredModelChanged: {
+        if (!voicePopup.visible)
+            return;
+        const pos = filteredIndexForFlat(voiceList.activeFlatIndex);
+        if (pos < 0 || root.filteredModel[pos].id === "")
+            voiceList.activeFlatIndex = firstSelectableFilteredFlatIndex();
+    }
+
     onFlatModelChanged: Qt.callLater(syncSelection)
 
     function syncSelection() {
@@ -624,6 +710,12 @@ ComboBox {
         dim: false
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+        onOpened: {
+            const initial = root.highlightedIndex >= 0 ? root.highlightedIndex : root.currentIndex;
+            const pos = root.filteredIndexForFlat(initial);
+            voiceList.activeFlatIndex = (pos >= 0 && root.filteredModel[pos].id !== "")
+                ? initial : root.firstSelectableFilteredFlatIndex();
+        }
         onClosed: {
             // An audition click bubbles through the row's guard AND the
             // popup's press-outside handling: reopen so back-to-back
@@ -682,7 +774,7 @@ ComboBox {
                 Item { Layout.fillWidth: true }
 
                 Label {
-                    text: qsTr("%n giọng", "", root.flatModel.filter(r => r.id !== "").length)
+                    text: qsTr("%n giọng", "", root.filteredVoiceCount)
                     color: Theme.textSubtle
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeXs
@@ -727,6 +819,22 @@ ComboBox {
                         padding: 0
                         background: null
                         onTextChanged: root.filterText = text
+                        Keys.onDownPressed: (event) => {
+                            voiceList.stepHighlight(1);
+                            event.accepted = true;
+                        }
+                        Keys.onUpPressed: (event) => {
+                            voiceList.stepHighlight(-1);
+                            event.accepted = true;
+                        }
+                        Keys.onReturnPressed: (event) => {
+                            voiceList.activateHighlighted();
+                            event.accepted = true;
+                        }
+                        Keys.onEnterPressed: (event) => {
+                            voiceList.activateHighlighted();
+                            event.accepted = true;
+                        }
                     }
 
                     AppIconButton {
@@ -743,13 +851,62 @@ ComboBox {
             ListView {
                 id: voiceList
 
+                property int activeFlatIndex: -1
+
+                function stepHighlight(delta) {
+                    const rows = root.filteredModel;
+                    if (rows.length === 0)
+                        return;
+                    let idx = root.filteredIndexForFlat(activeFlatIndex);
+                    if (idx < 0)
+                        idx = delta > 0 ? -1 : rows.length;
+                    for (let step = 0; step < rows.length; step++) {
+                        idx = (idx + delta + rows.length) % rows.length;
+                        if (rows[idx].id !== "") {
+                            activeFlatIndex = rows[idx].flatIndex;
+                            positionViewAtIndex(idx, ListView.Contain);
+                            return;
+                        }
+                    }
+                }
+
+                function activateHighlighted() {
+                    const idx = root.filteredIndexForFlat(activeFlatIndex);
+                    if (idx < 0)
+                        return;
+                    const row = root.filteredModel[idx];
+                    if (!row || row.id === "")
+                        return;
+                    root.currentIndex = row.flatIndex;
+                    root.activated(row.flatIndex);
+                    if (typeof controller !== "undefined" && controller)
+                        controller.stopAudition();
+                    voicePopup.close();
+                }
+
                 objectName: "voicePickerList"
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.min(296, contentHeight)
                 clip: true
-                model: root.flatModel
-                currentIndex: root.highlightedIndex
+                model: root.filteredModel
+                currentIndex: root.filteredIndexForFlat(activeFlatIndex)
                 spacing: 4
+                Keys.onDownPressed: (event) => {
+                    stepHighlight(1);
+                    event.accepted = true;
+                }
+                Keys.onUpPressed: (event) => {
+                    stepHighlight(-1);
+                    event.accepted = true;
+                }
+                Keys.onReturnPressed: (event) => {
+                    activateHighlighted();
+                    event.accepted = true;
+                }
+                Keys.onEnterPressed: (event) => {
+                    activateHighlighted();
+                    event.accepted = true;
+                }
 
                 ScrollBar.vertical: ScrollBar {
                     implicitWidth: 6
@@ -764,10 +921,11 @@ ComboBox {
 
                     required property var modelData
                     required property int index
+                    readonly property int flatIndex: modelData && modelData.flatIndex !== undefined
+                        ? modelData.flatIndex : index
                     readonly property bool isGroup: modelData && modelData.id === ""
                     readonly property bool isSelected: !isGroup && modelData.id === root.selectedVoice
                     readonly property bool filterActive: root.filterText.trim() !== ""
-                    readonly property bool rowMatches: root.rowMatches(modelData)
                     readonly property string rowLabel: modelData ? modelData.label : ""
                     readonly property var rowVoiceInfo: root.voiceInfoFor(modelData)
                     readonly property bool isAuditioningThis: {
@@ -778,21 +936,22 @@ ComboBox {
 
                     objectName: "voicePickerRow"
                     width: voiceList.width - (voiceList.ScrollBar.vertical.visible ? 10 : 0)
-                    visible: isGroup
-                        ? root.groupHasMatchingVoice(index) : rowMatches
-                    height: visible ? (isGroup ? 32 : 56) : 0
+                    height: isGroup ? 32 : 56
                     topPadding: isGroup ? Theme.spacingXs : 6
                     bottomPadding: isGroup ? Theme.spacingXs : 6
                     leftPadding: isGroup ? Theme.spacingXs : Theme.spacingSm + 2
                     rightPadding: isGroup ? Theme.spacingXs : Theme.spacingSm + 2
                     enabled: !isGroup
-                    highlighted: !isGroup && root.highlightedIndex === index
+                    highlighted: !isGroup && voiceRow.flatIndex === voiceList.activeFlatIndex
                     hoverEnabled: !isGroup
                     onClicked: {
                         if (root.auditionClickGuard)
                             return;
-                        root.currentIndex = index;
-                        root.activated(index);
+                        const targetIndex = voiceRow.flatIndex;
+                        if (targetIndex < 0)
+                            return;
+                        root.currentIndex = targetIndex;
+                        root.activated(targetIndex);
                         if (typeof controller !== "undefined" && controller)
                             controller.stopAudition();
                         voicePopup.close();

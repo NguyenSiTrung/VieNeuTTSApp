@@ -94,6 +94,21 @@ ColumnLayout {
         return picker ? picker.selectVoice(id) : false;
     }
 
+    Connections {
+        target: root.hasController ? controller : null
+        ignoreUnknownSignals: true
+
+        function onSpeedChanged() {
+            speedCommitTimer.stop();
+            speedSlider.pendingCommit = false;
+        }
+
+        function onSilencePChanged() {
+            pauseCommitTimer.stop();
+            pauseSlider.pendingCommit = false;
+        }
+    }
+
     // ── Giọng đọc: the current voice + recents ─────────────────────────────
     AppCard {
         id: voiceCard
@@ -367,11 +382,27 @@ ColumnLayout {
                     font.pixelSize: Theme.fontSizeBase
                 }
 
-                // Bounds mirror Settings.speed [0.5, 2.0]; a user move writes
-                // the setting and the binding follows it back (edits made on
-                // the Settings page land here too).
+                // Bounds mirror Settings.speed [0.5, 2.0]; pointer drags commit
+                // once on release while keyboard/non-drag moves debounce (200 ms)
+                // so dragging never hammers settings.json on every pixel step.
                 AppSlider {
                     id: speedSlider
+
+                    property bool keyStepping: false
+                    property bool pendingCommit: false
+
+                    function commitSpeed() {
+                        speedCommitTimer.stop();
+                        keyStepping = false;
+                        if (!pendingCommit)
+                            return;
+                        pendingCommit = false;
+                        if (!root.hasController || !enabled)
+                            return;
+                        const next = Number(value.toFixed(2));
+                        if (Math.abs(controller.speed - next) > 1e-6)
+                            controller.speed = next;
+                    }
 
                     objectName: "inspectorSpeedSlider"
                     Layout.fillWidth: true
@@ -383,7 +414,53 @@ ColumnLayout {
                     value: root.hasController ? controller.speed : 1.0
                     enabled: root.hasController && EngineState.generationControl("speed")
                     accessibleLabel: qsTr("Tốc độ đọc")
-                    onMoved: controller.speed = Number(value.toFixed(2))
+
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_Left || event.key === Qt.Key_Right
+                                || event.key === Qt.Key_Up || event.key === Qt.Key_Down
+                                || event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown
+                                || event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                            keyStepping = true;
+                        }
+                        event.accepted = false;
+                    }
+                    Keys.onReleased: (event) => {
+                        if (!pressed)
+                            keyStepping = false;
+                        event.accepted = false;
+                    }
+                    onMoved: {
+                        pendingCommit = true;
+                        if (keyStepping || !pressed)
+                            speedCommitTimer.restart();
+                    }
+                    onPressedChanged: {
+                        if (pressed) {
+                            if (!keyStepping)
+                                speedCommitTimer.stop();
+                            return;
+                        }
+                        if (keyStepping) {
+                            keyStepping = false;
+                            return;
+                        }
+                        commitSpeed();
+                    }
+                    onEnabledChanged: {
+                        if (!enabled) {
+                            speedCommitTimer.stop();
+                            pendingCommit = false;
+                            keyStepping = false;
+                        }
+                    }
+                    Component.onDestruction: speedCommitTimer.stop()
+
+                    Timer {
+                        id: speedCommitTimer
+
+                        interval: 200
+                        onTriggered: speedSlider.commitSpeed()
+                    }
                 }
 
                 Label {
@@ -408,6 +485,22 @@ ColumnLayout {
                 AppSlider {
                     id: pauseSlider
 
+                    property bool keyStepping: false
+                    property bool pendingCommit: false
+
+                    function commitPause() {
+                        pauseCommitTimer.stop();
+                        keyStepping = false;
+                        if (!pendingCommit)
+                            return;
+                        pendingCommit = false;
+                        if (!root.hasController || !enabled)
+                            return;
+                        const next = Number(value.toFixed(2));
+                        if (Math.abs(controller.silenceP - next) > 1e-6)
+                            controller.silenceP = next;
+                    }
+
                     objectName: "inspectorPauseSlider"
                     Layout.fillWidth: true
                     Layout.minimumWidth: 80
@@ -418,7 +511,53 @@ ColumnLayout {
                     value: root.hasController ? controller.silenceP : 0.15
                     enabled: root.hasController && EngineState.generationControl("silence_p")
                     accessibleLabel: qsTr("Khoảng lặng ngắt câu")
-                    onMoved: controller.silenceP = Number(value.toFixed(2))
+
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_Left || event.key === Qt.Key_Right
+                                || event.key === Qt.Key_Up || event.key === Qt.Key_Down
+                                || event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown
+                                || event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                            keyStepping = true;
+                        }
+                        event.accepted = false;
+                    }
+                    Keys.onReleased: (event) => {
+                        if (!pressed)
+                            keyStepping = false;
+                        event.accepted = false;
+                    }
+                    onMoved: {
+                        pendingCommit = true;
+                        if (keyStepping || !pressed)
+                            pauseCommitTimer.restart();
+                    }
+                    onPressedChanged: {
+                        if (pressed) {
+                            if (!keyStepping)
+                                pauseCommitTimer.stop();
+                            return;
+                        }
+                        if (keyStepping) {
+                            keyStepping = false;
+                            return;
+                        }
+                        commitPause();
+                    }
+                    onEnabledChanged: {
+                        if (!enabled) {
+                            pauseCommitTimer.stop();
+                            pendingCommit = false;
+                            keyStepping = false;
+                        }
+                    }
+                    Component.onDestruction: pauseCommitTimer.stop()
+
+                    Timer {
+                        id: pauseCommitTimer
+
+                        interval: 200
+                        onTriggered: pauseSlider.commitPause()
+                    }
                 }
 
                 Label {

@@ -482,3 +482,109 @@ def test_parallel_requests_are_ordered_and_cancel_stops_new_work(monkeypatch) ->
             cues, LlmConfig(concurrency=1, batch_size=1), cancel_check=lambda: bool(calls)
         )
     assert caught.value.kind == "cancelled" and len(calls) == 1
+
+
+def test_fit_timing_raises_when_all_attempted_batches_fail_despite_skipped_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short = Cue(1, 0, 500, "OK")
+    long_a = Cue(2, 600, 700, "a" * 80)
+    long_b = Cue(3, 800, 900, "b" * 80)
+
+    # All attempted batches fail (batch 0 skipped, batches 1 & 2 fail) -> must raise!
+    calls: list[int] = []
+
+    def all_fail(config, messages, **kwargs):
+        items = json.loads(messages[-1]["content"])["cues"]
+        calls.append(items[0]["index"])
+        raise LlmRefineError("provider down", kind="server", transient=True)
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", all_fail)
+    with pytest.raises(LlmRefineError, match="provider down"):
+        refine_cues_with_llm(
+            [short, long_a, long_b], LlmConfig(concurrency=1), task="fit_timing", batch_size=1
+        )
+    assert calls == [2, 3]
+
+    # One attempted batch fails and one succeeds -> partial success with note, no raise.
+    def one_fails(config, messages, **kwargs):
+        items = json.loads(messages[-1]["content"])["cues"]
+        idx = items[0]["index"]
+        if idx == 2:
+            raise LlmRefineError("temporary blip", kind="server", transient=True)
+        return ChatResult(json.dumps({"cues": [{"index": idx, "text": "shortened"}]}))
+
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", one_fails)
+    notes: list[str] = []
+    result = refine_cues_with_llm(
+        [short, long_a, long_b],
+        LlmConfig(concurrency=1),
+        task="fit_timing",
+        batch_size=1,
+        notes=notes,
+    )
+    assert [c.text for c in result] == ["OK", "a" * 80, "shortened"]
+    assert any("1/2" in note for note in notes)
+
+    # Zero attempted batches (all cues fit) -> succeeds with 0 LLM calls.
+    calls.clear()
+    monkeypatch.setattr("vienetts_app.core.llm_refine._post_chat_completion", all_fail)
+    assert refine_cues_with_llm([short], LlmConfig(), task="fit_timing", batch_size=1) == [short]
+    assert calls == []
+
+
+def test_parse_reply_ignores_empty_preamble_and_non_string_text() -> None:
+    cues = [
+        Cue(1, 0, 1000, "Original 1", speaker="SPEAKER_01"),
+        Cue(2, 1000, 2000, "Original 2", speaker="SPEAKER_02"),
+        Cue(3, 2000, 3000, "Original 3", speaker="SPEAKER_01"),
+        Cue(4, 3000, 4000, "Original 4", speaker="SPEAKER_01"),
+        Cue(5, 4000, 5000, "Original 5", speaker="SPEAKER_01"),
+    ]
+    allowed = {"SPEAKER_01", "SPEAKER_02"}
+
+    # Empty [] in preamble before a real list or {"cues": [...]} must be ignored.
+    for raw in (
+        'Note: []\n[{"index": 1, "text": "Fixed 1"}]',
+        'Note: []\n{"cues": [{"index": 1, "text": "Fixed 1"}]}',
+        'Draft: [{"meta": "ignored"}]\n{"cues": [{"index": 1, "text": "Fixed 1"}]}',
+    ):
+        parsed, missing = _parse_reply(raw, cues[:1], task="refine_asr", allowed_speakers=allowed)
+        assert [c.text for c in parsed] == ["Fixed 1"]
+        assert missing == []
+
+    # Bare empty [] with no actual cues payload must fail as format error.
+    with pytest.raises(LlmRefineError) as caught:
+        _parse_reply("Note: []", cues[:1], task="refine_asr", allowed_speakers=allowed)
+    assert caught.value.kind == "format"
+
+    # Explicit {"cues": []} still parses as empty cues list (all missing).
+    parsed, missing = _parse_reply(
+        '{"cues": []}', cues[:1], task="refine_asr", allowed_speakers=allowed
+    )
+    assert [c.text for c in parsed] == ["Original 1"]
+    assert missing == [1]
+
+    # Non-string item.get("text") values are ignored (preserve original text, never coerce).
+    bad_text_payload = json.dumps(
+        {
+            "cues": [
+                {"index": 1, "text": None},
+                {"index": 2, "text": 123},
+                {"index": 3, "text": ["a", "b"]},
+                {"index": 4, "text": {"nested": "x"}},
+                {"index": 5, "text": "Valid 5"},
+            ]
+        }
+    )
+    parsed, missing = _parse_reply(
+        bad_text_payload, cues, task="refine_asr", allowed_speakers=allowed
+    )
+    assert [c.text for c in parsed] == [
+        "Original 1",
+        "Original 2",
+        "Original 3",
+        "Original 4",
+        "Valid 5",
+    ]
+    assert missing == []

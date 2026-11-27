@@ -173,18 +173,45 @@ def _parse_reply(
 ) -> tuple[list[Cue], list[int]]:
     text = _strip_reasoning(raw_reply)
     decoder = json.JSONDecoder()
-    items = None
-    for pos, char in enumerate(text):
-        if char not in "[{":
+    items: list[dict[str, Any]] | None = None
+    list_candidate: list[dict[str, Any]] | None = None
+    empty_cues_candidate: list[dict[str, Any]] | None = None
+    pos = 0
+    while pos < len(text):
+        if text[pos] not in "[{":
+            pos += 1
             continue
         try:
-            value, _ = decoder.raw_decode(text, pos)
+            value, end = decoder.raw_decode(text, pos)
         except json.JSONDecodeError:
+            pos += 1
             continue
-        candidate = value.get("cues") if isinstance(value, dict) else value
-        if isinstance(candidate, list) and all(isinstance(item, dict) for item in candidate):
-            items = candidate
-            break
+        if isinstance(value, dict) and "cues" in value:
+            candidate = value["cues"]
+            if isinstance(candidate, list) and all(isinstance(item, dict) for item in candidate):
+                if candidate:
+                    items = candidate
+                    break
+                if empty_cues_candidate is None:
+                    empty_cues_candidate = candidate
+                pos = end
+                continue
+            pos += 1
+            continue
+        if isinstance(value, list):
+            if not value:
+                pos = end
+                continue
+            if all(isinstance(item, dict) for item in value):
+                if list_candidate is None:
+                    list_candidate = value
+                pos = end
+                continue
+            pos += 1
+            continue
+        pos += 1
+    if items is None:
+        items = list_candidate if list_candidate is not None else empty_cues_candidate
     if items is None:
         raise LlmRefineError("LLM không trả về danh sách phụ đề JSON hợp lệ.", kind="format")
 
@@ -208,7 +235,8 @@ def _parse_reply(
             updated.append(orig)
             missing.append(orig.index)
             continue
-        new_text = clean_cue_text(str(item.get("text") or ""))
+        raw_text = item.get("text")
+        new_text = clean_cue_text(raw_text) if isinstance(raw_text, str) else ""
         speaker = item.get("speaker")
         new_spk = speaker.strip() if isinstance(speaker, str) else ""
         if task != "refine_asr" or not new_spk or new_spk not in allowed_speakers:
@@ -368,7 +396,7 @@ def refine_cues_with_llm(
                 return parse_request(entries, start, end, retried=True)
             raise
 
-    def run_batch(start: int, batch: list[Cue]) -> tuple[list[Cue], int, int]:
+    def run_batch(start: int, batch: list[Cue]) -> tuple[list[Cue], int, int, bool]:
         end = start + len(batch)
         entries = [(start + offset, cue) for offset, cue in enumerate(batch)]
         budgets: dict[int, int] = {}
@@ -388,7 +416,7 @@ def refine_cues_with_llm(
                 (position, cue) for position, cue in entries if len(cue.text) > budgets[cue.index]
             ]
         if not entries:
-            return batch, 0, 0
+            return batch, 0, 0, False
         updated, missing = parse_request(entries, start, end)
         by_index = {cue.index: cue for cue in updated}
         if missing:
@@ -440,12 +468,12 @@ def refine_cues_with_llm(
                     by_index[original.index] = original
         result = [by_index.get(cue.index, cue) for cue in batch]
         over = sum(len(cue.text) > budgets[cue.index] for cue in result) if budgets else 0
-        return result, len(missing), over
+        return result, len(missing), over, True
 
     workers = min(len(batches), 8, max(1, config.concurrency or _auto_concurrency(config.base_url)))
     results: list[list[Cue] | None] = [None] * len(batches)
     errors: list[LlmRefineError] = []
-    missing_total = over_total = completed = next_batch = 0
+    attempted_batches = missing_total = over_total = completed = next_batch = 0
     executor = ThreadPoolExecutor(max_workers=workers)
     pending = {}
     try:
@@ -460,10 +488,13 @@ def refine_cues_with_llm(
             for future in finished:
                 batch_index = pending.pop(future)
                 try:
-                    result, missing, over = future.result()
+                    result, missing, over, attempted = future.result()
+                    if attempted:
+                        attempted_batches += 1
                 except LlmRefineError as exc:
                     if exc.kind in ("auth", "not_found", "bad_request", "cancelled"):
                         raise
+                    attempted_batches += 1
                     errors.append(exc)
                     result, missing, over = batches[batch_index][1], 0, 0
                 results[batch_index] = result
@@ -478,12 +509,12 @@ def refine_cues_with_llm(
         raise
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
-    if len(errors) == len(batches):
+    if attempted_batches > 0 and len(errors) == attempted_batches:
         raise errors[-1]
     if notes is not None:
         if errors:
             notes.append(
-                f"{len(errors)}/{len(batches)} lô không xử lý được — giữ nguyên văn bản gốc."
+                f"{len(errors)}/{attempted_batches} lô không xử lý được — giữ nguyên văn bản gốc."
             )
         if missing_total:
             notes.append(f"{missing_total} phụ đề thiếu trong phản hồi — giữ nguyên văn bản gốc.")

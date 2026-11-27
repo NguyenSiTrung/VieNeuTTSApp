@@ -28,13 +28,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from vienetts_app.core import diarization
 from vienetts_app.core.asr import (
     AsrCancelled,
     AsrConfig,
     AsrError,
     RawSegment,
     default_asr_threads,
-    segments_to_cues,
+    normalize_asr_segments_to_cues,
     transcribe_segments,
 )
 from vienetts_app.core.audio_prep import AudioPrepCancelled, AudioPrepError, ensure_source_16k
@@ -234,7 +235,12 @@ def run_transcription(
                 cancel_check=cancel_check,
                 notes=asr_notes,
             )
-            return segments, segments_to_cues(segments, wav, data_dir=data_dir)
+            # Defer speech-bound refinement (Silero VAD) until the final cue list is
+            # known so run_transcription runs refine_cues_speech_bounds at most once.
+            cues = normalize_asr_segments_to_cues(segments)
+            if not cues:
+                raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")
+            return segments, cues
 
         def run_turns() -> list[RttmTurn]:
             if turns_runner is None or diar_cfg is None:
@@ -261,7 +267,6 @@ def run_transcription(
         else:
             segments, cues = run_asr()
 
-        result = TranscriptionResult(cues, asr_notes)
         if diar_cfg is not None:
             result = _label_speakers(
                 wav,
@@ -280,6 +285,9 @@ def run_transcription(
                 asr_notes=asr_notes,
                 diar_notes=diar_notes,
             )
+        else:
+            refined = diarization.refine_cues_speech_bounds(cues, wav, data_dir=data_dir)
+            result = TranscriptionResult(refined, asr_notes)
         bar.done()
         return result
     finally:
@@ -331,7 +339,8 @@ def _label_speakers(
     """Label ``cues`` by speaker; any failure keeps them unlabelled with a note."""
 
     def kept(note: str) -> TranscriptionResult:
-        return TranscriptionResult(cues, [*asr_notes, *diar_notes, note])
+        refined = diarization.refine_cues_speech_bounds(cues, wav, data_dir=data_dir)
+        return TranscriptionResult(refined, [*asr_notes, *diar_notes, note])
 
     def run_diarize(config: DiarizationConfig) -> list[Cue]:
         return diarize(
@@ -388,6 +397,8 @@ def _cues_from_turns(
     """Split segments that span a speaker change, then label cues by max overlap."""
     split: list[Any] = split_segments_at_turns(segments, turns)
     if len(split) != len(segments):
-        cues = segments_to_cues(split, wav, data_dir=data_dir)
+        cues = normalize_asr_segments_to_cues(split)
+        if not cues:
+            raise AsrError("Không nhận diện được lời thoại nào trong tệp video/âm thanh.")
     labelled = assign_speakers_from_turns(cues, turns, wav_path=wav, data_dir=data_dir)
     return apply_speaker_ceiling(labelled, diar_cfg.max_speakers)

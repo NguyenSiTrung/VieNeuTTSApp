@@ -404,3 +404,128 @@ def test_default_runners_run_the_whisper_and_nemotron_clis_side_by_side(
     assert [c.speaker for c in result.cues] == ["", ""]
     assert result.notes == ["Không phân tách được người nói: onnx exploded"]
     assert len(threads("nemotron")) == 2  # one Nemotron run per work dir
+
+
+def test_run_transcription_refines_speech_bounds_at_most_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vienetts_app.core import asr, diarization, onnx_audio
+    from vienetts_app.core.ai_models import AUDIO_MODELS, SILERO_VAD_MODEL_ID
+
+    sr = 16_000
+    # 0.25s silence + 3.1s speech + 0.65s silence so VAD bounds tighten strictly inside [0, 3600].
+    t = np.arange(int(sr * 3.1), dtype=np.float32) / sr
+    samples = np.concatenate(
+        [
+            np.zeros(int(sr * 0.25), dtype=np.float32),
+            0.3 * np.sin(2 * np.pi * 220 * t),
+            np.zeros(int(sr * 0.65), dtype=np.float32),
+        ]
+    )
+    media = write_wav_file(samples, tmp_path / "talk.wav", sr)
+
+    real_refine = diarization.refine_cues_speech_bounds
+    calls: list[tuple[int, bool]] = []
+
+    def spy_refine(cues, wav_path=None, **kwargs):
+        calls.append((len(cues), kwargs.get("turns") is not None))
+        return real_refine(cues, wav_path, **kwargs)
+
+    monkeypatch.setattr(diarization, "refine_cues_speech_bounds", spy_refine)
+    monkeypatch.setattr(asr, "refine_cues_speech_bounds", spy_refine)
+
+    # 1. Nemotron turns with mid-segment speaker split (both sequential and parallel):
+    # refine_cues_speech_bounds must run ONCE (not 3 times across ASR, split, and assign).
+    for parallel in (False, True):
+        calls.clear()
+        stubs = _Stubs(overlap=parallel)
+        res = tp.run_transcription(
+            media,
+            AsrConfig(),
+            DiarizationConfig(backend="nemotron_gguf"),
+            work_dir=tmp_path / f"cache_nem_{parallel}",
+            parallel=parallel,
+            runners=stubs.runners(),
+        )
+        assert len(calls) == 1, (parallel, calls)
+        assert calls[0] == (2, True)
+        assert len(res.cues) == 2
+        assert res.cues[0].speech_start_ms is not None and res.cues[0].speech_start_ms >= 200
+
+    # 2. ASR-only (diar_cfg=None): refines exactly once.
+    calls.clear()
+    stubs = _Stubs()
+    res_asr_only = tp.run_transcription(
+        media,
+        AsrConfig(),
+        None,
+        work_dir=tmp_path / "cache_asr_only",
+        runners=stubs.runners(),
+    )
+    assert len(calls) == 1, calls
+    assert res_asr_only.cues[0].speech_start_ms is not None
+    assert res_asr_only.cues[0].speech_start_ms >= 200
+
+    # 3. Acoustic diarization using default diarize_cues: refines exactly once.
+    calls.clear()
+    stubs = _Stubs()
+    res_acoustic = tp.run_transcription(
+        media,
+        AsrConfig(),
+        DiarizationConfig(backend="acoustic"),
+        work_dir=tmp_path / "cache_acoustic",
+        runners=tp.PipelineRunners(transcribe=stubs.transcribe),
+    )
+    assert len(calls) == 1, calls
+    assert res_acoustic.cues[0].speaker == "SPEAKER_01"
+    assert res_acoustic.cues[0].speech_start_ms is not None
+    assert res_acoustic.cues[0].speech_start_ms >= 200
+
+    # 4. Diarization fails -> kept ASR cues are still refined once.
+    calls.clear()
+    stubs = _Stubs()
+    stubs.turns = DiarizationError("runtime down")
+    res_failed = tp.run_transcription(
+        media,
+        AsrConfig(),
+        DiarizationConfig(backend="nemotron_gguf"),
+        work_dir=tmp_path / "cache_fail",
+        runners=stubs.runners(),
+    )
+    assert len(calls) == 1, calls
+    assert res_failed.cues[0].speech_start_ms is not None
+    assert res_failed.cues[0].speech_start_ms >= 200
+
+    # 5. With Silero VAD installed, only one pass of Silero frames executes across the 2 split cues.
+    silero_spec = AUDIO_MODELS[SILERO_VAD_MODEL_ID]
+    silero_path = tmp_path / "models" / silero_spec.subdir / silero_spec.filename
+    silero_path.parent.mkdir(parents=True, exist_ok=True)
+    with silero_path.open("wb") as fh:
+        fh.truncate(silero_spec.size_bytes)
+
+    class _CountingSilero:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, _outputs: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+            self.calls += 1
+            frame = feeds["input"][0, 64:]
+            prob = 0.9 if float(np.sqrt(np.mean(frame * frame))) > 0.1 else 0.05
+            return [np.array([[prob]], dtype=np.float32), feeds["state"]]
+
+    silero = _CountingSilero()
+    monkeypatch.setattr(onnx_audio, "default_session_factory", lambda _path, _threads: silero)
+    calls.clear()
+    stubs = _Stubs()
+    tp.run_transcription(
+        media,
+        AsrConfig(),
+        DiarizationConfig(backend="nemotron_gguf"),
+        work_dir=tmp_path / "cache_silero",
+        data_dir=tmp_path,
+        runners=stubs.runners(),
+    )
+    assert len(calls) == 1, calls
+    # 2 split cues cover 1.6s + 1.6s = 3.2s -> ~100 frames (512 samples/frame @ 16kHz),
+    # never 3x (~300+ frames).
+    assert 50 <= silero.calls <= 130, silero.calls

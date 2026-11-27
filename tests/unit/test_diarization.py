@@ -593,3 +593,232 @@ def test_neural_labels_cluster_long_cues_and_attach_short_ones() -> None:
         assert _neural_cue_labels(cues, vectors, speech_ms, max_speakers) == [0, 1, 0, 0, 1, 1, 0]
     # Too few long cues to anchor on: every cue with audio is clustered.
     assert _neural_cue_labels(cues[:3], vectors[:3], [600] * 3, 0) == [0, 1, 2]
+
+
+def test_neural_cue_vectors_isolates_silero_errors_and_marks_empty_spans_non_anchor(
+    tmp_path: Path,
+) -> None:
+    from vienetts_app.core.diarization import _neural_cue_vectors
+
+    sr = 16_000
+    wav = write_wav_file(
+        np.full(sr * 10, 0.2, dtype=np.float32), tmp_path / "silero_iso.wav", sample_rate=sr
+    )
+    cues = [
+        Cue(1, 0, 2000, "speech 1"),
+        Cue(2, 2000, 4000, "vad error"),
+        Cue(3, 4000, 6000, "silent"),
+        Cue(4, 6000, 8000, "speech 2"),
+    ]
+    call_idx = [0]
+
+    class _FlakyVad:
+        def speech_spans(self, mono: np.ndarray, sample_rate: int) -> list[tuple[int, int]]:
+            idx = call_idx[0]
+            call_idx[0] += 1
+            if idx == 1:
+                raise RuntimeError("ORT slice crash")
+            if idx == 2:
+                return []
+            return [(0, sample_rate)]  # 1s of speech
+
+    embedded_lengths: list[int] = []
+
+    class _SpyEmbedder:
+        def embed(self, mono: np.ndarray, sample_rate: int) -> np.ndarray:
+            embedded_lengths.append(mono.size)
+            return np.ones(8, dtype=np.float32)
+
+    vectors, speech_ms = _neural_cue_vectors(
+        wav,
+        cues,
+        _SpyEmbedder(),
+        _FlakyVad(),  # type: ignore[arg-type]
+    )
+    assert vectors[0] is not None and speech_ms[0] == 1000
+    # Cue 1 fell back to full-cue audio instead of aborting diarization.
+    assert vectors[1] is not None and speech_ms[1] == 2000
+    # Cue 2 had empty Silero spans: marked (None, 0) non-anchor without calling embedder.
+    assert vectors[2] is None and speech_ms[2] == 0
+    assert vectors[3] is not None and speech_ms[3] == 1000
+    assert embedded_lengths == [sr, sr * 2, sr]
+
+
+def test_run_acoustic_diarization_opens_wav_once_for_24_dim_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vienetts_app.core.diarization import _run_acoustic_diarization
+
+    sr = 16_000
+    v_a = _synth_voice_tone(sr, 1.0, 110.0, 900.0)
+    v_b = _synth_voice_tone(sr, 1.0, 240.0, 2600.0)
+    wav = write_wav_file(np.tile(np.concatenate([v_a, v_b]), 5), tmp_path / "ac.wav", sr)
+    cues = [Cue(i + 1, i * 1000, (i + 1) * 1000, f"c{i}") for i in range(10)]
+
+    opened: list[str] = []
+
+    class CountingSoundFile(soundfile.SoundFile):
+        def __init__(self, file, *args, **kwargs) -> None:
+            opened.append(str(file))
+            super().__init__(file, *args, **kwargs)
+
+    monkeypatch.setattr(soundfile, "SoundFile", CountingSoundFile)
+    tagged = _run_acoustic_diarization(
+        wav, cues, DiarizationConfig(backend="acoustic", max_speakers=2), data_dir=tmp_path
+    )
+    assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_02"] * 5
+    # 1 open for acoustic feature extraction + 1 open for refine_cues_speech_bounds = 2 (not 11+).
+    assert len(opened) == 2, opened
+
+
+def test_diarization_sweeps_match_naive_quadratic_oracles() -> None:
+    from vienetts_app.core.diarization import apply_speaker_ceiling, remap_speakers_to_previous
+
+    rng = np.random.default_rng(20261127)
+    speakers = [f"SPEAKER_{k:02d}" for k in range(1, 7)]
+
+    # 1. assign_speakers_from_turns parity (unsorted cues, ties, gaps, overlapping turns).
+    for _ in range(10):
+        turns = []
+        for _t in range(30):
+            s = int(rng.integers(0, 40_000))
+            turns.append(RttmTurn(s, s + int(rng.integers(100, 3000)), str(rng.choice(speakers))))
+        cues = []
+        for i in range(40):
+            s = int(rng.integers(0, 45_000))
+            cues.append(Cue(i + 1, s, s + int(rng.integers(50, 2000)), f"c{i}"))
+        # Naive O(C*T) oracle
+        expected_spk = []
+        for cue in cues:
+            ov_map: dict[str, int] = {}
+            for turn in turns:
+                ov = min(cue.end_ms, turn.end_ms) - max(cue.start_ms, turn.start_ms)
+                if ov > 0:
+                    ov_map[turn.speaker] = ov_map.get(turn.speaker, 0) + ov
+            if ov_map:
+                expected_spk.append(max(ov_map.items(), key=lambda kv: kv[1])[0])
+            else:
+                mid = (cue.start_ms + cue.end_ms) // 2
+                nearest = min(turns, key=lambda t: min(abs(mid - t.start_ms), abs(mid - t.end_ms)))
+                expected_spk.append(nearest.speaker)
+        got = assign_speakers_from_turns(cues, turns)
+        assert [c.speaker for c in got] == expected_spk
+
+    # 2. apply_speaker_ceiling & remap_speakers_to_previous parity with overlapping cues.
+    prev_cues = [
+        Cue(
+            i + 1,
+            int(s := rng.integers(0, 20_000)),
+            int(s + rng.integers(200, 3000)),
+            f"p{i}",
+            speaker=str(rng.choice(speakers[:4])),
+        )
+        for i in range(50)
+    ]
+    upd_cues = [
+        Cue(
+            i + 1,
+            int(s := rng.integers(0, 20_000)),
+            int(s + rng.integers(200, 3000)),
+            f"u{i}",
+            speaker=str(rng.choice(speakers)),
+        )
+        for i in range(60)
+    ]
+
+    # Naive ceiling oracle
+    def naive_ceiling(cues_in: list[Cue], cap: int) -> list[str]:
+        ordered: list[str] = []
+        for c in cues_in:
+            if c.speaker not in ordered:
+                ordered.append(c.speaker)
+        durs = {lbl: 0 for lbl in ordered}
+        for c in cues_in:
+            durs[c.speaker] += max(1, c.end_ms - c.start_ms)
+        first = {lbl: i for i, lbl in enumerate(ordered)}
+        kept = sorted(ordered, key=lambda lbl: (-durs[lbl], first[lbl]))[:cap]
+        dropped = [lbl for lbl in ordered if lbl not in kept]
+        k_int = {lbl: [(c.start_ms, c.end_ms) for c in cues_in if c.speaker == lbl] for lbl in kept}
+        d_int = {
+            lbl: [(c.start_ms, c.end_ms) for c in cues_in if c.speaker == lbl] for lbl in dropped
+        }
+        merge_into: dict[str, str] = {}
+        for lbl in dropped:
+            best, best_ov = kept[0], -1
+            for cand in kept:
+                ov = sum(
+                    max(0, min(e1, e2) - max(s1, s2))
+                    for s1, e1 in d_int[lbl]
+                    for s2, e2 in k_int[cand]
+                )
+                if ov > best_ov:
+                    best_ov, best = ov, cand
+            merge_into[lbl] = best
+        mapping: dict[str, str] = {}
+        res = []
+        for c in cues_in:
+            lbl = merge_into.get(c.speaker, c.speaker)
+            if lbl not in mapping:
+                mapping[lbl] = f"SPEAKER_{len(mapping) + 1:02d}"
+            res.append(mapping[lbl])
+        return res
+
+    assert [c.speaker for c in apply_speaker_ceiling(upd_cues, 3)] == naive_ceiling(upd_cues, 3)
+
+    # Naive remap oracle
+    def naive_remap(prev: list[Cue], upd: list[Cue]) -> list[str]:
+        old_order = list(dict.fromkeys(c.speaker for c in prev if c.speaker))
+        new_order = list(dict.fromkeys(c.speaker for c in upd))
+        old_int = {
+            lbl: [(c.start_ms, c.end_ms) for c in prev if c.speaker == lbl] for lbl in old_order
+        }
+        new_int = {
+            lbl: [(c.start_ms, c.end_ms) for c in upd if c.speaker == lbl] for lbl in new_order
+        }
+        pairs = []
+        for ni, nl in enumerate(new_order):
+            for oi, ol in enumerate(old_order):
+                ov = sum(
+                    max(0, min(e1, e2) - max(s1, s2))
+                    for s1, e1 in new_int[nl]
+                    for s2, e2 in old_int[ol]
+                )
+                if ov > 0:
+                    pairs.append((ov, ni, oi))
+        pairs.sort(reverse=True)
+        assign: dict[str, str] = {}
+        used_old: set[str] = set()
+        for _ov, ni, oi in pairs:
+            nl, ol = new_order[ni], old_order[oi]
+            if nl not in assign and ol not in used_old:
+                assign[nl] = ol
+                used_old.add(ol)
+        used_nums = {int(lbl.rsplit("_", 1)[-1]) for lbl in old_order}
+        nxt = max(used_nums, default=0) + 1
+        for nl in new_order:
+            if nl not in assign:
+                while nxt in used_nums:
+                    nxt += 1
+                assign[nl] = f"SPEAKER_{nxt:02d}"
+                used_nums.add(nxt)
+        return [assign[c.speaker] for c in upd]
+
+    assert [c.speaker for c in remap_speakers_to_previous(prev_cues, upd_cues)] == naive_remap(
+        prev_cues, upd_cues
+    )
+
+    # 3. _neural_cue_labels with unsorted cues & None embeddings matches naive scan.
+    v0 = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    v1 = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    cues_n = [
+        Cue(1, 5000, 7000, "a"),
+        Cue(2, 1000, 3000, "b"),
+        Cue(3, 3900, 4100, "none_mid_tie"),  # mid=4000, equidistant to 6000 & 2000
+        Cue(4, 2100, 2300, "none_near_b"),
+        Cue(5, 6500, 6700, "none_near_a"),
+    ]
+    vecs_n: list[np.ndarray | None] = [v0, v1, None, None, None]
+    ms_n = [2000, 2000, 0, 0, 0]
+    labels_n = _neural_cue_labels(cues_n, vecs_n, ms_n, 2)
+    # Anchor 0 is label 0 (6000), anchor 1 is label 1 (2000); tie at 4000 goes to anchor 0.
+    assert labels_n == [0, 1, 0, 1, 0]

@@ -1219,3 +1219,465 @@ def test_openai_api_verbose_json_word_timestamps(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_whisper_cpp_passes_absolute_paths_when_inputs_are_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from vienetts_app.core.ai_models import AUDIO_MODELS, WHISPER_GGUF_MODELS, WHISPER_VAD_MODEL_ID
+
+    data_dir = tmp_path / "data"
+    bin_dir = data_dir / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True)
+    cli_path = bin_dir / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
+    record_file = tmp_path / "cli_record.json"
+    cli_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "rec = {'cwd': os.getcwd(), 'args': args}\n"
+        f"Path({str(record_file.as_posix())!r}).write_text(json.dumps(rec), encoding='utf-8')\n"
+        "for flag in ('-m', '-f', '-vm'):\n"
+        "    if flag in args:\n"
+        "        p = args[args.index(flag) + 1]\n"
+        "        assert os.path.isabs(p), f'{flag} not abs: {p}'\n"
+        "        assert Path(p).is_file(), f'{flag} missing: {p}'\n"
+        "of = args[args.index('-of') + 1]\n"
+        "assert os.path.isabs(of), f'-of not abs: {of}'\n"
+        "Path(of + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,000\\nOk.\\n\\n', encoding='utf-8'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+    model_dir = data_dir / "models" / "whisper"
+    model_dir.mkdir(parents=True)
+    with (model_dir / WHISPER_GGUF_MODELS["base"].filename).open("wb") as fh:
+        fh.truncate(WHISPER_GGUF_MODELS["base"].size_bytes)
+    vad_spec = AUDIO_MODELS[WHISPER_VAD_MODEL_ID]
+    with (model_dir / vad_spec.filename).open("wb") as fh:
+        fh.truncate(vad_spec.size_bytes)
+    write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "rel.wav", 16_000)
+
+    monkeypatch.chdir(tmp_path)
+    segments = asr._run_whisper_cpp(
+        Path("rel.wav"),
+        AsrConfig(backend="whisper_cpp", model="base", language="vi"),
+        out_dir=Path("out_rel"),
+        data_dir=Path("data"),
+    )
+    assert [s.text for s in segments] == ["Ok."]
+    rec = json.loads(record_file.read_text(encoding="utf-8"))
+    assert Path(rec["cwd"]).resolve() == bin_dir.resolve()
+
+
+def test_upload_whisper_api_url_validation_redirects_and_response_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav = write_wav_file(np.zeros(8_000, dtype=np.float32), tmp_path / "clip.wav", 16_000)
+
+    # 1. Invalid URL schemes / malformed URLs raise AsrError (never raw ValueError) and redact key.
+    for bad_url in (
+        "file:///etc/passwd",
+        "ftp://example.com/v1",
+        "not-a-url",
+        "http://127.0.0.1:9999/v1\r\nX-Injected: 1",
+    ):
+        with pytest.raises(AsrError) as caught:
+            asr._upload_whisper_api(
+                wav, AsrConfig(backend="openai_api", api_base_url=bad_url, api_key="top-secret")
+            )
+        assert "top-secret" not in str(caught.value)
+
+    # 2. Cross-origin 302 redirect strips Authorization header on the redirected request.
+    seen_target_auth: list[str | None] = []
+
+    class _TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            seen_target_auth.append(self.headers.get("Authorization"))
+            body = json.dumps({"segments": [{"start": 0.0, "end": 1.0, "text": "ok"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    target_srv = HTTPServer(("127.0.0.1", 0), _TargetHandler)
+    target_port = target_srv.server_port
+    redirect_mode = ["cross_origin"]
+    redirect_hits = [0]
+
+    class _RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            redirect_hits[0] += 1
+            if redirect_mode[0] == "cross_origin":
+                self.send_response(302)
+                self.send_header(
+                    "Location", f"http://127.0.0.1:{target_port}/v1/audio/transcriptions"
+                )
+                self.end_headers()
+            elif redirect_mode[0] == "unsafe_file":
+                self.send_response(302)
+                self.send_header("Location", "file:///etc/passwd")
+                self.end_headers()
+            else:
+                body = b'{"text": "' + (b"x" * 512) + b'"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    redir_srv = HTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    threading.Thread(target=target_srv.serve_forever, daemon=True).start()
+    threading.Thread(target=redir_srv.serve_forever, daemon=True).start()
+    cfg = AsrConfig(
+        backend="openai_api",
+        api_base_url=f"http://127.0.0.1:{redir_srv.server_port}/v1",
+        api_key="my-secret-token",
+    )
+    try:
+        segs = asr._upload_whisper_api(wav, cfg)
+        assert [s.text for s in segs] == ["ok"]
+        assert seen_target_auth == [None]
+
+        # 3. Unsafe redirect scheme fails immediately as AsrError without retries.
+        redirect_mode[0] = "unsafe_file"
+        redirect_hits[0] = 0
+        with pytest.raises(AsrError) as caught_redir:
+            asr._upload_whisper_api(wav, cfg)
+        assert redirect_hits[0] == 1
+        assert "my-secret-token" not in str(caught_redir.value)
+
+        # 4. Oversized response body fails immediately as AsrError without retries.
+        from vienetts_app.core import llm_client
+
+        monkeypatch.setattr(llm_client, "MAX_RESPONSE_BYTES", 128)
+        redirect_mode[0] = "oversize"
+        redirect_hits[0] = 0
+        with pytest.raises(AsrError):
+            asr._upload_whisper_api(wav, cfg)
+        assert redirect_hits[0] == 1
+    finally:
+        redir_srv.shutdown()
+        redir_srv.server_close()
+        target_srv.shutdown()
+        target_srv.server_close()
+
+
+def test_upload_whisper_api_malformed_timestamps_and_top_level_word_sweep(tmp_path: Path) -> None:
+    wav = write_wav_file(np.zeros(16_000 * 6, dtype=np.float32), tmp_path / "mal.wav", 16_000)
+    payload = {
+        "segments": [
+            {"start": None, "end": 1.0, "text": "null start"},
+            {"start": 0.5, "end": None, "text": "null end"},
+            {"start": True, "end": 2.0, "text": "bool start"},
+            {"start": 0.5, "end": False, "text": "bool end"},
+            {"start": "bad", "end": 2.0, "text": "bad start"},
+            {"start": "NaN", "end": 2.0, "text": "nan start"},
+            {"start": 0.5, "end": "Infinity", "text": "inf end"},
+            {"start": 2.0, "end": 3.5, "text": "Second valid."},
+            {"start": 0.2, "end": 1.5, "text": "First valid."},
+        ],
+        "words": [
+            {"word": "ghost1", "start": None, "end": 0.5},
+            {"word": "ghost2", "start": True, "end": 0.5},
+            {"word": "ghost3", "start": "NaN", "end": 0.5},
+            {"word": "Second", "start": 2.1, "end": 2.7},
+            {"word": "First", "start": 0.3, "end": 0.8},
+            {"word": "valid.", "start": 0.8, "end": 1.4},
+            {"word": "valid.", "start": 2.8, "end": 3.4},
+        ],
+    }
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        segs = asr._upload_whisper_api(
+            wav,
+            AsrConfig(
+                backend="openai_api", api_base_url=f"http://127.0.0.1:{server.server_port}/v1"
+            ),
+        )
+        assert [s.text for s in segs] == ["Second valid.", "First valid."]
+        assert segs[0].words == ((2100, 2700, "Second"), (2800, 3400, "valid."))
+        assert segs[1].words == ((300, 800, "First"), (800, 1400, "valid."))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_upload_whisper_api_retry_after_backoff_and_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav = write_wav_file(np.zeros(8_000, dtype=np.float32), tmp_path / "retry.wav", 16_000)
+    monkeypatch.setattr(asr, "_API_RETRY_BASE_DELAY_S", 0.01)
+    monkeypatch.setattr(asr, "_API_RETRY_MAX_DELAY_S", 0.05)
+    monkeypatch.setattr(asr, "_API_RETRY_POLL_S", 0.005)
+    responses: list[tuple[int, dict[str, str], bytes]] = []
+    timestamps: list[float] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            timestamps.append(time.monotonic())
+            code, hdrs, body = responses.pop(0)
+            self.send_response(code)
+            for k, v in hdrs.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    cfg = AsrConfig(backend="openai_api", api_base_url=f"http://127.0.0.1:{server.server_port}/v1")
+    ok_body = json.dumps({"segments": [{"start": 0.0, "end": 1.0, "text": "ok"}]}).encode()
+    try:
+        # 1. HTTP 429 with Retry-After backs off and retries cleanly.
+        responses[:] = [
+            (429, {"Retry-After": "0.03"}, b'{"error":{"message":"rate limit"}}'),
+            (200, {}, ok_body),
+        ]
+        timestamps.clear()
+        segs = asr._upload_whisper_api(wav, cfg)
+        assert [s.text for s in segs] == ["ok"]
+        assert len(timestamps) == 2
+        assert timestamps[1] - timestamps[0] >= 0.025
+
+        # 2. Cancel during a long Retry-After wait exits promptly with AsrCancelled.
+        monkeypatch.setattr(asr, "_API_RETRY_MAX_DELAY_S", 10.0)
+        cancel_flag = threading.Event()
+        responses[:] = [
+            (429, {"Retry-After": "10"}, b'{"error":{"message":"slow down"}}'),
+            (200, {}, ok_body),
+        ]
+        timestamps.clear()
+
+        def cancel_soon() -> bool:
+            if timestamps:
+                cancel_flag.set()
+            return cancel_flag.is_set()
+
+        started = time.monotonic()
+        with pytest.raises(AsrCancelled):
+            asr._upload_whisper_api(wav, cfg, cancel_check=cancel_soon)
+        assert time.monotonic() - started < 1.0
+        assert len(timestamps) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_run_openai_whisper_api_single_soundfile_handle_and_chunk_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import soundfile as sf
+
+    monkeypatch.setattr(asr, "API_CHUNK_SECONDS", 5)
+    monkeypatch.setattr(asr.tempfile, "tempdir", str(tmp_path))
+    wav = write_wav_file(np.full(13 * 16_000, 0.2, dtype=np.float32), tmp_path / "src.wav", 16_000)
+
+    source_opens: list[str] = []
+
+    class CountingSoundFile(sf.SoundFile):
+        def __init__(self, file, *args, **kwargs) -> None:
+            if Path(str(file)) == wav:
+                source_opens.append(str(file))
+            super().__init__(file, *args, **kwargs)
+
+    monkeypatch.setattr(sf, "SoundFile", CountingSoundFile)
+    seen_existing_chunks: list[list[str]] = []
+
+    def fake_upload(path: Path, config: AsrConfig, **kwargs: object) -> list[RawSegment]:
+        seen_existing_chunks.append(sorted(p.name for p in path.parent.glob("chunk_*.wav")))
+        return [RawSegment(0, 1000, path.stem)]
+
+    monkeypatch.setattr(asr, "_upload_whisper_api", fake_upload)
+    segs = asr._run_openai_whisper_api(wav, AsrConfig(backend="openai_api"))
+    assert len(segs) == 3
+    # Source WAV opened once across chunk planning + all 3 chunk slices.
+    assert len(source_opens) == 1, source_opens
+    # Each previous chunk WAV was unlinked immediately after its upload completed.
+    assert seen_existing_chunks == [["chunk_0000.wav"], ["chunk_0001.wav"], ["chunk_0002.wav"]]
+
+
+def test_asr_cache_key_auto_mode_tracks_resolved_backend_and_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS
+
+    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "auto_cache.wav", 16_000)
+    work_dir = tmp_path / "work"
+    auto_cfg = AsrConfig(backend="auto", model="base", language="vi")
+
+    # 1. Start with only faster_whisper available.
+    fw_calls: list[str] = []
+
+    class _FakeSeg:
+        start, end, text = 0.0, 1.0, "Từ faster-whisper."
+
+    class _FakeModel:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            fw_calls.append(model_size)
+
+        def transcribe(self, path: str, **kwargs: object):
+            return iter([_FakeSeg()]), types.SimpleNamespace(duration=1.0, language="vi")
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = _FakeModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+
+    key_fw = _asr_cache_key(wav, auto_cfg, data_dir=tmp_path)
+    cues_fw = transcribe_media_to_cues(wav, auto_cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert [c.text for c in cues_fw] == ["Từ faster-whisper."]
+
+    # 2. Install whisper-cli + base model -> auto cache key must change and re-run whisper.cpp!
+    bin_dir = tmp_path / "runtimes" / "whisper" / "bin"
+    bin_dir.mkdir(parents=True)
+    cli_path = bin_dir / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
+    cli_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "of = args[args.index('-of') + 1]\n"
+        "Path(of + '.srt').write_text(\n"
+        "    '1\\n00:00:00,000 --> 00:00:01,000\\nTừ whisper.cpp.\\n\\n', encoding='utf-8'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+    model_dir = tmp_path / "models" / "whisper"
+    model_dir.mkdir(parents=True)
+    with (model_dir / WHISPER_GGUF_MODELS["base"].filename).open("wb") as fh:
+        fh.truncate(WHISPER_GGUF_MODELS["base"].size_bytes)
+
+    key_cpp = _asr_cache_key(wav, auto_cfg, data_dir=tmp_path)
+    assert key_cpp != key_fw
+    cues_cpp = transcribe_media_to_cues(wav, auto_cfg, work_dir=work_dir, data_dir=tmp_path)
+    assert [c.text for c in cues_cpp] == ["Từ whisper.cpp."]
+
+
+def test_merge_whisper_tokens_splits_cjk_and_handles_byte_splits() -> None:
+    # 1. Separate CJK tokens without ASCII spaces stay distinct timed words.
+    cjk_tokens = [
+        {"text": "今", "offsets": {"from": 0, "to": 200}, "p": 0.9},
+        {"text": "天", "offsets": {"from": 200, "to": 400}, "p": 0.9},
+        {"text": "天", "offsets": {"from": 400, "to": 600}, "p": 0.9},
+        {"text": "气", "offsets": {"from": 600, "to": 800}, "p": 0.9},
+        {"text": "好", "offsets": {"from": 800, "to": 1000}, "p": 0.9},
+        {"text": "。", "offsets": {"from": 1000, "to": 1100}, "p": 0.9},
+    ]
+    words, _ = asr._merge_whisper_tokens(cjk_tokens, 0, 1200)
+    assert words == (
+        (0, 200, "今"),
+        (200, 400, "天"),
+        (400, 600, "天"),
+        (600, 800, "气"),
+        (800, 1100, "好。"),
+    )
+
+    # 2. A single multi-character CJK token splits into timed CJK units (not one blob).
+    multi_cjk = [{"text": "今天天气非常好。", "offsets": {"from": 0, "to": 1400}, "p": 0.9}]
+    multi_words, _ = asr._merge_whisper_tokens(multi_cjk, 0, 1400)
+    assert [w[2] for w in multi_words] == ["今", "天", "天", "气", "非", "常", "好。"]
+    assert multi_words[0][0] == 0 and multi_words[-1][1] == 1400
+
+    # 3. Pre-b5454 UTF-8 byte-split CJK characters rejoin before splitting.
+    raw = _whisper_json_full(
+        [
+            (
+                0,
+                600,
+                "你好".encode(),
+                [
+                    (b"\xe4\xbd", 0, 150, 0.9),
+                    (b"\xa0", 150, 300, 0.9),
+                    (b"\xe5\xa5", 300, 450, 0.9),
+                    (b"\xbd", 450, 600, 0.9),
+                ],
+            )
+        ]
+    )
+    segs, _ = asr._parse_whisper_json(raw)
+    assert segs[0].words == ((0, 300, "你"), (300, 600, "好"))
+
+    # 4. Long spaceless CJK segment splits cleanly under normalize_asr_segments_to_cues.
+    long_cjk = "今天天气非常好我们一起去公园散步吧。" * 5
+    cues = normalize_asr_segments_to_cues(
+        [RawSegment(0, 10_000, long_cjk)], max_chars=40, max_duration_ms=7000
+    )
+    assert len(cues) >= 3
+    assert all(len(c.text) <= 40 for c in cues)
+
+
+def test_faster_whisper_cache_release_generation_and_post_load_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asr, "_FASTER_WHISPER_CACHE", {})
+    wav = write_wav_file(np.zeros(16_000, dtype=np.float32), tmp_path / "race.wav", 16_000)
+    cfg = AsrConfig(backend="faster_whisper", model="base", language="vi")
+
+    # 1. If release_asr_models() runs while WhisperModel is loading, the finished model
+    # must NOT be inserted back into _FASTER_WHISPER_CACHE.
+    transcribe_calls = [0]
+
+    class _ReleasingModel:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            asr.release_asr_models()
+
+        def transcribe(self, path: str, **kwargs: object):
+            transcribe_calls[0] += 1
+            seg = types.SimpleNamespace(start=0.0, end=1.0, text="Xin chào")
+            return iter([seg]), types.SimpleNamespace(duration=1.0, language="vi")
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = _ReleasingModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+    segs = asr._run_faster_whisper(wav, cfg)
+    assert [s.text for s in segs] == ["Xin chào"]
+    assert not asr._FASTER_WHISPER_CACHE
+
+    # 2. If cancel_check turns True while WhisperModel is loading, _run_faster_whisper
+    # raises AsrCancelled right after load without calling model.transcribe().
+    cancelled = [False]
+    transcribe_calls[0] = 0
+
+    class _CancellingModel:
+        def __init__(self, model_size: str, **kwargs: object) -> None:
+            cancelled[0] = True
+
+        def transcribe(self, path: str, **kwargs: object):
+            transcribe_calls[0] += 1
+            return iter([]), types.SimpleNamespace(duration=1.0, language="vi")
+
+    fake_mod.WhisperModel = _CancellingModel  # type: ignore[attr-defined]
+    with pytest.raises(AsrCancelled):
+        asr._run_faster_whisper(wav, cfg, cancel_check=lambda: cancelled[0])
+    assert transcribe_calls[0] == 0

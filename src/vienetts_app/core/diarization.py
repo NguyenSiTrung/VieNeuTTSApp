@@ -39,7 +39,7 @@ from vienetts_app.core.ai_models import (
     resolve_audiocpp_cli,
     resolve_diarization_model_path,
 )
-from vienetts_app.core.audio import read_wav_range, write_wav_file
+from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.audio_prep import (
     AudioPrepCancelled,
     AudioPrepError,
@@ -54,7 +54,7 @@ from vienetts_app.core.onnx_audio import (
 )
 from vienetts_app.core.processes import CliCancelled, CliTimeout, run_cli
 from vienetts_app.core.subtitles import Cue
-from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
+from vienetts_app.core.video_dub import VideoDubCancelled, VideoDubError, extract_video_audio
 
 logger = logging.getLogger(__name__)
 
@@ -349,32 +349,60 @@ def assign_speakers_from_turns(
     *,
     wav_path: str | Path | None = None,
     data_dir: Path | None = None,
+    refine_bounds: bool = True,
 ) -> list[Cue]:
     """Assign each ``Cue`` to the RTTM speaker turn with maximum temporal overlap."""
     if not cues:
         return []
     if not turns:
         out = [replace(c, speaker=c.speaker or "SPEAKER_01") for c in cues]
-        return refine_cues_speech_bounds(out, wav_path, data_dir=data_dir)
+        return refine_cues_speech_bounds(out, wav_path, data_dir=data_dir) if refine_bounds else out
 
-    out = []
-    for cue in cues:
+    cue_order = sorted(range(len(cues)), key=lambda i: cues[i].start_ms)
+    pending = sorted(enumerate(turns), key=lambda pair: (pair[1].start_ms, pair[0]))
+    next_turn = 0
+    live: list[tuple[int, RttmTurn]] = []
+    ep_pos: list[int] | None = None
+    ep_info: list[tuple[int, str]] | None = None
+    out = list(cues)
+
+    for i in cue_order:
+        cue = cues[i]
+        while next_turn < len(pending) and pending[next_turn][1].start_ms < cue.end_ms:
+            live.append(pending[next_turn])
+            next_turn += 1
+        live = [pair for pair in live if pair[1].end_ms > cue.start_ms]
+
+        active = [pair for pair in live if pair[1].start_ms < cue.end_ms]
+        if len(active) > 1:
+            active.sort(key=lambda pair: pair[0])
         overlap_by_spk: dict[str, int] = {}
-        for turn in turns:
+        for _idx, turn in active:
             ov = min(cue.end_ms, turn.end_ms) - max(cue.start_ms, turn.start_ms)
             if ov > 0:
                 overlap_by_spk[turn.speaker] = overlap_by_spk.get(turn.speaker, 0) + ov
+
         if overlap_by_spk:
             best_spk = max(overlap_by_spk.items(), key=lambda kv: kv[1])[0]
         else:
-            # Nearest turn in time
+            # Nearest turn in time via O(log T) bisect over turn endpoints.
+            if ep_pos is None or ep_info is None:
+                best_at_pos: dict[int, tuple[int, str]] = {}
+                for idx, turn in enumerate(turns):
+                    for pos in (turn.start_ms, turn.end_ms):
+                        if pos not in best_at_pos:
+                            best_at_pos[pos] = (idx, turn.speaker)
+                ep_pos = sorted(best_at_pos)
+                ep_info = [best_at_pos[pos] for pos in ep_pos]
             mid = (cue.start_ms + cue.end_ms) // 2
-            nearest = min(
-                turns,
-                key=lambda t: min(abs(mid - t.start_ms), abs(mid - t.end_ms)),
-            )
-            best_spk = nearest.speaker
-        out.append(replace(cue, speaker=best_spk))
+            j = bisect.bisect_left(ep_pos, mid)
+            cands = [k for k in (j - 1, j) if 0 <= k < len(ep_pos)]
+            best_k = min(cands, key=lambda k: (abs(mid - ep_pos[k]), ep_info[k][0]))
+            best_spk = ep_info[best_k][1]
+        out[i] = replace(cue, speaker=best_spk)
+
+    if not refine_bounds:
+        return out
     return refine_cues_speech_bounds(out, wav_path, turns=turns, data_dir=data_dir)
 
 
@@ -432,19 +460,31 @@ def split_segments_at_turns(
     if not turns:
         return list(segments)
     ordered = sorted(turns, key=lambda t: (t.start_ms, t.end_ms))
+    seg_order = sorted(range(len(segments)), key=lambda i: segments[i].start_ms)
+    next_turn = 0
+    live: list[RttmTurn] = []
+    parts_by_idx: list[list[_SegmentT]] = [[] for _ in range(len(segments))]
+    min_w = max(1, min_words)
+    for i in seg_order:
+        seg = segments[i]
+        while next_turn < len(ordered) and ordered[next_turn].start_ms < seg.end_ms:
+            live.append(ordered[next_turn])
+            next_turn += 1
+        live = [t for t in live if t.end_ms > seg.start_ms]
+        near = [t for t in live if t.start_ms < seg.end_ms]
+        parts_by_idx[i] = _split_segment_at_turns(seg, near, min_part_ms, min_w)
     out: list[_SegmentT] = []
-    for seg in segments:
-        out.extend(_split_segment_at_turns(seg, ordered, min_part_ms, max(1, min_words)))
+    for parts in parts_by_idx:
+        out.extend(parts)
     return out
 
 
 def _split_segment_at_turns(
-    seg: _SegmentT, turns: Sequence[RttmTurn], min_part_ms: int, min_words: int
+    seg: _SegmentT, near: Sequence[RttmTurn], min_part_ms: int, min_words: int
 ) -> list[_SegmentT]:
     words = tuple(seg.words or ())
     if len(words) < 2 * min_words:
         return [seg]
-    near = [t for t in turns if t.end_ms > seg.start_ms and t.start_ms < seg.end_ms]
     if len({t.speaker for t in near}) < 2:
         return [seg]
     labels = _label_words(words, near)
@@ -511,7 +551,7 @@ def _split_segment_at_turns(
                 start_ms=start,
                 end_ms=end,
                 text=text,
-                speaker=_max_overlap_speaker(start, end, turns) or label,
+                speaker=_max_overlap_speaker(start, end, near) or label,
                 words=part_words,
                 speech_start_ms=speech_start,
                 speech_end_ms=speech_end,
@@ -526,15 +566,33 @@ def _label_words(words: Sequence[WordTiming], turns: Sequence[RttmTurn]) -> list
     Words outside every turn inherit their neighbour's label. ``None`` when no
     word overlaps any turn.
     """
-    labels: list[str | None] = []
-    prev: str | None = None
-    for w_start, w_end, _ in words:
+    n_words = len(words)
+    if n_words == 0:
+        return None
+    w_order = sorted(range(n_words), key=lambda i: words[i][0])
+    pending = sorted(enumerate(turns), key=lambda pair: (pair[1].start_ms, pair[0]))
+    next_turn = 0
+    live: list[tuple[int, RttmTurn]] = []
+    overlaps: list[dict[str, int]] = [{} for _ in range(n_words)]
+    for i in w_order:
+        w_start, w_end, _ = words[i]
         w_stop = max(w_end, w_start + 1)
-        overlap: dict[str, int] = {}
-        for turn in turns:
+        while next_turn < len(pending) and pending[next_turn][1].start_ms < w_stop:
+            live.append(pending[next_turn])
+            next_turn += 1
+        live = [pair for pair in live if pair[1].end_ms > w_start]
+        active = [pair for pair in live if pair[1].start_ms < w_stop]
+        if len(active) > 1:
+            active.sort(key=lambda pair: pair[0])
+        ov_map = overlaps[i]
+        for _idx, turn in active:
             ov = min(w_stop, turn.end_ms) - max(w_start, turn.start_ms)
             if ov > 0:
-                overlap[turn.speaker] = overlap.get(turn.speaker, 0) + ov
+                ov_map[turn.speaker] = ov_map.get(turn.speaker, 0) + ov
+
+    labels: list[str | None] = []
+    prev: str | None = None
+    for overlap in overlaps:
         if overlap:
             best = max(overlap.values())
             leaders = [spk for spk, ov in overlap.items() if ov == best]
@@ -578,6 +636,52 @@ def _relabel_in_order(cues: Sequence[Cue]) -> list[Cue]:
     return out
 
 
+def _pair_interval_overlaps(
+    left: dict[str, list[tuple[int, int]]],
+    right: dict[str, list[tuple[int, int]]],
+) -> dict[tuple[str, str], int]:
+    """Exact pairwise overlap sums between ``left`` and ``right`` interval groups in O(N log N)."""
+    events: list[tuple[int, int, str, int]] = []
+    for key, spans in left.items():
+        for s, e in spans:
+            if e > s:
+                events.append((s, 0, key, 1))
+                events.append((e, 0, key, -1))
+    for key, spans in right.items():
+        for s, e in spans:
+            if e > s:
+                events.append((s, 1, key, 1))
+                events.append((e, 1, key, -1))
+    if not events:
+        return {}
+    events.sort(key=lambda ev: ev[0])
+    active_left: dict[str, int] = {}
+    active_right: dict[str, int] = {}
+    overlaps: dict[tuple[str, str], int] = {}
+    prev_t = events[0][0]
+    i = 0
+    n = len(events)
+    while i < n:
+        t = events[i][0]
+        if t > prev_t and active_left and active_right:
+            dt = t - prev_t
+            for lk, lc in active_left.items():
+                for rk, rc in active_right.items():
+                    pair = (lk, rk)
+                    overlaps[pair] = overlaps.get(pair, 0) + lc * rc * dt
+        while i < n and events[i][0] == t:
+            _, side, key, delta = events[i]
+            active = active_left if side == 0 else active_right
+            nxt = active.get(key, 0) + delta
+            if nxt > 0:
+                active[key] = nxt
+            else:
+                active.pop(key, None)
+            i += 1
+        prev_t = t
+    return overlaps
+
+
 def apply_speaker_ceiling(cues: Sequence[Cue], max_speakers: int) -> list[Cue]:
     """Enforce ``max_speakers`` as a ceiling by merging surplus speakers.
 
@@ -612,7 +716,7 @@ def apply_speaker_ceiling(cues: Sequence[Cue], max_speakers: int) -> list[Cue]:
     kept_set = set(kept)
     dropped = [label for label in ordered if label not in kept_set]
 
-    kept_intervals = {label: [] for label in kept}
+    kept_intervals: dict[str, list[tuple[int, int]]] = {label: [] for label in kept}
     dropped_intervals: dict[str, list[tuple[int, int]]] = {label: [] for label in dropped}
     for cue in cues:
         label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
@@ -621,16 +725,13 @@ def apply_speaker_ceiling(cues: Sequence[Cue], max_speakers: int) -> list[Cue]:
         else:
             dropped_intervals[label].append((cue.start_ms, cue.end_ms))
 
+    pair_overlaps = _pair_interval_overlaps(dropped_intervals, kept_intervals)
     merge_into: dict[str, str] = {}
     for label in dropped:
         best = kept[0]
         best_overlap = -1
         for candidate in kept:
-            overlap = sum(
-                max(0, min(e1, e2) - max(s1, s2))
-                for s1, e1 in dropped_intervals[label]
-                for s2, e2 in kept_intervals[candidate]
-            )
+            overlap = pair_overlaps.get((label, candidate), 0)
             if overlap > best_overlap:
                 best_overlap = overlap
                 best = candidate
@@ -676,14 +777,11 @@ def remap_speakers_to_previous(previous: Sequence[Cue], updated: Sequence[Cue]) 
         label = (cue.speaker or "SPEAKER_01").strip() or "SPEAKER_01"
         new_intervals[label].append((cue.start_ms, cue.end_ms))
 
+    pair_overlaps = _pair_interval_overlaps(new_intervals, old_intervals)
     pairs: list[tuple[int, int, int]] = []
     for ni, new_label in enumerate(new_order):
         for oi, old_label in enumerate(old_order):
-            overlap = sum(
-                max(0, min(e1, e2) - max(s1, s2))
-                for s1, e1 in new_intervals[new_label]
-                for s2, e2 in old_intervals[old_label]
-            )
+            overlap = pair_overlaps.get((new_label, old_label), 0)
             if overlap > 0:
                 pairs.append((overlap, ni, oi))
     pairs.sort(reverse=True)
@@ -1264,40 +1362,13 @@ def extract_speaker_turns(
 
     if progress_cb is not None:
         progress_cb(_CLI_PROGRESS_START)
+    cli_abs = cli.absolute()
+    model_abs = model_path.absolute()
+    wav_abs = wav_path.absolute()
     backend_dev = _resolve_cli_backend(config, data_dir)
     threads = _resolve_threads(config)
-    turns_temp = tempfile.TemporaryDirectory(prefix="vienetts_turns_")
-    turns_out = Path(turns_temp.name) / "turns.json"
-    if work_dir is not None:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        turns_out = work_dir / f".nemotron_turns_{uuid.uuid4().hex}.json"
-
-    cmd = cli_command(
-        cli,
-        "--task",
-        "diar",
-        "--family",
-        "nemotron_3_diar",
-        "--model",
-        str(model_path),
-        "--backend",
-        backend_dev,
-        "--threads",
-        str(threads),
-        "--audio",
-        str(wav_path),
-        "--turns-out",
-        str(turns_out),
-    )
     use_f32 = backend_dev == "cpu" or (backend_dev == "best" and _runtime_is_cpu_only(data_dir))
-    if use_f32:
-        # Verified upstream: forcing f32 on CPU is ~2x faster than the native
-        # mixed q8/BF16 path, and matches the NeMo parity reference. "best"
-        # resolves to the CPU backend on a CPU-only install, so it needs the
-        # same option or the default device (auto) runs at half speed.
-        cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
-
-    duration_s = _wav_duration_s(wav_path)
+    duration_s = _wav_duration_s(wav_abs)
     timeout_s = (
         float(config.timeout_s)
         if float(config.timeout_s) > 0
@@ -1318,10 +1389,49 @@ def extract_speaker_turns(
             meter.tick()
         return cancel_check is not None and cancel_check()
 
+    turns_temp: tempfile.TemporaryDirectory[str] | None = None
+    turns_out: Path | None = None
     try:
+        if work_dir is not None:
+            try:
+                work_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise DiarizationError(f"Không thể tạo thư mục tạm cho audio.cpp: {exc}") from exc
+            turns_out = work_dir.absolute() / f".nemotron_turns_{uuid.uuid4().hex}.json"
+        else:
+            turns_temp = tempfile.TemporaryDirectory(prefix="vienetts_turns_")
+            turns_out = Path(turns_temp.name).absolute() / "turns.json"
+
+        # Absolute paths because audiocpp_cli runs with cwd=cli_abs.parent so it finds
+        # co-located ggml/CUDA/Vulkan shared libraries.
+        cmd = cli_command(
+            cli_abs,
+            "--task",
+            "diar",
+            "--family",
+            "nemotron_3_diar",
+            "--model",
+            str(model_abs),
+            "--backend",
+            backend_dev,
+            "--threads",
+            str(threads),
+            "--audio",
+            str(wav_abs),
+            "--turns-out",
+            str(turns_out),
+        )
+        if use_f32:
+            # Verified upstream: forcing f32 on CPU is ~2x faster than the native
+            # mixed q8/BF16 path, and matches the NeMo parity reference. "best"
+            # resolves to the CPU backend on a CPU-only install, so it needs the
+            # same option or the default device (auto) runs at half speed.
+            cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
+
         try:
             res = run_cli(
                 cmd,
+                cwd=cli_abs.parent,
                 timeout=timeout_s,
                 cancel_check=_poll,
                 on_stdout_line=None if meter is None else meter.on_line,
@@ -1364,9 +1474,12 @@ def extract_speaker_turns(
             progress_cb(1.0)
         return turns
     finally:
-        turns_temp.cleanup()
-        with contextlib.suppress(OSError):
-            turns_out.unlink(missing_ok=True)
+        if turns_temp is not None:
+            with contextlib.suppress(OSError):
+                turns_temp.cleanup()
+        if turns_out is not None:
+            with contextlib.suppress(OSError):
+                turns_out.unlink(missing_ok=True)
 
 
 def _run_nemotron_gguf_diarization(
@@ -1410,10 +1523,12 @@ def _neural_cue_vectors(
     progress_cb: Callable[[float], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[list[np.ndarray | None], list[int]]:
-    """Per cue: its speaker embedding (``None`` without audio) and its speech ms.
+    """Per cue: its speaker embedding (``None`` without speech) and its speech ms.
 
-    Each cue is embedded from its Silero speech only (the whole cue without
-    Silero or when it finds none).
+    Each cue is embedded from its Silero speech only. Per-cue Silero errors fall
+    back to the full cue so one bad slice never aborts diarization; an explicit
+    empty ``spans == []`` marks the cue a non-anchor ``(None, 0)`` rather than
+    feeding silence into speaker clustering.
     """
     import soundfile as sf
 
@@ -1427,10 +1542,24 @@ def _neural_cue_vectors(
             mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
             vec = None
             if mono is not None:
-                spans = vad.speech_spans(mono, sr) if vad is not None else []
-                if spans:
-                    mono = np.concatenate([mono[s:e] for s, e in spans])
-                vec = embedder.embed(mono, sr)
+                if vad is not None:
+                    try:
+                        spans = vad.speech_spans(mono, sr)
+                    except Exception as exc:  # noqa: BLE001 - ORT raises its own types
+                        logger.warning(
+                            "Silero VAD failed on cue %d, embedding full cue: %s",
+                            cue.index,
+                            exc,
+                        )
+                        vec = embedder.embed(mono, sr)
+                    else:
+                        if spans:
+                            mono = np.concatenate([mono[s:e] for s, e in spans])
+                            vec = embedder.embed(mono, sr)
+                        else:
+                            vec = None
+                else:
+                    vec = embedder.embed(mono, sr)
             vectors.append(vec)
             speech_ms.append(0 if vec is None else int(mono.size * 1000 // sr))
             if progress_cb is not None:
@@ -1475,13 +1604,21 @@ def _neural_cue_labels(
     for i in known:
         if i not in by_index:
             by_index[i] = int(np.argmax(centroids @ vectors[i]))
-    mids = [(cues[i].start_ms + cues[i].end_ms) / 2.0 for i in anchors]
+    best_by_mid: dict[float, int] = {}
+    for k, anchor_idx in enumerate(anchors):
+        a_mid = (cues[anchor_idx].start_ms + cues[anchor_idx].end_ms) / 2.0
+        if a_mid not in best_by_mid:
+            best_by_mid[a_mid] = k
+    anchor_mids = sorted(best_by_mid)
+    anchor_pos_k = [best_by_mid[m] for m in anchor_mids]
     labels = []
     for i, cue in enumerate(cues):
         if i not in by_index:
             mid = (cue.start_ms + cue.end_ms) / 2.0
-            j = min(range(len(anchors)), key=lambda k: abs(mids[k] - mid))
-            by_index[i] = anchor_labels[j]
+            pos = bisect.bisect_left(anchor_mids, mid)
+            cands = [p for p in (pos - 1, pos) if 0 <= p < len(anchor_mids)]
+            best_p = min(cands, key=lambda p: (abs(anchor_mids[p] - mid), anchor_pos_k[p]))
+            by_index[i] = anchor_labels[anchor_pos_k[best_p]]
         labels.append(by_index[i])
     return _first_appearance_order(labels)
 
@@ -1523,19 +1660,17 @@ def _run_acoustic_diarization(
             logger.warning("Speaker embedding failed, using the 24-dim fallback: %s", exc)
 
     if cluster_ids is None:
-        info = sf.info(str(wav_path))
-        sr = int(info.samplerate)
-        total_frames = int(info.frames)
         embeddings: list[np.ndarray] = []
-        for i, cue in enumerate(cues):
-            if cancel_check is not None and cancel_check():
-                raise DiarizationCancelled("Đã hủy phân tách người nói.")
-            start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
-            stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
-            samples, _ = read_wav_range(wav_path, start_f, stop_f)
-            embeddings.append(_cue_acoustic_embedding(samples, sr))
-            if progress_cb is not None:
-                progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
+        with sf.SoundFile(str(wav_path)) as wav_file:
+            sr = int(wav_file.samplerate)
+            for i, cue in enumerate(cues):
+                if cancel_check is not None and cancel_check():
+                    raise DiarizationCancelled("Đã hủy phân tách người nói.")
+                mono = _read_mono_ms(wav_file, cue.start_ms, cue.end_ms)
+                samples = np.empty(0, dtype=np.float32) if mono is None else mono
+                embeddings.append(_cue_acoustic_embedding(samples, sr))
+                if progress_cb is not None:
+                    progress_cb(min(0.7, (i + 1) / max(1, len(cues)) * 0.7))
         emb_matrix = np.vstack(embeddings) if embeddings else np.zeros((0, 24), dtype=np.float32)
         cluster_ids = _cluster_embeddings(
             emb_matrix,
@@ -1875,6 +2010,8 @@ def extract_speaker_reference_wav(
     ``work_dir`` (the media cache ASR fills; converted here if missing). A
     video without ``work_dir`` gets the cue-only choice.
     """
+    if cancel_check is not None and cancel_check():
+        raise DiarizationCancelled("Đã hủy trích xuất mẫu giọng.")
     src = Path(media_path)
     scoring_wav: Path | None = None
     if src.is_file():
@@ -1897,6 +2034,8 @@ def extract_speaker_reference_wav(
     start_ms, end_ms, transcript = sel
     if not src.is_file():
         raise DiarizationError(f"Không tìm thấy tệp nguồn: {src.name}")
+    if cancel_check is not None and cancel_check():
+        raise DiarizationCancelled("Đã hủy trích xuất mẫu giọng.")
 
     target = Path(output_wav)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1927,7 +2066,10 @@ def extract_speaker_reference_wav(
             start_ms=start_ms,
             end_ms=end_ms,
             data_dir=data_dir,
+            cancel_check=cancel_check,
         )
+    except VideoDubCancelled as exc:
+        raise DiarizationCancelled(str(exc)) from exc
     except VideoDubError as exc:
         raise DiarizationError(str(exc)) from exc
     return target, transcript

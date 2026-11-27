@@ -483,3 +483,75 @@ def test_gpu_runtime_keeps_native_weight_type(tmp_path: Path) -> None:
         )
         lines = args_file.read_text(encoding="utf-8").splitlines()
         assert lines[lines.index("--backend") + 1] == backend, (variant, device)
+
+
+def test_extract_speaker_turns_sets_cwd_and_cleans_turns_temp_on_early_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = tmp_path / "cli_env.json"
+    cli = _install_fake_cli(
+        tmp_path / "data",
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        f"Path({str(record.as_posix())!r}).write_text(\n"
+        "    json.dumps({'cwd': os.getcwd(), 'args': args}), encoding='utf-8'\n"
+        ")\n"
+        "for flag in ('--model', '--audio', '--turns-out'):\n"
+        "    p = args[args.index(flag) + 1]\n"
+        "    assert os.path.isabs(p), f'{flag} not abs: {p}'\n"
+        "out = args[args.index('--turns-out') + 1]\n"
+        f"Path(out).write_text({TURNS_TWO_SPEAKERS!r}, encoding='utf-8')\n",
+    )
+    write_wav_file(np.zeros(16_000 * 3, dtype=np.float32), tmp_path / "rel_in.wav", 16_000)
+
+    # 1. With relative wav_path & data_dir, audiocpp_cli runs with cwd=cli.parent and abs paths.
+    monkeypatch.chdir(tmp_path)
+    turns = extract_speaker_turns(
+        Path("rel_in.wav"),
+        DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+        data_dir=Path("data"),
+    )
+    assert len(turns) == 2
+    rec = json.loads(record.read_text(encoding="utf-8"))
+    assert Path(rec["cwd"]).resolve() == cli.parent.resolve()
+
+    # 2. Early error (uncreatable work_dir) must not leak vienetts_turns_* temp directories.
+    temp_root = tmp_path / "tmp_root"
+    temp_root.mkdir()
+    monkeypatch.setattr("vienetts_app.core.diarization.tempfile.tempdir", str(temp_root))
+    bad_work_dir = tmp_path / "not_a_dir"
+    bad_work_dir.write_text("file", encoding="utf-8")
+    with pytest.raises((OSError, DiarizationError)):
+        extract_speaker_turns(
+            Path("rel_in.wav"),
+            DiarizationConfig(backend="nemotron_gguf", device="cpu"),
+            work_dir=bad_work_dir,
+            data_dir=Path("data"),
+        )
+    assert not list(temp_root.glob("vienetts_turns_*"))
+
+
+def test_extract_speaker_reference_wav_forwards_cancel_check_to_video_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vienetts_app.core import diarization
+    from vienetts_app.core.video_dub import VideoDubCancelled
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"fake-mp4")
+    cues = [Cue(1, 0, 4000, "Một câu thoại đủ dài.", speaker="SPEAKER_01")]
+    seen_cancel: list[object] = []
+
+    def fake_extract(*_args: object, **kwargs: object) -> Path:
+        seen_cancel.append(kwargs.get("cancel_check"))
+        raise VideoDubCancelled("cancelled in ffmpeg")
+
+    monkeypatch.setattr(diarization, "extract_video_audio", fake_extract)
+    cancel_fn = lambda: False  # noqa: E731
+    with pytest.raises(DiarizationCancelled):
+        extract_speaker_reference_wav(
+            video, cues, "SPEAKER_01", tmp_path / "ref.wav", cancel_check=cancel_fn
+        )
+    assert seen_cancel == [cancel_fn]

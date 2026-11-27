@@ -11,11 +11,16 @@ Supports:
 from __future__ import annotations
 
 import contextlib
+import datetime
+import email.utils
+import http.client
+import importlib.util
 import json
 import math
 import os
 import platform
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -47,11 +52,24 @@ from vienetts_app.core.audio_prep import (
     ensure_source_16k,
 )
 from vienetts_app.core.diarization import refine_cues_speech_bounds
-from vienetts_app.core.llm_client import RequestCancelled, cancellable_request, http_error_detail
+from vienetts_app.core.llm_client import (
+    RequestCancelled,
+    ResponseTooLargeError,
+    UnsafeRedirectError,
+    cancellable_request,
+    http_error_detail,
+    validate_http_url,
+)
 from vienetts_app.core.processes import CliCancelled, CliTimeout, find_executable, run_cli
 from vienetts_app.core.subtitles import NON_SPEECH_LABELS, Cue, clean_cue_text, parse_cues
 
-_CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？,;，；:：])\s+")
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?…,;:])\s+|(?<=[。！？，；：])\s*")
+# Han ideographs + Japanese kana (scripts written without ASCII spaces).
+_CJK_CHAR_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    r"\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fc-\u30ff\uff66-\uff9f"
+    r"\U00020000-\U0002fa1f]"
+)
 _WHISPER_PP_RE = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
 _NON_SPEECH_TOKEN_RE = re.compile(
     r"(?:\[\s*(?:blank_audio|music|applause|laughter|silence|noise|inaudible|sound|sfx|cheering|cough|sigh)\s*\]"
@@ -61,8 +79,13 @@ _NON_SPEECH_TOKEN_RE = re.compile(
 )
 # whisper.cpp special tokens (``[_BEG_]``, ``[_TT_150]``, ``[_SOT_]``…) carry no text.
 _WHISPER_SPECIAL_TOKEN_RE = re.compile(r"\[_[^\]]*\]")
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)\S+")
 MODEL_SAMPLE_RATE = 16_000
 API_CHUNK_SECONDS = 600
+_API_MAX_RETRIES = 2
+_API_RETRY_BASE_DELAY_S = 0.5
+_API_RETRY_MAX_DELAY_S = 30.0
+_API_RETRY_POLL_S = 0.1
 ASR_CACHE_FILENAME = "asr_segments_cache.json"
 # Bumped whenever the backends' output changes (2: whisper.cpp ``-mc 0``/VAD/JSON-full
 # words), so a segments cache written by an older version re-runs instead of being reused.
@@ -75,6 +98,7 @@ _clock: Callable[[], float] = time.monotonic
 _fw_lock = threading.Lock()
 _fw_active = 0  # runs currently using the cached model
 _fw_last_used = 0.0  # _clock() when the last run started or ended
+_fw_generation = 0  # incremented on release so in-flight loads do not re-populate cache
 
 
 class AsrError(RuntimeError):
@@ -118,6 +142,8 @@ class _RunReport:
 
     language: str = ""
     notes: list[str] = field(default_factory=list)
+    backend: str = ""
+    model: str = ""
 
     def set_language(self, value: Any) -> None:
         if not self.language and isinstance(value, str) and value.strip():
@@ -142,11 +168,30 @@ class RawSegment:
 _SCORE_FIELDS = ("avg_logprob", "no_speech_prob", "compression_ratio")
 
 
+def _parse_finite_float(value: Any) -> float | None:
+    """Parse a finite non-boolean numeric value as float, else ``None``."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return num if math.isfinite(num) else None
+
+
 def _opt_float(value: Any) -> float | None:
-    """A backend's numeric score as float; None when absent or not a number."""
+    """A backend's numeric score as float; None when absent or not a finite number."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value)
+    num = float(value)
+    return num if math.isfinite(num) else None
+
+
+def _redact_secret(text: str, secret: str = "") -> str:
+    redacted = _BEARER_RE.sub(r"\1[redacted]", text)
+    if secret:
+        redacted = redacted.replace(secret, "[redacted]")
+    return redacted
 
 
 def _strip_non_speech(text: str) -> str:
@@ -167,32 +212,51 @@ def _extract_words(
     parsed: list[tuple[int, int, str]] = []
     for item in raw_words:
         if isinstance(item, tuple | list) and len(item) >= 3:
-            try:
-                w_start = int(round(float(item[0])))
-                w_end = int(round(float(item[1])))
-                w_txt = _strip_non_speech(str(item[2] or ""))
-            except (TypeError, ValueError):
+            s_val = _parse_finite_float(item[0])
+            e_val = _parse_finite_float(item[1])
+            if s_val is None or e_val is None:
                 continue
+            w_start = int(round(s_val))
+            w_end = int(round(e_val))
+            w_txt = _strip_non_speech(str(item[2] or ""))
         elif isinstance(item, dict):
             w_raw = str(item.get("word") or item.get("text") or "").strip()
             w_txt = _strip_non_speech(w_raw)
-            try:
-                if "start_ms" in item or "end_ms" in item:
-                    w_start = int(round(float(item.get("start_ms", seg_start_ms))))
-                    w_end = int(round(float(item.get("end_ms", w_start))))
-                else:
-                    w_start = int(round(float(item.get("start", seg_start_ms / 1000.0)) * 1000))
-                    w_end = int(round(float(item.get("end", w_start / 1000.0)) * 1000))
-            except (TypeError, ValueError):
-                continue
+            if "start_ms" in item or "end_ms" in item:
+                s_val = (
+                    _parse_finite_float(item["start_ms"])
+                    if "start_ms" in item
+                    else float(seg_start_ms)
+                )
+                if s_val is None:
+                    continue
+                e_val = _parse_finite_float(item["end_ms"]) if "end_ms" in item else s_val
+                if e_val is None:
+                    continue
+                w_start = int(round(s_val))
+                w_end = int(round(e_val))
+            else:
+                s_val = (
+                    _parse_finite_float(item["start"]) if "start" in item else seg_start_ms / 1000.0
+                )
+                if s_val is None:
+                    continue
+                e_val = _parse_finite_float(item["end"]) if "end" in item else s_val
+                if e_val is None:
+                    continue
+                w_start = int(round(s_val * 1000))
+                w_end = int(round(e_val * 1000))
         else:
             w_raw = str(getattr(item, "word", None) or getattr(item, "text", None) or "").strip()
             w_txt = _strip_non_speech(w_raw)
-            try:
-                w_start = int(round(float(getattr(item, "start", seg_start_ms / 1000.0)) * 1000))
-                w_end = int(round(float(getattr(item, "end", w_start / 1000.0)) * 1000))
-            except (TypeError, ValueError):
+            s_val = _parse_finite_float(getattr(item, "start", seg_start_ms / 1000.0))
+            if s_val is None:
                 continue
+            e_val = _parse_finite_float(getattr(item, "end", s_val))
+            if e_val is None:
+                continue
+            w_start = int(round(s_val * 1000))
+            w_end = int(round(e_val * 1000))
         if not w_txt:
             continue
         w_start = max(seg_start_ms, min(seg_end_ms, w_start))
@@ -301,7 +365,8 @@ def _split_long_segment(
     if max_duration_ms > 0 and duration > max_duration_ms:
         eff_max_chars = min(max_chars, max(12, int(len(text) * max_duration_ms / duration)))
 
-    # Split at clause boundaries first, then word boundaries if still over eff_max_chars.
+    # Split at clause boundaries first, then word boundaries (or character boundaries
+    # for spaceless CJK clauses) if still over eff_max_chars.
     clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(text) if c.strip()]
     chunks: list[str] = []
     current = ""
@@ -313,6 +378,13 @@ def _split_long_segment(
             words = clause.split()
             buf = ""
             for w in words:
+                if len(w) > eff_max_chars:
+                    if buf:
+                        chunks.append(buf)
+                        buf = ""
+                    for pos in range(0, len(w), eff_max_chars):
+                        chunks.append(w[pos : pos + eff_max_chars])
+                    continue
                 cand = f"{buf} {w}".strip() if buf else w
                 if len(cand) > eff_max_chars and buf:
                     chunks.append(buf)
@@ -323,11 +395,20 @@ def _split_long_segment(
                 chunks.append(buf)
         elif not current:
             current = clause
-        elif len(current) + 1 + len(clause) <= eff_max_chars:
-            current = f"{current} {clause}"
         else:
-            chunks.append(current)
-            current = clause
+            sep = (
+                ""
+                if (
+                    _CJK_CHAR_RE.search(clause[0])
+                    and (_CJK_CHAR_RE.search(current[-1]) or current[-1] in "。！？，；：、")
+                )
+                else " "
+            )
+            if len(current) + len(sep) + len(clause) <= eff_max_chars:
+                current = f"{current}{sep}{clause}"
+            else:
+                chunks.append(current)
+                current = clause
     if current:
         chunks.append(current)
 
@@ -742,9 +823,12 @@ def _resolve_threads(config: AsrConfig) -> int:
 def release_asr_models() -> None:
     """Drop the cached faster-whisper model (app shutdown, memory pressure).
 
-    A run still using it keeps its own reference until it finishes.
+    A run still using it keeps its own reference until it finishes; an in-flight
+    model load observes the bumped generation and skips re-inserting into cache.
     """
+    global _fw_generation
     with _fw_lock:
+        _fw_generation += 1
         _FASTER_WHISPER_CACHE.clear()
 
 
@@ -754,9 +838,11 @@ def release_idle_asr_models(*, idle_s: float = FASTER_WHISPER_IDLE_S) -> bool:
     Polled — at the start of every transcription and from the app's periodic
     tick — rather than by a timer thread. Returns True when a model was released.
     """
+    global _fw_generation
     with _fw_lock:
         if not _FASTER_WHISPER_CACHE or _fw_active or _clock() - _fw_last_used < idle_s:
             return False
+        _fw_generation += 1
         _FASTER_WHISPER_CACHE.clear()
         return True
 
@@ -849,6 +935,7 @@ def _transcribe_faster_whisper(
 ) -> list[RawSegment]:
     cache_key = (faster_whisper.WhisperModel, model_name, fw_device, compute_type, threads)
     with _fw_lock:
+        load_gen = _fw_generation
         model = _FASTER_WHISPER_CACHE.get(cache_key)
         if model is None:
             _FASTER_WHISPER_CACHE.clear()  # free the previous model before loading another
@@ -860,7 +947,13 @@ def _transcribe_faster_whisper(
             cpu_threads=threads,
         )
         with _fw_lock:
-            _FASTER_WHISPER_CACHE[cache_key] = model
+            if _fw_generation == load_gen:
+                _FASTER_WHISPER_CACHE[cache_key] = model
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+    if report is not None:
+        report.backend = "faster_whisper"
+        report.model = model_name
     segments_iter, info = model.transcribe(
         str(wav_path),
         language=lang,
@@ -916,16 +1009,101 @@ def _rejoin_utf8(text: str) -> str:
         return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
 
 
+def _has_incomplete_utf8_tail(text: str) -> bool:
+    """True when ``text`` ends with surrogateescape raw bytes forming an incomplete UTF-8 char."""
+    if not text or not (0xDC80 <= ord(text[-1]) <= 0xDCFF):
+        return False
+    try:
+        text.encode("utf-8", "surrogateescape").decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _starts_with_utf8_continuation(text: str) -> bool:
+    return bool(text) and 0xDC80 <= ord(text[0]) <= 0xDCBF
+
+
+def _is_cjk_char(ch: str) -> bool:
+    return bool(ch) and _CJK_CHAR_RE.match(ch) is not None
+
+
+def _ends_with_cjk(text: str) -> bool:
+    rejoined = _rejoin_utf8(text).rstrip()
+    return bool(rejoined) and _is_cjk_char(rejoined[-1])
+
+
+def _split_cjk_piece(start_ms: int, end_ms: int, text: str) -> list[tuple[int, int, str]]:
+    """Split a piece containing CJK script into timed units (1 per CJK char, Latin intact)."""
+    if not _CJK_CHAR_RE.search(text):
+        return [(start_ms, end_ms, text)]
+    units: list[str] = []
+    leading_punct = ""
+    latin_buf = ""
+
+    def _flush_latin() -> None:
+        nonlocal latin_buf, leading_punct
+        if latin_buf:
+            units.append(leading_punct + latin_buf)
+            leading_punct = ""
+            latin_buf = ""
+
+    for ch in text:
+        if ch.isspace():
+            _flush_latin()
+            continue
+        if _is_cjk_char(ch):
+            _flush_latin()
+            units.append(leading_punct + ch)
+            leading_punct = ""
+        elif ch.isalnum():
+            latin_buf += ch
+        else:
+            if latin_buf:
+                latin_buf += ch
+            elif units:
+                units[-1] += ch
+            else:
+                leading_punct += ch
+    _flush_latin()
+    if leading_punct:
+        if units:
+            units[-1] += leading_punct
+        else:
+            units.append(leading_punct)
+    if len(units) <= 1:
+        return [(start_ms, end_ms, units[0] if units else text)]
+
+    total = max(1, sum(len(u) for u in units))
+    span = max(0, end_ms - start_ms)
+    out: list[tuple[int, int, str]] = []
+    acc = 0
+    cursor = start_ms
+    for idx, unit in enumerate(units):
+        acc += len(unit)
+        u_end = (
+            end_ms
+            if idx == len(units) - 1
+            else min(end_ms, start_ms + int(round(span * acc / total)))
+        )
+        u_end = max(cursor, u_end)
+        out.append((cursor, u_end, unit))
+        cursor = u_end
+    return out
+
+
 def _merge_whisper_tokens(
     tokens: Any, seg_start_ms: int, seg_end_ms: int
 ) -> tuple[tuple[tuple[int, int, str], ...], float | None]:
     """whisper.cpp ``-ojf`` tokens → ``(words, avg_logprob)``.
 
-    A token that opens with a space starts a word; any other text token (a
-    sub-word piece, punctuation, the tail of a split UTF-8 character) extends
-    the current one. Special tokens are skipped. Words are clamped to the
-    segment; without per-token offsets there are no words. ``avg_logprob`` is
-    the mean log-probability of the text tokens.
+    A token that opens with whitespace (or starts/follows a CJK character once
+    any split UTF-8 byte sequence is complete) starts a word; sub-word Latin
+    pieces, punctuation, and UTF-8 byte continuations extend the current one.
+    Multi-character CJK tokens are split into per-character timed units so long
+    CJK segments without ASCII spaces remain splittable. Special tokens are
+    skipped. Words are clamped to the segment; without per-token offsets there
+    are no words. ``avg_logprob`` is the mean log-probability of the text tokens.
     """
     pieces: list[list[Any]] = []  # [start_ms, end_ms, raw text]
     logprobs: list[float] = []
@@ -945,15 +1123,29 @@ def _merge_whisper_tokens(
         except (KeyError, TypeError, ValueError):
             timed = False
             t0 = t1 = 0
-        if pieces and not text.startswith(" "):
+        if not pieces:
+            pieces.append([t0, t1, text])
+        elif _has_incomplete_utf8_tail(pieces[-1][2]) or _starts_with_utf8_continuation(text):
             pieces[-1][1] = max(pieces[-1][1], t1)
             pieces[-1][2] += text
-        else:
+        elif (
+            text[0].isspace()
+            or _is_cjk_char(text[0])
+            or (
+                _ends_with_cjk(pieces[-1][2])
+                and (text[0].isalnum() or 0xDCC0 <= ord(text[0]) <= 0xDCFF)
+            )
+        ):
             pieces.append([t0, t1, text])
+        else:
+            pieces[-1][1] = max(pieces[-1][1], t1)
+            pieces[-1][2] += text
     avg_logprob = sum(logprobs) / len(logprobs) if logprobs else None
     if not timed:
         return (), avg_logprob
-    raw_words = [(start, end, _rejoin_utf8(text)) for start, end, text in pieces]
+    raw_words: list[tuple[int, int, str]] = []
+    for start, end, raw_text in pieces:
+        raw_words.extend(_split_cjk_piece(start, end, _rejoin_utf8(raw_text)))
     return _extract_words(raw_words, seg_start_ms, seg_end_ms), avg_logprob
 
 
@@ -1071,9 +1263,14 @@ def _run_whisper_cpp(
             "Chưa cài runtime whisper.cpp (whisper-cli). "
             "Hãy bấm 'Cài runtime whisper.cpp' trong Cài đặt → Mô hình."
         )
+    requested_model = (config.model or "base").strip() or "base"
+    choice = _whisper_model_choice(requested_model, data_dir)
     model_path = resolve_whisper_model(
         config.model, data_dir, notes=report.notes if report is not None else None
     )
+    if report is not None:
+        report.backend = "whisper_cpp"
+        report.model = (choice[1] or requested_model) if choice is not None else requested_model
 
     if progress_cb is not None:
         progress_cb(0.2, "Đang chạy whisper.cpp…")
@@ -1081,7 +1278,10 @@ def _run_whisper_cpp(
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise AsrError(f"Không thể tạo thư mục tạm cho whisper.cpp: {exc}") from exc
-    # Absolute: whisper-cli runs with cwd=binary.parent.
+    # Absolute paths everywhere because whisper-cli runs with cwd=binary_abs.parent.
+    binary_abs = binary.absolute()
+    model_abs = model_path.absolute()
+    wav_abs = wav_path.absolute()
     out_prefix = out_dir.absolute() / f".whisper_out_{uuid.uuid4().hex}"
     json_out = Path(f"{out_prefix}.json")
     srt_out = Path(f"{out_prefix}.srt")
@@ -1090,11 +1290,11 @@ def _run_whisper_cpp(
     # -mc 0: no previous-text context, which stops repetition loops from carrying over
     # windows. -ojf: segments plus per-token offsets/probabilities; -osrt is the fallback.
     cmd = cli_command(
-        binary,
+        binary_abs,
         "-m",
-        str(model_path),
+        str(model_abs),
         "-f",
-        str(wav_path),
+        str(wav_abs),
         "-l",
         lang,
         "-t",
@@ -1110,11 +1310,11 @@ def _run_whisper_cpp(
     )
     vad_model = audio_model_path(WHISPER_VAD_MODEL_ID, data_dir)
     if vad_model is not None:
-        cmd.extend(["--vad", "-vm", str(vad_model)])
+        cmd.extend(["--vad", "-vm", str(vad_model.absolute())])
     if (config.device or "auto").strip().lower() == "cpu":
         cmd.append("-ng")
 
-    duration_s = _wav_duration_s(wav_path)
+    duration_s = _wav_duration_s(wav_abs)
     timeout_s = (
         float(config.timeout_s)
         if float(config.timeout_s) > 0
@@ -1133,7 +1333,7 @@ def _run_whisper_cpp(
         try:
             res = run_cli(
                 cmd,
-                cwd=binary.parent,
+                cwd=binary_abs.parent,
                 timeout=timeout_s,
                 cancel_check=cancel_check,
                 on_stderr_line=_on_stderr_line,
@@ -1164,6 +1364,121 @@ def _run_whisper_cpp(
                 out_file.unlink(missing_ok=True)
 
 
+def _whisper_api_url(config: AsrConfig) -> str:
+    """Validate and build the ``/audio/transcriptions`` HTTP(S) endpoint URL."""
+    raw_base = config.api_base_url if config.api_base_url else "http://localhost:11434/v1"
+    if not raw_base.strip():
+        raise AsrError("Chưa cấu hình địa chỉ máy chủ Whisper API.")
+    api_key = config.api_key.strip()
+    try:
+        base_url = validate_http_url(raw_base).rstrip("/")
+        return validate_http_url(f"{base_url}/audio/transcriptions")
+    except ValueError as exc:
+        raise AsrError(
+            _redact_secret(f"Địa chỉ máy chủ ASR không hợp lệ: {exc}", api_key)
+        ) from None
+
+
+def _parse_retry_after(header_value: str | None) -> float | None:
+    """Parse HTTP ``Retry-After`` seconds or HTTP-date into a non-negative delay."""
+    if not header_value:
+        return None
+    raw = header_value.strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        pass
+    else:
+        return seconds if math.isfinite(seconds) and seconds >= 0.0 else None
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, dt.timestamp() - time.time())
+
+
+def _wait_retry_delay(delay_s: float, cancel_check: Callable[[], bool] | None) -> None:
+    """Wait ``delay_s`` via ``Event.wait``, waking promptly if ``cancel_check`` turns true."""
+    if cancel_check is not None and cancel_check():
+        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+    if delay_s <= 0:
+        return
+    stopper = threading.Event()
+    deadline = _clock() + delay_s
+    poll_s = max(0.001, float(_API_RETRY_POLL_S))
+    while True:
+        if cancel_check is not None and cancel_check():
+            raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        remaining = deadline - _clock()
+        if remaining <= 0:
+            return
+        stopper.wait(min(remaining, poll_s))
+
+
+def _attach_top_level_words(
+    segments: list[RawSegment], top_words_raw: list[Any]
+) -> list[RawSegment]:
+    """Attach top-level API ``words`` to segments without words in O((S + W) log(S + W))."""
+    need_words = [i for i, seg in enumerate(segments) if not seg.words]
+    if not need_words or not top_words_raw:
+        return segments
+    parsed_words: list[tuple[int, int, int, int, int, str]] = []
+    for w_idx, w_item in enumerate(top_words_raw):
+        if not isinstance(w_item, dict):
+            continue
+        w_txt = _strip_non_speech(str(w_item.get("word") or w_item.get("text") or "").strip())
+        if not w_txt:
+            continue
+        if "start" in w_item:
+            ws_s = _parse_finite_float(w_item["start"])
+            if ws_s is None:
+                continue
+        else:
+            ws_s = -1.0
+        if "end" in w_item:
+            we_s = _parse_finite_float(w_item["end"])
+            if we_s is None:
+                continue
+        else:
+            we_s = ws_s
+        ws = int(round(ws_s * 1000))
+        we = int(round(we_s * 1000))
+        parsed_words.append((ws, max(ws + 1, we), w_idx, ws, we, w_txt))
+    if not parsed_words:
+        return segments
+
+    parsed_words.sort(key=lambda w: (w[0], w[2]))
+    out = list(segments)
+    w_ptr = 0
+    active: list[tuple[int, int, int, int, int, str]] = []
+    for seg_idx in sorted(need_words, key=lambda i: out[i].start_ms):
+        seg = out[seg_idx]
+        while w_ptr < len(parsed_words) and parsed_words[w_ptr][0] < seg.end_ms:
+            active.append(parsed_words[w_ptr])
+            w_ptr += 1
+        active = [w for w in active if w[1] > seg.start_ms]
+        matched = [w for w in active if w[0] < seg.end_ms]
+        if matched:
+            matched.sort(key=lambda w: w[2])
+            clamped = tuple(
+                (
+                    (c_s := max(seg.start_ms, min(seg.end_ms, raw_ws))),
+                    max(c_s, min(seg.end_ms, raw_we)),
+                    w_txt,
+                )
+                for _ws, _we_eff, _oi, raw_ws, raw_we, w_txt in matched
+            )
+            sp_start, sp_end = _clamp_speech_bounds(seg.start_ms, seg.end_ms, None, None, clamped)
+            out[seg_idx] = replace(
+                seg, words=clamped, speech_start_ms=sp_start, speech_end_ms=sp_end
+            )
+    return out
+
+
 def _upload_whisper_api(
     wav_path: Path,
     config: AsrConfig,
@@ -1176,10 +1491,8 @@ def _upload_whisper_api(
 ) -> list[RawSegment]:
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
-    base_url = (config.api_base_url or "http://localhost:11434/v1").strip().rstrip("/")
-    if not base_url:
-        raise AsrError("Chưa cấu hình địa chỉ máy chủ Whisper API.")
-    url = f"{base_url}/audio/transcriptions"
+    url = _whisper_api_url(config)
+    api_key = config.api_key.strip()
     boundary = f"----VieNeuAsrBoundary{uuid.uuid4().hex}"
     model_name = (config.api_model or "whisper-1").strip() or "whisper-1"
 
@@ -1217,33 +1530,61 @@ def _upload_whisper_api(
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         "Accept": "application/json",
     }
-    if config.api_key.strip():
-        headers["Authorization"] = f"Bearer {config.api_key.strip()}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     if progress_cb is not None:
         progress_cb(0.3, "Đang gửi âm thanh tới máy chủ ASR…")
 
-    req = Request(url, data=body, headers=headers, method="POST")
-    for attempt in range(2):
+    max_retries = max(0, int(_API_MAX_RETRIES))
+    raw_bytes = b""
+    for attempt in range(max_retries + 1):
         if cancel_check is not None and cancel_check():
             raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+        retry_after = ""
         try:
+            req = Request(url, data=body, headers=dict(headers), method="POST")
             raw_bytes = cancellable_request(req, timeout=timeout, cancel_check=cancel_check)
             break
         except RequestCancelled:
             raise AsrCancelled("Đã hủy nhận diện giọng nói.") from None
+        except (ValueError, UnsafeRedirectError) as exc:
+            raise AsrError(
+                _redact_secret(f"Địa chỉ máy chủ ASR không hợp lệ ({url}): {exc}", api_key)
+            ) from None
+        except ResponseTooLargeError as exc:
+            raise AsrError(
+                _redact_secret(
+                    f"Phản hồi từ máy chủ ASR vượt quá giới hạn kích thước ({url}): {exc}",
+                    api_key,
+                )
+            ) from None
         except HTTPError as exc:
-            message = f"Máy chủ ASR HTTP {exc.code} ({url}): {http_error_detail(exc)}"
+            try:
+                detail = http_error_detail(exc, secret=api_key)
+                retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
+            finally:
+                with contextlib.suppress(Exception):
+                    exc.close()
+            message = f"Máy chủ ASR HTTP {exc.code} ({url}): {detail}"
             transient = exc.code in (408, 409, 429) or exc.code >= 500
-        except (URLError, TimeoutError, OSError) as exc:
+        except (URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
             message = f"Không thể kết nối máy chủ ASR ({url}): {exc}"
             transient = True
-        if not transient or attempt == 1:
-            key = config.api_key.strip()
-            raise AsrError(message.replace(key, "[redacted]") if key else message) from None
+        if not transient or attempt >= max_retries:
+            raise AsrError(_redact_secret(message, api_key)) from None
+        delay = min(float(_API_RETRY_BASE_DELAY_S) * (2**attempt), float(_API_RETRY_MAX_DELAY_S))
+        advised = _parse_retry_after(retry_after)
+        if advised is not None:
+            delay = min(advised, float(_API_RETRY_MAX_DELAY_S))
+        _wait_retry_delay(delay, cancel_check)
 
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+
+    if report is not None:
+        report.backend = "openai_api"
+        report.model = model_name
 
     raw_resp = raw_bytes.decode("utf-8", errors="replace")
     stripped = raw_resp.lstrip()
@@ -1274,23 +1615,22 @@ def _upload_whisper_api(
             txt = str(item.get("text") or "").strip()
             if not txt:
                 continue
-            start_ms = int(round(float(item.get("start", 0.0)) * 1000))
-            end_ms = max(
-                start_ms + 1,
-                int(round(float(item.get("end", start_ms / 1000.0 + 1.0)) * 1000)),
-            )
+            if "start" in item:
+                start_s = _parse_finite_float(item["start"])
+                if start_s is None:
+                    continue
+            else:
+                start_s = 0.0
+            if "end" in item:
+                end_s = _parse_finite_float(item["end"])
+                if end_s is None:
+                    continue
+            else:
+                end_s = start_s + 1.0
+            start_ms = max(0, int(round(start_s * 1000)))
+            end_ms = max(start_ms + 1, int(round(end_s * 1000)))
             spk = str(item.get("speaker") or "").strip()
             seg_words = _extract_words(item.get("words"), start_ms, end_ms)
-            if not seg_words and isinstance(top_words_raw, list) and top_words_raw:
-                matching_top = []
-                for w_item in top_words_raw:
-                    if isinstance(w_item, dict):
-                        with contextlib.suppress(TypeError, ValueError):
-                            ws = int(round(float(w_item.get("start", -1.0)) * 1000))
-                            we = int(round(float(w_item.get("end", ws / 1000.0)) * 1000))
-                            if min(end_ms, max(ws + 1, we)) > max(start_ms, ws):
-                                matching_top.append(w_item)
-                seg_words = _extract_words(matching_top, start_ms, end_ms)
             sp_start, sp_end = _clamp_speech_bounds(start_ms, end_ms, None, None, seg_words)
             out.append(
                 RawSegment(
@@ -1304,14 +1644,14 @@ def _upload_whisper_api(
                     **{name: _opt_float(item.get(name)) for name in _SCORE_FIELDS},
                 )
             )
+        if isinstance(top_words_raw, list) and top_words_raw:
+            out = _attach_top_level_words(out, top_words_raw)
     elif (
         isinstance(payload, dict)
         and isinstance(payload.get("text"), str)
         and payload["text"].strip()
     ):
-        dur_s = 0.0
-        with contextlib.suppress(TypeError, ValueError):
-            dur_s = float(payload.get("duration") or 0.0)
+        dur_s = _parse_finite_float(payload.get("duration")) or 0.0
         if dur_s <= 0.0:
             dur_s = _wav_duration_s(wav_path)
         if dur_s <= 0.0:
@@ -1335,12 +1675,23 @@ def _upload_whisper_api(
     return out
 
 
-def _plan_api_chunks(wav_path: Path) -> list[tuple[int, int]]:
-    import soundfile as sf
+def _read_mono_frames(wav_file: Any, start_frame: int, stop_frame: int) -> np.ndarray:
+    total = int(wav_file.frames)
+    lo = max(0, min(total, int(start_frame)))
+    hi = max(lo, min(total, int(stop_frame)))
+    if hi <= lo:
+        return np.empty(0, dtype=np.float32)
+    wav_file.seek(lo)
+    block = wav_file.read(hi - lo, dtype="float32", always_2d=True)
+    if block.size == 0:
+        return np.empty(0, dtype=np.float32)
+    mono = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1, dtype=np.float32)
+    return np.ascontiguousarray(mono, dtype=np.float32)
 
-    info = sf.info(str(wav_path))
-    rate = int(info.samplerate)
-    total = int(info.frames)
+
+def _plan_api_chunks_from_handle(wav_file: Any) -> list[tuple[int, int]]:
+    rate = int(wav_file.samplerate)
+    total = int(wav_file.frames)
     limit = max(1, int(API_CHUNK_SECONDS * rate))
     frame_size = max(1, int(rate * 0.2))
     chunks: list[tuple[int, int]] = []
@@ -1348,7 +1699,7 @@ def _plan_api_chunks(wav_path: Path) -> list[tuple[int, int]]:
     while total - start > limit:
         boundary = start + limit
         search_start = max(start, boundary - 15 * rate)
-        samples, _ = read_wav_range(wav_path, search_start, boundary)
+        samples = _read_mono_frames(wav_file, search_start, boundary)
         count = len(samples) // frame_size
         if count:
             frames = samples[: count * frame_size].reshape(count, frame_size)
@@ -1365,6 +1716,15 @@ def _plan_api_chunks(wav_path: Path) -> list[tuple[int, int]]:
     return chunks
 
 
+def _plan_api_chunks(wav_path: Path, *, wav_file: Any | None = None) -> list[tuple[int, int]]:
+    if wav_file is not None:
+        return _plan_api_chunks_from_handle(wav_file)
+    import soundfile as sf
+
+    with sf.SoundFile(str(wav_path)) as fh:
+        return _plan_api_chunks_from_handle(fh)
+
+
 def _run_openai_whisper_api(
     wav_path: Path,
     config: AsrConfig,
@@ -1376,66 +1736,81 @@ def _run_openai_whisper_api(
     """Transcribe through ``/audio/transcriptions``, in silence-cut chunks for long audio."""
     if cancel_check is not None and cancel_check():
         raise AsrCancelled("Đã hủy nhận diện giọng nói.")
-    chunks = _plan_api_chunks(wav_path)
-    if len(chunks) <= 1 and wav_path.stat().st_size < 24_900_000:
-        timeout = max(120.0, 0.5 * _wav_duration_s(wav_path))
-        return _upload_whisper_api(
-            wav_path,
-            config,
-            progress_cb=progress_cb,
-            cancel_check=cancel_check,
-            timeout=timeout,
-            report=report,
-        )
+    _whisper_api_url(config)
 
     import soundfile as sf
 
-    rate = int(sf.info(str(wav_path)).samplerate)
-    result: list[RawSegment] = []
-    prompt = ""
-    with tempfile.TemporaryDirectory(prefix="vieneu-asr-") as directory:
-        for index, (start, stop) in enumerate(chunks):
-            if cancel_check is not None and cancel_check():
-                raise AsrCancelled("Đã hủy nhận diện giọng nói.")
-            path = Path(directory) / f"chunk_{index:04d}.wav"
-            with StreamingWavWriter(path, sample_rate=rate) as writer:
-                for position in range(start, stop, rate * 10):
-                    samples, _ = read_wav_range(wav_path, position, min(stop, position + rate * 10))
-                    writer.write(samples)
-            if progress_cb is not None:
-                progress_cb(index / len(chunks), "Đang gửi âm thanh tới máy chủ ASR…")
-            segments = _upload_whisper_api(
-                path,
-                config,
-                cancel_check=cancel_check,
-                prompt=prompt,
-                timeout=max(120.0, 0.5 * (stop - start) / rate),
-                report=report,
-            )
-            prompt = " ".join(segment.text for segment in segments)[-200:]
-            offset = int(round(start * 1000 / rate))
-            result.extend(
-                replace(
-                    segment,
-                    start_ms=segment.start_ms + offset,
-                    end_ms=segment.end_ms + offset,
-                    words=tuple((a + offset, b + offset, text) for a, b, text in segment.words),
-                    speech_start_ms=(
-                        segment.speech_start_ms + offset
-                        if segment.speech_start_ms is not None
-                        else None
-                    ),
-                    speech_end_ms=(
-                        segment.speech_end_ms + offset
-                        if segment.speech_end_ms is not None
-                        else None
-                    ),
-                )
-                for segment in segments
-            )
-            if progress_cb is not None:
-                progress_cb((index + 1) / len(chunks), "Đang nhận diện giọng nói…")
-    return result
+    with sf.SoundFile(str(wav_path)) as src_wav:
+        chunks = _plan_api_chunks(wav_path, wav_file=src_wav)
+        rate = int(src_wav.samplerate)
+        total_frames = int(src_wav.frames)
+        single_upload = len(chunks) <= 1 and wav_path.stat().st_size < 24_900_000
+        single_timeout = max(120.0, 0.5 * (total_frames / max(1, rate)))
+        if not single_upload:
+            result: list[RawSegment] = []
+            prompt = ""
+            block_frames = max(1, rate * 10)
+            with tempfile.TemporaryDirectory(prefix="vieneu-asr-") as directory:
+                for index, (start, stop) in enumerate(chunks):
+                    if cancel_check is not None and cancel_check():
+                        raise AsrCancelled("Đã hủy nhận diện giọng nói.")
+                    path = Path(directory) / f"chunk_{index:04d}.wav"
+                    try:
+                        with StreamingWavWriter(path, sample_rate=rate) as writer:
+                            for position in range(start, stop, block_frames):
+                                samples = _read_mono_frames(
+                                    src_wav, position, min(stop, position + block_frames)
+                                )
+                                if samples.size:
+                                    writer.write(samples)
+                        if progress_cb is not None:
+                            progress_cb(index / len(chunks), "Đang gửi âm thanh tới máy chủ ASR…")
+                        segments = _upload_whisper_api(
+                            path,
+                            config,
+                            cancel_check=cancel_check,
+                            prompt=prompt,
+                            timeout=max(120.0, 0.5 * (stop - start) / max(1, rate)),
+                            report=report,
+                        )
+                    finally:
+                        with contextlib.suppress(OSError):
+                            path.unlink(missing_ok=True)
+                    prompt = " ".join(segment.text for segment in segments)[-200:]
+                    offset = int(round(start * 1000 / max(1, rate)))
+                    result.extend(
+                        replace(
+                            segment,
+                            start_ms=segment.start_ms + offset,
+                            end_ms=segment.end_ms + offset,
+                            words=tuple(
+                                (a + offset, b + offset, text) for a, b, text in segment.words
+                            ),
+                            speech_start_ms=(
+                                segment.speech_start_ms + offset
+                                if segment.speech_start_ms is not None
+                                else None
+                            ),
+                            speech_end_ms=(
+                                segment.speech_end_ms + offset
+                                if segment.speech_end_ms is not None
+                                else None
+                            ),
+                        )
+                        for segment in segments
+                    )
+                    if progress_cb is not None:
+                        progress_cb((index + 1) / len(chunks), "Đang nhận diện giọng nói…")
+            return result
+
+    return _upload_whisper_api(
+        wav_path,
+        config,
+        progress_cb=progress_cb,
+        cancel_check=cancel_check,
+        timeout=single_timeout,
+        report=report,
+    )
 
 
 def _ensure_16k_wav(
@@ -1478,20 +1853,45 @@ def _ensure_16k_wav(
     return wav, temp_dir
 
 
+def _has_faster_whisper() -> bool:
+    if "faster_whisper" in sys.modules:
+        return sys.modules["faster_whisper"] is not None
+    try:
+        return importlib.util.find_spec("faster_whisper") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _resolve_auto_target(config: AsrConfig, data_dir: Path | None) -> tuple[str, str]:
+    """Predict ``(resolved_backend, resolved_model)`` for ``backend='auto'`` caching."""
+    model = (config.model or "base").strip() or "base"
+    if _resolve_whisper_cpp_bin(data_dir) is not None:
+        choice = _whisper_model_choice(model, data_dir)
+        if choice is not None:
+            return "whisper_cpp", (choice[1] or model)
+    if _has_faster_whisper():
+        return "faster_whisper", model
+    if config.cloud_fallback and config.api_base_url.strip():
+        return "openai_api", ((config.api_model or "whisper-1").strip() or "whisper-1")
+    return "none", model
+
+
 def _asr_cache_key(
     wav_path: Path,
     config: AsrConfig,
     *,
     data_dir: Path | None = None,
     key_path: Path | None = None,
+    resolved_backend: str = "",
+    resolved_model: str = "",
 ) -> str:
     """Segments-cache key for ``wav_path``; ``key_path`` names it as a legacy alias.
 
-    ``:vad`` marks a backend that may run whisper.cpp while its Silero VAD model is
-    installed, and ``:fallback=<id>`` one that would run whisper.cpp with another
-    installed model than the configured one, so installing or removing either
-    re-runs; keys without them are unchanged, so caches (and legacy aliases) from
-    before still hit.
+    In ``auto`` mode the resolved backend and model are encoded too, so
+    installing/uninstalling ``whisper-cli``, ``faster-whisper``, or a catalog
+    model never serves a mismatched cache entry. ``:vad`` marks whisper.cpp
+    runs while its Silero VAD model is installed, and ``:fallback=<id>`` marks
+    fallback-model whisper.cpp runs.
     """
     try:
         st = wav_path.stat()
@@ -1504,7 +1904,15 @@ def _asr_cache_key(
     key = f"{named}:{st.st_size}:{st.st_mtime_ns}:{backend}:{model}:{lang}"
     if config.api_base_url.strip():
         key += f":{config.api_base_url.strip()}:{config.api_model.strip()}"
-    if backend in ("auto", "whisper_cpp"):
+    effective_backend = backend
+    if backend == "auto":
+        if not resolved_backend:
+            resolved_backend, resolved_model = _resolve_auto_target(config, data_dir)
+        elif not resolved_model:
+            resolved_model = model
+        effective_backend = resolved_backend
+        key += f":resolved={resolved_backend}:{resolved_model}"
+    if effective_backend == "whisper_cpp":
         if audio_model_path(WHISPER_VAD_MODEL_ID, data_dir) is not None:
             key += ":vad"
         choice = _whisper_model_choice(model, data_dir)
@@ -1750,7 +2158,18 @@ def transcribe_segments(
             language = report.language
             run_notes = report.notes
             if raw:
-                _store_cached_segments(work_dir, cache_key, raw, language=language)
+                store_key = (
+                    _asr_cache_key(
+                        wav_path,
+                        cfg,
+                        data_dir=data_dir,
+                        resolved_backend=report.backend,
+                        resolved_model=report.model,
+                    )
+                    if (cfg.backend or "auto").strip() == "auto" and report.backend
+                    else cache_key
+                )
+                _store_cached_segments(work_dir, store_key, raw, language=language)
         if notes is not None:
             notes.extend(run_notes)
             if language and (cfg.language or "auto").strip().lower() in ("", "auto"):

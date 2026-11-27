@@ -2298,11 +2298,13 @@ class TestAiDubbingRuntimeSurface:
         controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
         assert controller.whisperCppRuntimeNote == ai_models.WHISPER_CPP_HOMEBREW_HINT
         cli["path"] = tmp_path / "whisper-cli"
+        controller.refreshAsrRuntimeStatus()
         assert controller.whisperCppRuntimeNote == ""
         cli["path"] = None
         variants["cpu"] = replace(
             unpublished, url="https://example.com/whisper.tar.xz", unavailable_reason=""
         )
+        controller.refreshAsrRuntimeStatus()
         assert controller.whisperCppRuntimeNote == ""
 
     def test_asr_setup_hint_says_what_transcription_lacks(
@@ -2349,10 +2351,11 @@ class TestAiDubbingRuntimeSurface:
         hint = controller.asrSetupHint
         assert "whisper.cpp" not in hint and "mô hình Whisper" in hint
         state["models"] = {"tiny"}
-        controller.aiModelsInstallChanged.emit()
+        controller.refreshAsrRuntimeStatus()
         assert controller.asrSetupHint == ""
         # An explicit whisper.cpp backend never falls back to the cloud.
         state["cli"] = False
+        controller.refreshAsrRuntimeStatus()
         controller.asrBackend = "whisper_cpp"
         controller.asrCloudFallback = True
         hint = controller.asrSetupHint
@@ -2391,13 +2394,16 @@ class TestAiDubbingRuntimeSurface:
             return target
 
         monkeypatch.setattr(ai_models, "download_audio_model", fake_download)
+        # First read populated the cache off-thread (1 scan); unknown id starts no job.
+        initial_calls = runner.calls
+        assert initial_calls == 1
         assert controller.downloadAudioModel("not-in-catalog") is False
-        assert "not-in-catalog" in controller.audioModelStatus and runner.calls == 0
+        assert "not-in-catalog" in controller.audioModelStatus and runner.calls == initial_calls
 
         structural: list[int] = []
         controller.audioModelsChanged.connect(lambda: structural.append(1))
         assert controller.downloadAudioModel(silero) is True
-        assert runner.calls == 1 and during == [(silero, False)]
+        assert runner.calls == initial_calls + 1 and during == [(silero, False)]
         rows = {r["id"]: r for r in controller.audioModels}
         assert rows[silero]["installed"] is True and rows[silero]["busy"] is False
         assert (controller.audioModelBusyId, controller.audioModelProgress) == ("", 1.0)
@@ -2413,7 +2419,7 @@ class TestAiDubbingRuntimeSurface:
         assert (controller.audioModelBusyId, controller.audioModelProgress) == ("", 0.0)
 
         assert controller.removeAudioModel(silero) is True
-        assert runner.calls == 3
+        assert runner.calls == initial_calls + 3
         assert not {r["id"]: r for r in controller.audioModels}[silero]["installed"]
         assert controller.removeAudioModel(silero) is True  # nothing there: reported
         assert controller.audioModelStatus != ""
@@ -2466,10 +2472,13 @@ class TestAiDubbingRuntimeSurface:
             False,
         )
 
+        # Initial ffmpegRuntimeStatus read runs its first probe off-thread.
+        initial_calls = runner.calls
+        assert initial_calls == 1
         changes: list[int] = []
         controller.ffmpegRuntimeChanged.connect(lambda: changes.append(1))
         assert controller.installFfmpegRuntime() is True
-        assert installs == [tmp_path] and runner.calls == 1
+        assert installs == [tmp_path] and runner.calls == initial_calls + 1
         status = controller.ffmpegRuntimeStatus
         assert (status["managed"], status["available"], status["version"]) == (True, True, "7.1.1")
         assert status["ffmpeg"].endswith("ffmpeg") and status["cell"] == "linux-x64"
@@ -2478,7 +2487,9 @@ class TestAiDubbingRuntimeSurface:
         assert len(changes) == 2  # start + finish
 
         assert controller.removeFfmpegRuntime() is True
-        assert runner.calls == 2 and controller.ffmpegRuntimeStatus["managed"] is False
+        assert (
+            runner.calls == initial_calls + 2 and controller.ffmpegRuntimeStatus["managed"] is False
+        )
 
         def failing(_data_dir, **_kw):
             raise ai_models.AiModelInstallError("Gói ffmpeg tải về thiếu bộ mã hoá libx264.")
@@ -2491,10 +2502,11 @@ class TestAiDubbingRuntimeSurface:
         # An unpublished cell is guidance only: never an install attempt.
         state["downloadable"] = False
         controller.refreshFfmpegRuntimeStatus()
+        calls_after_refresh = runner.calls
         assert controller.ffmpegRuntimeStatus["note"].startswith("Gói ffmpeg")
         assert controller.installFfmpegRuntime() is False
         assert controller.ffmpegRuntimeMessage == controller.ffmpegRuntimeStatus["note"]
-        assert runner.calls == 3
+        assert runner.calls == calls_after_refresh
 
         # Install and remove share one lane; quitting the app cancels the
         # download in flight (an internal teardown does not).
@@ -6780,3 +6792,454 @@ class TestTask52ControllerHardening:
         drain_idx = events.index("drain_pool")
         assert events.index("close:retired") < drain_idx
         assert events.index("close:active") < drain_idx
+
+
+class _RecordingPoolRunner:
+    """bg_runner double recording the requested workload pool lane per job."""
+
+    def __init__(self, *, defer: bool = False) -> None:
+        self.defer = defer
+        self.pools: list[str] = []
+        self.jobs: list[tuple[Any, Any, Any]] = []
+
+    def __call__(self, work, on_done, parent, *, on_error=None, pool: str = "interactive") -> None:
+        self.pools.append(pool)
+        if self.defer:
+            self.jobs.append((work, on_done, on_error))
+            return
+        run_sync(work, on_done, parent, on_error=on_error, pool=pool)
+
+    def run_one(self, index: int = 0) -> None:
+        work, on_done, on_error = self.jobs.pop(index)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors bg_ops
+            if on_error is not None:
+                on_error(exc)
+                return
+            raise
+        on_done(result)
+
+    def drain(self) -> None:
+        while self.jobs:
+            self.run_one(0)
+
+
+class TestControllerPerfTask53:
+    """Task 5.3: GUI-thread offloads, cached probes, pool routing & qwenModelsModel."""
+
+    def test_audiocpp_available_variants_uses_cached_cuda_probe_zero_gui_nvidia_smi(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import detector
+
+        # Simulate Windows so available_audiocpp_variants() would invoke nvidia-smi if
+        # driver_cuda_version were omitted.
+        monkeypatch.setattr(ai_models.sys, "platform", "win32")
+        ai_models._nvidia_driver_cuda_version.cache_clear()  # noqa: SLF001
+
+        sync_probes: list[int] = []
+
+        def forbid_sync_probe(*_a, **_k):
+            sync_probes.append(1)
+            raise AssertionError("synchronous probe_cuda_driver() must never run on GUI thread")
+
+        monkeypatch.setattr(detector, "probe_cuda_driver", forbid_sync_probe)
+
+        runner = _RecordingPoolRunner(defer=True)
+        controller = AppController(
+            data_dir=tmp_path,
+            bg_runner=runner,
+            cuda_runtime_manager_factory=lambda _root: _FakeCudaManager(),
+            cuda_driver_probe=lambda: CudaDriverProbe(available=True, cuda_version="12.4"),
+        )
+        notified: list[int] = []
+        controller.aiModelsInstallChanged.connect(lambda: notified.append(1))
+
+        # Before async probe lands: zero sync probes, base CPU/Vulkan variants only.
+        assert controller.audiocppAvailableVariants == ["cpu", "vulkan"]
+        assert controller.audiocppUnavailableReason == ""
+        assert sync_probes == []
+
+        # Once async CudaDriverProbe lands, CUDA variants appear and notify fires.
+        controller.refreshCudaRuntimeState()
+        assert sync_probes == []
+        runner.drain()
+        assert sync_probes == []
+        assert "cuda12.4" in controller.audiocppAvailableVariants
+        assert controller.audiocppUnavailableReason == ""
+        assert len(notified) >= 1
+
+    def test_complete_voice_op_offloads_denoise_wav_and_catalog_refresh_with_guards(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.ui import controller as controller_module
+        from vienetts_app.ui.bg_ops import POOL_INTERACTIVE
+
+        writes: list[Path] = []
+        real_write = controller_module.write_wav_file
+
+        def spy_write(audio, path, *args, **kwargs):
+            writes.append(Path(path))
+            return real_write(audio, path, *args, **kwargs)
+
+        monkeypatch.setattr(controller_module, "write_wav_file", spy_write)
+
+        saved_list: list[str] = []
+        saved_calls: list[int] = []
+
+        def spy_saved(_vd):
+            saved_calls.append(1)
+            return list(saved_list)
+
+        runner = _RecordingPoolRunner(defer=True)
+        workers: list[FakeWorker] = []
+        controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda e: workers.append(FakeWorker(e)) or workers[-1],
+            catalog=fake_catalog,
+            saved_names=spy_saved,
+            bg_runner=runner,
+            audio_probe=lambda: True,
+        )
+        # 1) Denoise preview completion writes WAV off the GUI thread on POOL_INTERACTIVE.
+        controller.denoisePreview("/clip.wav")
+        payload = {
+            "op": "denoise",
+            "audio": np.full(4410, 0.2, dtype=np.float32),
+            "sample_rate": 44_100,
+        }
+        workers[-1].complete_last(dict(payload), "cloning")
+        assert writes == []  # zero WAV write on GUI thread
+        assert controller.busy is True
+        assert controller.previewPath == ""
+        assert runner.pools[-1] == POOL_INTERACTIVE
+
+        # Superseding with a second denoise preview drops the stale preview completion.
+        controller.denoisePreview("/clip2.wav")
+        workers[-1].complete_last(dict(payload), "cloning")
+        assert len(runner.jobs) == 2
+        runner.run_one(0)  # stale preview finishes first -> dropped & cleaned up
+        assert controller.previewPath == ""
+        assert controller.busy is True
+        assert not writes[0].exists()
+        runner.run_one(0)  # newest preview lands
+        assert controller.busy is False
+        assert Path(controller.previewPath).is_file()
+
+        # 2) Enrollment completion refreshes voices/clones off the GUI thread.
+        before_saved = len(saved_calls)
+        enrolled: list[str] = []
+        controller.addVoice("NewClone", "/ref.wav", False, on_enrolled=enrolled.append)
+        saved_list.append("NewClone")
+        workers[-1].complete_last({"op": "add", "name": "NewClone"}, "cloning")
+        assert len(saved_calls) == before_saved  # zero disk scan on GUI thread
+        assert controller.busy is True
+        assert enrolled == []
+        assert runner.pools[-1] == POOL_INTERACTIVE
+
+        runner.drain()
+        assert len(saved_calls) == before_saved + 1
+        assert controller.busy is False
+        assert enrolled == ["NewClone"]
+        assert any(row["id"] == "NewClone" for row in controller.profileClones)
+
+    def test_disk_and_path_probing_properties_cache_and_refresh_asynchronously(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.ui.bg_ops import POOL_INTERACTIVE
+
+        counts = {
+            "asr_model": 0,
+            "whisper_cli": 0,
+            "diar_model": 0,
+            "audiocpp": 0,
+            "audio_mod": 0,
+            "ffmpeg": 0,
+            "clones": 0,
+        }
+
+        def spy_asr_installed(model_id, data_dir):
+            counts["asr_model"] += 1
+            return model_id == "tiny"
+
+        def spy_whisper_cli(data_dir=None):
+            counts["whisper_cli"] += 1
+            return tmp_path / "whisper-cli"
+
+        def spy_diar_installed(model_id, data_dir):
+            counts["diar_model"] += 1
+            return True
+
+        def spy_audiocpp_installed(data_dir=None):
+            counts["audiocpp"] += 1
+            return True
+
+        def spy_audio_model_path(model_id, data_dir=None):
+            counts["audio_mod"] += 1
+            return (
+                tmp_path / f"{model_id}.onnx" if model_id == ai_models.SILERO_VAD_MODEL_ID else None
+            )
+
+        def spy_ffmpeg_status(data_dir):
+            counts["ffmpeg"] += 1
+            return _ffmpeg_status(managed=True, downloadable=True)
+
+        class CountingCloneStore:
+            def list(self, profile=None):
+                counts["clones"] += 1
+                return (make_clone("c1", "Clone 1", QWEN_BASE, transcript="hi"),)
+
+        monkeypatch.setattr(ai_models, "is_asr_model_installed", spy_asr_installed)
+        monkeypatch.setattr(ai_models, "resolve_whisper_cpp_cli", spy_whisper_cli)
+        monkeypatch.setattr(ai_models, "is_diarization_model_installed", spy_diar_installed)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", spy_audiocpp_installed)
+        monkeypatch.setattr(ai_models, "audio_model_path", spy_audio_model_path)
+        monkeypatch.setattr(ai_models, "ffmpeg_runtime_status", spy_ffmpeg_status)
+
+        runner = _RecordingPoolRunner(defer=True)
+        controller = AppController(
+            data_dir=tmp_path,
+            bg_runner=runner,
+            clone_store_factory=lambda _d: CountingCloneStore(),
+            hardware_probe=lambda: HardwareInfo("none", False, None),
+        )
+        # Switch to Qwen Base so profileClones uses CloneStore.
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        runner.jobs.clear()
+        runner.pools.clear()
+
+        # Reading every disk/PATH-probing property on GUI thread triggers ZERO inline probes
+        # and coalesces sibling reads into one async interactive-pool refresh per domain.
+        _ = controller.profileClones
+        _ = controller.profileClones
+        _ = controller.asrModelInstalled
+        _ = controller.whisperCppInstalled
+        _ = controller.whisperCppRuntimeVariant
+        _ = controller.whisperCppRuntimeNote
+        _ = controller.asrSetupHint
+        _ = controller.diarizationModelInstalled
+        _ = controller.audiocppInstalled
+        _ = controller.audiocppRuntimeVariant
+        _ = controller.audioModels
+        _ = controller.audioModels
+        _ = controller.ffmpegRuntimeStatus
+        _ = controller.ffmpegRuntimeStatus
+
+        assert all(v == 0 for v in counts.values()), f"GUI-thread disk/PATH probes ran: {counts}"
+        assert len(runner.jobs) == 5  # 1 each: clones, asr, diarization, audioModels, ffmpeg
+        assert all(p == POOL_INTERACTIVE for p in runner.pools)
+
+        # Drain async refreshes: caches populate and repeated reads do ZERO extra probes.
+        runner.drain()
+        after_first = dict(counts)
+        assert after_first["clones"] == 1
+        assert after_first["ffmpeg"] == 1
+        assert after_first["audio_mod"] == len(ai_models.AUDIO_MODELS)
+        assert after_first["diar_model"] == 1
+        assert after_first["audiocpp"] == 1
+        assert [r["id"] for r in controller.profileClones] == ["c1"]
+        assert controller.whisperCppInstalled is True
+        assert controller.asrSetupHint == ""
+        assert controller.diarizationModelInstalled is True
+        assert controller.audiocppInstalled is True
+        assert {r["id"]: r["installed"] for r in controller.audioModels}[
+            ai_models.SILERO_VAD_MODEL_ID
+        ] is True
+        assert controller.ffmpegRuntimeStatus["managed"] is True
+
+        # Repeated reads hit cache only (zero additional disk/PATH probes, zero new jobs).
+        for _ in range(5):
+            _ = controller.profileClones
+            _ = controller.asrModelInstalled
+            _ = controller.whisperCppInstalled
+            _ = controller.whisperCppRuntimeVariant
+            _ = controller.whisperCppRuntimeNote
+            _ = controller.asrSetupHint
+            _ = controller.diarizationModelInstalled
+            _ = controller.audiocppInstalled
+            _ = controller.audiocppRuntimeVariant
+            _ = controller.audioModels
+            _ = controller.ffmpegRuntimeStatus
+        assert counts == after_first
+        assert runner.jobs == []
+
+    def test_workload_pool_routing_for_downloads_exports_and_interactive_ops(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core.artifacts import SynthesisArtifact
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.updates import UpdateInfo
+        from vienetts_app.ui.bg_ops import POOL_DOWNLOADS, POOL_EXPORTS, POOL_INTERACTIVE
+
+        pin_official_format(tmp_path)
+        runner = _RecordingPoolRunner(defer=False)
+        model_mgr = _FakeModelManager()
+        cuda_mgr = _FakeCudaManager()
+        qwen_rt_mgr = FakeQwenRuntimeManager(tmp_path)
+        qwen_model_mgrs: dict[str, FakeQwenModelManager] = {}
+
+        def qwen_model_factory(root: Path, key: str) -> FakeQwenModelManager:
+            return qwen_model_mgrs.setdefault(key, FakeQwenModelManager(root, key))
+
+        controller = AppController(
+            data_dir=tmp_path,
+            bg_runner=runner,
+            model_manager_factory=lambda _d: model_mgr,
+            cuda_runtime_manager_factory=lambda _d: cuda_mgr,
+            cuda_driver_probe=lambda: CudaDriverProbe(available=True, cuda_version="12.4"),
+            qwen_runtime_manager_factory=lambda _d: qwen_rt_mgr,
+            qwen_model_manager_factory=qwen_model_factory,
+            hardware_probe=lambda: HardwareInfo("nvidia", True, "12.4"),
+            audio_probe=lambda: True,
+            update_checker=lambda *_a, **_k: UpdateInfo(
+                available=False, current_version="0.3.0", latest_version="0.3.0"
+            ),
+        )
+        # Stub external download/probe functions cleanly.
+        monkeypatch.setattr(ai_models, "available_audiocpp_variants", lambda: {"cpu": object()})
+        monkeypatch.setattr(ai_models, "available_whisper_cpp_variants", lambda: {"cpu": object()})
+        monkeypatch.setattr(ai_models, "is_whisper_cpp_installed", lambda _d=None: True)
+        monkeypatch.setattr(ai_models, "is_audiocpp_installed", lambda _d=None: True)
+        monkeypatch.setattr(ai_models, "download_asr_model", lambda *_a, **_k: tmp_path / "asr.bin")
+        monkeypatch.setattr(
+            ai_models, "download_whisper_cpp_runtime", lambda *_a, **_k: tmp_path / "whisper-cli"
+        )
+        monkeypatch.setattr(
+            ai_models, "download_diarization_model", lambda *_a, **_k: tmp_path / "diar.gguf"
+        )
+        monkeypatch.setattr(
+            ai_models, "download_audiocpp_runtime", lambda *_a, **_k: tmp_path / "audiocpp_cli"
+        )
+        monkeypatch.setattr(
+            ai_models, "download_audio_model", lambda *_a, **_k: tmp_path / "silero.onnx"
+        )
+        monkeypatch.setattr(
+            ai_models, "install_ffmpeg_runtime", lambda *_a, **_k: tmp_path / "ffmpeg"
+        )
+        monkeypatch.setattr(
+            ai_models, "ffmpeg_runtime_status", lambda _d: _ffmpeg_status(managed=False)
+        )
+        monkeypatch.setattr(
+            "vienetts_app.core.llm_refine.probe_llm_connection", lambda _cfg: (True, "OK")
+        )
+
+        # 1) Interactive ops -> POOL_INTERACTIVE
+        runner.pools.clear()
+        controller.refreshModelState()
+        controller.refreshCudaRuntimeState()
+        controller.resolveTorchAvailabilityAsync()
+        controller.testLlmConnection()
+        txt = tmp_path / "doc.txt"
+        txt.write_text("hello", encoding="utf-8")
+        controller.importDocument(str(txt))
+        assert runner.pools and all(p == POOL_INTERACTIVE for p in runner.pools)
+
+        # 2) Downloads / installs / offline imports -> POOL_DOWNLOADS
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        download_actions = [
+            lambda: controller.downloadOfficialModel(),
+            lambda: controller.importOfflinePack(str(pack_dir)),
+            lambda: controller.installCudaRuntime(),
+            lambda: controller.installQwenRuntime(),
+            lambda: controller.importQwenRuntimePack(str(pack_dir)),
+            lambda: controller.installQwenModel("base"),
+            lambda: controller.importQwenModelPack("base", str(pack_dir)),
+            lambda: controller.downloadAsrModel(),
+            lambda: controller.downloadWhisperCppRuntime(),
+            lambda: controller.downloadDiarizationModel(),
+            lambda: controller.downloadAudiocppRuntime(),
+            lambda: controller.downloadAudioModel(ai_models.SILERO_VAD_MODEL_ID),
+            lambda: controller.installFfmpegRuntime(),
+        ]
+        # Pre-populate ffmpeg cache so installFfmpegRuntime records only the install job.
+        _ = controller.ffmpegRuntimeStatus
+        for action in download_actions:
+            runner.pools.clear()
+            action()
+            assert POOL_DOWNLOADS in runner.pools, f"expected POOL_DOWNLOADS in {runner.pools}"
+
+        # 3) Exports -> POOL_EXPORTS
+        wav = write_wav_file(np.full(4800, 0.2, dtype=np.float32), tmp_path / "art.wav")
+        controller._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="9" * 32, path=wav, sample_rate=48_000, samples=4800, duration_ms=100
+        )
+        runner.pools.clear()
+        assert controller.exportWav(str(tmp_path / "out1.wav")) is True
+        assert controller.exportAudio(str(tmp_path / "out2.wav")) is True
+        assert runner.pools == [POOL_EXPORTS, POOL_EXPORTS]
+
+    def test_qwen_models_dict_list_model_updates_progress_in_place_without_resets(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.ui.list_models import DictListModel
+
+        pin_official_format(tmp_path)
+        harness = ProfileHarness(tmp_path)
+        controller = harness.controller
+        model = controller.qwenModelsModel
+        assert isinstance(model, DictListModel)
+        role_ids = {bytes(n).decode(): r for r, n in model.roleNames().items()}
+        assert "index" not in role_ids
+        assert model.rows() == list(controller.qwenModels)
+        assert set(controller.qwenModels[0].keys()).issubset(set(role_ids.keys()))
+
+        controller.refreshQwenState()
+        assert model.rows() == list(controller.qwenModels)
+
+        events: list[tuple] = []
+        role_names = {r: n for n, r in role_ids.items()}
+        model.dataChanged.connect(
+            lambda tl, br, roles: events.append(
+                ("changed", tl.row(), br.row(), sorted(role_names[r] for r in roles))
+            )
+        )
+        model.rowsInserted.connect(lambda _p, a, b: events.append(("inserted", a, b)))
+        model.rowsRemoved.connect(lambda _p, a, b: events.append(("removed", a, b)))
+        model.modelReset.connect(lambda: events.append(("reset",)))
+
+        generation = controller._qwen_generation  # noqa: SLF001
+        # Initial download tick: structural change (state/busy/progress) -> in-place dataChanged.
+        controller._on_qwen_status_signal(  # noqa: SLF001
+            (
+                generation,
+                "model",
+                "base",
+                QwenModelStatus(
+                    state="downloading", installed_bytes=100, required_bytes=4000, progress=0.025
+                ),
+            )
+        )
+        assert not any(e[0] in ("reset", "inserted", "removed") for e in events)
+        assert len(events) == 1
+        assert events[0][0] == "changed"
+        base_row = next(i for i, r in enumerate(model.rows()) if r["key"] == "base")
+        assert events[0][1] == base_row
+
+        # Next 250 ms progress tick: ONLY installedBytes/progress/modelData change (no reset).
+        events.clear()
+        controller._qwen_models_emit_after = 0.0  # noqa: SLF001
+        controller._on_qwen_status_signal(  # noqa: SLF001
+            (
+                generation,
+                "model",
+                "base",
+                QwenModelStatus(
+                    state="downloading", installed_bytes=2000, required_bytes=4000, progress=0.5
+                ),
+            )
+        )
+        assert events == [
+            ("changed", base_row, base_row, ["installedBytes", "modelData", "progress"])
+        ]
+        assert model.get(base_row)["progress"] == pytest.approx(0.5)
+        assert model.get(base_row)["installedBytes"] == 2000
+
+        # Switching profile updates isActive in place without resetting rows.
+        events.clear()
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert not any(e[0] in ("reset", "inserted", "removed") for e in events)
+        assert model.get(base_row)["isActive"] is True
+        assert model.rows() == list(controller.qwenModels)

@@ -1381,11 +1381,10 @@ class TestStudioHardeningTask52:
             job_id="b" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
         )
         assert c.openInStudio("text", "fresh alpha\n\nfresh beta") is True
-        new_project = c._studio_project  # noqa: SLF001
         runner.drain()
 
-        assert c._studio_project is new_project  # noqa: SLF001
         assert c.studioIsSubtitle is False
+        assert [clip["text"] for clip in c.studioClips] == ["fresh alpha", "fresh beta"]
         assert c.studioBusy is False
         assert exported == []
 
@@ -1425,11 +1424,10 @@ class TestStudioHardeningTask52:
             job_id="d" * 32, path=wav3, sample_rate=48_000, samples=9600, duration_ms=200
         )
         assert c3.openInStudio("text", "new project") is True
-        new_project3 = c3._studio_project  # noqa: SLF001
         runner3.drain()
 
-        assert c3._studio_project is new_project3  # noqa: SLF001
         assert c3.studioIsSubtitle is False
+        assert [clip["text"] for clip in c3.studioClips] == ["new project"]
         assert c3.exporting is False
         assert c3.studioBusy is False
         assert exported3 == []
@@ -1510,3 +1508,208 @@ class TestStudioHardeningTask52:
         _fill_cache()
         c.shutdown(drain_pool=True)
         assert studio.stretch_cache_size() == 0
+
+
+class RecordingDeferredRunner:
+    """Deferred bg_runner that also records the workload pool lane per job."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple] = []
+        self.pools: list[str] = []
+
+    def __call__(self, work, on_done, _parent, *, on_error=None, pool: str = "interactive") -> None:
+        self.jobs.append((work, on_done, on_error))
+        self.pools.append(pool)
+
+    def run(self, index: int = 0) -> None:
+        work, on_done, on_error = self.jobs.pop(index)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors bg_ops
+            if on_error is not None:
+                on_error(exc)
+                return
+            raise
+        on_done(result)
+
+    def drain(self) -> None:
+        while self.jobs:
+            self.run()
+
+
+class TestStudioOffloadTask53:
+    """Task 5.3: off-thread openInStudio, studioSetClipSpeed, _maybe_splice_regen & pool routing."""
+
+    def test_open_in_studio_offloads_wav_io_sets_busy_and_drops_stale_generations(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.core import studio
+        from vienetts_app.ui.bg_ops import POOL_INTERACTIVE
+
+        loads: list[str] = []
+        real_load = studio.load_project_from_artifact
+
+        def spy_load(path, text, **kwargs):
+            loads.append(text)
+            return real_load(path, text, **kwargs)
+
+        monkeypatch.setattr(studio, "load_project_from_artifact", spy_load)
+        runner = RecordingDeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+        wav = write_wav_file(_tone(), tmp_path / "art.wav")
+        c._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="1" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+
+        # First open queues off-thread on the interactive pool without reading WAV on GUI thread.
+        assert c.openInStudio("text", "old alpha\n\nold beta") is True
+        assert loads == []
+        assert c.studioBusy is True
+        assert c.hasStudioProject is False
+        assert runner.pools == [POOL_INTERACTIVE]
+
+        # Second open supersedes the first; running job 0 first must drop the stale project.
+        assert c.openInStudio("text", "new one\n\nnew two") is True
+        assert len(runner.jobs) == 2
+        assert runner.pools == [POOL_INTERACTIVE, POOL_INTERACTIVE]
+
+        runner.run(0)  # stale open finishes first
+        assert c.hasStudioProject is False
+        assert c.studioBusy is True
+
+        runner.run(0)  # current open lands
+        assert c.hasStudioProject is True
+        assert c.studioBusy is False
+        assert [clip["text"] for clip in c.studioClips] == ["new one", "new two"]
+        assert c.studioDurationMs > 0
+        assert len(c.studioEnvelope) == 160
+
+    def test_studio_set_clip_speed_offloads_wsola_and_drops_stale_edits(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.core import studio
+        from vienetts_app.ui.bg_ops import POOL_INTERACTIVE
+
+        c, runner, _proj = TestStudioHardeningTask52()._build_subtitle_studio(tmp_path / "spd")
+        rec_runner = RecordingDeferredRunner()
+        c._run_bg = rec_runner  # noqa: SLF001
+
+        calls: list[float | None] = []
+        real_speed = studio.set_subtitle_clip_speed
+
+        def spy_speed(project, clip_id, *, custom_rate=None):
+            calls.append(custom_rate)
+            return real_speed(project, clip_id, custom_rate=custom_rate)
+
+        monkeypatch.setattr(studio, "set_subtitle_clip_speed", spy_speed)
+
+        # Rapid back-to-back speed changes: WSOLA runs off GUI thread; stale edit is dropped.
+        assert c.studioSetClipSpeed("cue0", 0.5) is True
+        assert calls == []  # zero WSOLA on GUI thread
+        assert c.studioBusy is True
+        assert rec_runner.pools == [POOL_INTERACTIVE]
+
+        assert c.studioSetClipSpeed("cue0", 1.5) is True
+        assert len(rec_runner.jobs) == 2
+        assert rec_runner.pools == [POOL_INTERACTIVE, POOL_INTERACTIVE]
+
+        # Newest finishes first, then the superseded 0.5x job lands and must be dropped.
+        rec_runner.run(1)
+        assert c.studioClips[0]["fitRate"] == pytest.approx(1.5, abs=1e-2)
+        rec_runner.run(0)
+        assert c.studioBusy is False
+        assert c.studioClips[0]["fitRate"] == pytest.approx(1.5, abs=1e-2)
+
+        # A project switch mid-WSOLA also drops the stale speed result.
+        assert c.studioSetClipSpeed("cue0", 0.75) is True
+        wav = write_wav_file(_tone(), tmp_path / "spd" / "other.wav")
+        c._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="2" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c.openInStudio("text", "switched project") is True
+        rec_runner.drain()
+        assert c.studioIsSubtitle is False
+        assert [clip["text"] for clip in c.studioClips] == ["switched project"]
+        assert c.studioBusy is False
+
+    def test_maybe_splice_regen_offloads_wav_and_splice_with_generation_guard(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.core import audio as audio_mod
+        from vienetts_app.ui.bg_ops import POOL_INTERACTIVE
+
+        runner = RecordingDeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+        wav = write_wav_file(_tone(), tmp_path / "art.wav")
+        c._current_artifact = SynthesisArtifact(  # noqa: SLF001
+            job_id="3" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+        assert c.openInStudio("text", "first\n\nsecond") is True
+        runner.drain()
+        runner.pools.clear()
+
+        read_calls: list[Path] = []
+        real_read = audio_mod.read_wav
+
+        def spy_read(path):
+            read_calls.append(Path(path))
+            return real_read(path)
+
+        monkeypatch.setattr(audio_mod, "read_wav", spy_read)
+
+        regen_wav = write_wav_file(_tone(4800), tmp_path / "regen.wav")
+        artifact = SynthesisArtifact(
+            job_id="4" * 32, path=regen_wav, sample_rate=48_000, samples=4800, duration_ms=100
+        )
+        c._studio_regen_clip_id = "c0"  # noqa: SLF001
+        c._studio_regen_clip_text = "replaced"  # noqa: SLF001
+        c._maybe_splice_regen(artifact)  # noqa: SLF001
+
+        # Zero WAV decode on GUI thread; routed onto interactive pool.
+        assert read_calls == []
+        assert c.studioBusy is True
+        assert runner.pools == [POOL_INTERACTIVE]
+        assert c.studioClips[0]["text"] == "first"
+
+        runner.drain()
+        assert len(read_calls) == 1
+        assert c.studioBusy is False
+        assert c.studioClips[0]["text"] == "replaced"
+
+        # Stale regen splice dropped if the user switches Studio projects before it finishes.
+        c._studio_regen_clip_id = "c0"  # noqa: SLF001
+        c._studio_regen_clip_text = "stale text"  # noqa: SLF001
+        c._maybe_splice_regen(artifact)  # noqa: SLF001
+        assert c.openInStudio("text", "brand new") is True
+        runner.drain()
+        assert [clip["text"] for clip in c.studioClips] == ["brand new"]
+        assert c.studioBusy is False
+
+    def test_studio_exports_and_save_route_to_exports_pool(
+        self, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.ui.bg_ops import POOL_EXPORTS
+
+        c, _runner, _proj = TestStudioHardeningTask52()._build_subtitle_studio(
+            tmp_path / "pools", with_video=True
+        )
+        rec = RecordingDeferredRunner()
+        c._run_bg = rec  # noqa: SLF001
+
+        assert c.studioSaveToSubtitle() is True
+        assert rec.pools == [POOL_EXPORTS]
+        rec.drain()
+        rec.pools.clear()
+
+        monkeypatch.setattr(
+            "vienetts_app.core.video_dub.mux_dubbed_video",
+            lambda _v, _w, out_path, **_kw: Path(out_path).write_bytes(b"mp4") or Path(out_path),
+        )
+        assert c.studioExportVideo(str(tmp_path / "pools" / "out")) is True
+        assert rec.pools == [POOL_EXPORTS]
+        rec.drain()
+        rec.pools.clear()
+
+        assert c.studioExport(str(tmp_path / "pools" / "mix.wav")) is True
+        assert rec.pools == [POOL_EXPORTS]
+        rec.drain()

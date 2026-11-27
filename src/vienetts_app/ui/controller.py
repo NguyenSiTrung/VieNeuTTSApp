@@ -120,6 +120,7 @@ import contextlib
 import datetime as _dt
 import hashlib
 import importlib.util
+import inspect as _inspect
 import json
 import logging
 import threading
@@ -223,7 +224,15 @@ from vienetts_app.core.updates import (
     platform_display_name,
 )
 from vienetts_app.ui import playback as _playback
-from vienetts_app.ui.bg_ops import ProgressRelay, drain_thread_pool, run_on_thread_pool
+from vienetts_app.ui.bg_ops import (
+    POOL_DOWNLOADS,
+    POOL_EXPORTS,
+    POOL_INTERACTIVE,
+    ProgressRelay,
+    drain_thread_pool,
+    run_on_thread_pool,
+    run_sync,
+)
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
 from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.stream_playback import StreamPlaybackController
@@ -577,6 +586,124 @@ def _audiocpp_offers(variant: str, offered: Mapping[str, object]) -> bool:
     return variant in offered
 
 
+_EMPTY_FFMPEG_STATUS: dict[str, Any] = {
+    "cell": "",
+    "downloadable": False,
+    "managed": False,
+    "available": False,
+    "ffmpeg": "",
+    "ffprobe": "",
+    "version": "",
+    "note": "",
+    "license": "",
+    "source": "",
+    "sizeBytes": 0,
+}
+
+
+@dataclass(frozen=True)
+class _AsrInstallSnapshot:
+    """Cached disk/PATH snapshot for ASR model & whisper.cpp runtime getters."""
+
+    model_id: str
+    device: str
+    model_installed: bool = False
+    any_model_installed: bool = False
+    whisper_cpp_installed: bool = False
+    whisper_cpp_variant: str = ""
+    whisper_cpp_available_variants: tuple[str, ...] = ()
+    whisper_cpp_runtime_note: str = ""
+
+
+@dataclass(frozen=True)
+class _DiarizationInstallSnapshot:
+    """Cached disk snapshot for diarization GGUF & audio.cpp runtime getters."""
+
+    model_id: str
+    model_installed: bool = False
+    audiocpp_installed: bool = False
+    audiocpp_variant: str = ""
+
+
+def _call_with_driver_cuda(fn: Callable[..., Any], driver_cuda_version: str | None) -> Any:
+    """Pass ``driver_cuda_version`` when supported, preserving 0-arg test stubs."""
+    try:
+        params = _inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "driver_cuda_version" in params or any(
+        p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+        return fn(driver_cuda_version=driver_cuda_version)
+    return fn()
+
+
+def _scan_asr_install_snapshot(data_dir: Path, model_id: str, device: str) -> _AsrInstallSnapshot:
+    """Probe ASR weights and whisper-cli off the GUI thread."""
+    from vienetts_app.core.ai_models import (
+        WHISPER_GGUF_MODELS,
+        AiModelInstallError,
+        available_whisper_cpp_variants,
+        installed_whisper_cpp_variant,
+        is_asr_model_installed,
+        is_whisper_cpp_installed,
+        resolve_whisper_cpp_variant,
+    )
+
+    model_installed = is_asr_model_installed(model_id, data_dir)
+    any_model_installed = model_installed or any(
+        is_asr_model_installed(m, data_dir) for m in WHISPER_GGUF_MODELS if m != model_id
+    )
+    whisper_installed = is_whisper_cpp_installed(data_dir)
+    whisper_variant = installed_whisper_cpp_variant(data_dir)
+    variants = available_whisper_cpp_variants()
+    note = ""
+    if not whisper_installed:
+        requested = device if device in variants else ""
+        try:
+            note = resolve_whisper_cpp_variant(requested).unavailable_reason
+        except AiModelInstallError:
+            note = ""
+    return _AsrInstallSnapshot(
+        model_id=model_id,
+        device=device,
+        model_installed=model_installed,
+        any_model_installed=any_model_installed,
+        whisper_cpp_installed=whisper_installed,
+        whisper_cpp_variant=whisper_variant,
+        whisper_cpp_available_variants=tuple(sorted(variants)),
+        whisper_cpp_runtime_note=note,
+    )
+
+
+def _scan_diarization_install_snapshot(
+    data_dir: Path, model_id: str
+) -> _DiarizationInstallSnapshot:
+    """Probe diarization GGUF and audio.cpp CLI off the GUI thread."""
+    from vienetts_app.core.ai_models import (
+        installed_audiocpp_variant,
+        is_audiocpp_installed,
+        is_diarization_model_installed,
+    )
+
+    return _DiarizationInstallSnapshot(
+        model_id=model_id,
+        model_installed=is_diarization_model_installed(model_id, data_dir),
+        audiocpp_installed=is_audiocpp_installed(data_dir),
+        audiocpp_variant=installed_audiocpp_variant(data_dir),
+    )
+
+
+def _scan_audio_model_paths(data_dir: Path) -> dict[str, str]:
+    """Probe optional VAD/speaker-embedding model files off the GUI thread."""
+    from vienetts_app.core.ai_models import audio_model_catalog, audio_model_path
+
+    return {
+        spec.id: (str(found) if (found := audio_model_path(spec.id, data_dir)) is not None else "")
+        for spec in audio_model_catalog()
+    }
+
+
 def _ffmpeg_status_row(data_dir: Path) -> dict[str, Any]:
     """The managed-ffmpeg status as a QML map; safe off the GUI thread.
 
@@ -699,6 +826,24 @@ STUDIO_CLIP_ROLES = (
     "voice",
 )
 STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
+# Keys of one qwenModels row — never include "index" (shadows QML ListView/Repeater index).
+QWEN_MODEL_ROLES = (
+    "key",
+    "profile",
+    "label",
+    "format",
+    "quantization",
+    "engine",
+    "state",
+    "ready",
+    "installedBytes",
+    "requiredBytes",
+    "progress",
+    "error",
+    "busy",
+    "isActive",
+    "isSelected",
+)
 #: The A/B listen targets of ``studioCompareMode``: the applied op stack
 #: ("base", design label "Gốc") or that stack plus the pending edits
 #: ("pending", design label "Đã chỉnh").
@@ -966,11 +1111,29 @@ class AppController(QObject):
         self._audio_model_progress: float = 0.0
         self._audio_model_status: str = ""
         # Managed ffmpeg pack: install/remove share one lane. The status row is
-        # read lazily (manifest + PATH lookup) and refreshed by each op.
+        # read lazily (manifest + PATH lookup) and refreshed off-thread.
         self._ffmpeg_busy: bool = False
         self._ffmpeg_progress: float = 0.0
         self._ffmpeg_message: str = ""
         self._ffmpeg_status: dict[str, Any] | None = None
+        self._ffmpeg_status_generation = 0
+        self._ffmpeg_status_loading = False
+        # Cached async snapshots for disk/PATH-probing Settings & Cloning getters.
+        self._profile_clones_cache: list[dict[str, Any]] | None = None
+        self._profile_clones_cache_profile: str = ""
+        self._profile_clones_generation = 0
+        self._profile_clones_loading = False
+        self._asr_snapshot: _AsrInstallSnapshot | None = None
+        self._asr_status_generation = 0
+        self._asr_status_loading = False
+        self._diarization_snapshot: _DiarizationInstallSnapshot | None = None
+        self._diarization_status_generation = 0
+        self._diarization_status_loading = False
+        self._audiocpp_variants_cache: tuple[str | None, tuple[str, ...], str] | None = None
+        self._audio_models_paths: dict[str, str] | None = None
+        self._audio_models_generation = 0
+        self._audio_models_loading = False
+        self._voice_op_generation = 0
         # Set when the app quits: the media downloads stop at the next chunk,
         # so the bounded pool drain is not left waiting on an 80 MB pack.
         self._media_download_cancel = threading.Event()
@@ -1167,6 +1330,7 @@ class AppController(QObject):
         self._cuda_runtime_supported = self._cuda_runtime_manager is not None
         self._cuda_driver_probe = cuda_driver_probe or probe_cuda_driver
         self._cuda_runtime_driver_checked = False
+        self._cuda_runtime_driver_available = False
         self._cuda_runtime_driver_ready = False
         self._cuda_runtime_driver_version: str | None = None
         self._cuda_runtime_status = (
@@ -1222,6 +1386,14 @@ class AppController(QObject):
             self._qwen_runtime_key = self._qwen_key_for("", pref)
             self._qwen_resolved_device = pref
         self._qwen_status_signal.connect(self._on_qwen_status_signal)
+        # Row-level mirror of qwenModels for QwenInstallCards (FR-5.4): 250 ms
+        # progress ticks update progress/bytes roles in place via dataChanged
+        # without destroying delegates or resetting the Cancel button.
+        self._qwen_model_list = DictListModel(QWEN_MODEL_ROLES, key="key", parent=self)
+        self._sync_qwen_model_list()
+        self.qwenModelsChanged.connect(self._sync_qwen_model_list)
+        self.engineProfileChanged.connect(self._sync_qwen_model_list)
+        self.qwenVariantChanged.connect(self._sync_qwen_model_list)
         # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
         # text/paragraph/cloning job owned by this controller, plus one
         # listener entry per audiobook render job. Tagged worker events route
@@ -1272,12 +1444,49 @@ class AppController(QObject):
         self._update_checking = False
         self._update_generation = 0
 
+    # ── background pool dispatch (FR-5.1) ────────────────────────────────────
+
+    @staticmethod
+    def _runner_accepts_pool(runner: Callable[..., Any]) -> bool:
+        if runner is run_on_thread_pool or runner is run_sync:
+            return True
+        try:
+            params = _inspect.signature(runner).parameters
+        except (TypeError, ValueError):
+            return False
+        if "pool" in params:
+            return True
+        return any(p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+    def _submit_bg(
+        self,
+        work: Callable[[], Any],
+        on_done: Callable[[Any], None],
+        *,
+        on_error: Callable[[BaseException], None] | None = None,
+        pool: str = POOL_INTERACTIVE,
+    ) -> None:
+        """Dispatch ``work`` onto the named pool lane (falling back for legacy test runners)."""
+        runner = self._run_bg
+        kwargs: dict[str, Any] = {}
+        if on_error is not None:
+            kwargs["on_error"] = on_error
+        if self._runner_accepts_pool(runner):
+            kwargs["pool"] = pool
+        runner(work, on_done, self, **kwargs)
+
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
-    def _build_voices(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _build_voices_and_vieneu_clones(
+        catalog_fn: Callable[[], list[dict[str, str]]],
+        saved_names_fn: Callable[[Any], list[str]],
+        voices_dir: Path,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build grouped VieNeu voices and VieNeu clone rows in one pass (off-thread safe)."""
         grouped: dict[str, list[dict[str, str]]] = {region: [] for region, _ in _REGION_GROUPS}
         grouped[FALLBACK_GROUP] = []
-        for entry in self._catalog_fn():
+        for entry in catalog_fn():
             region = _parse_region(entry.get("description", ""))
             group = region if region in grouped else FALLBACK_GROUP
             grouped[group].append({"id": entry["name"], "label": _display_label(entry, region)})
@@ -1291,7 +1500,7 @@ class AppController(QObject):
             result.append(
                 {"id": "fallback", "label": FALLBACK_GROUP, "voices": grouped[FALLBACK_GROUP]}
             )
-        cloned_names = self._saved_names_fn(self._voices_dir)
+        cloned_names = saved_names_fn(voices_dir)
         if cloned_names:
             result.append(
                 {
@@ -1301,7 +1510,20 @@ class AppController(QObject):
                 }
             )
         # Empty groups are dropped: a QML picker must not offer empty headers.
-        return [g for g in result if g["voices"]]
+        voices = [g for g in result if g["voices"]]
+        clones = [{"id": name, "label": name, "transcript": ""} for name in cloned_names]
+        return voices, clones
+
+    def _build_voices(self) -> list[dict[str, Any]]:
+        voices, clones = self._build_voices_and_vieneu_clones(
+            self._catalog_fn, self._saved_names_fn, self._voices_dir
+        )
+        active = getattr(self, "_active_profile", self._settings.engine_profile)
+        if active == engine_profiles.VIENEU:
+            self._profile_clones_cache = clones
+            self._profile_clones_cache_profile = engine_profiles.VIENEU
+            self._profile_clones_loading = False
+        return voices
 
     @Property("QVariantList", notify=voicesChanged)
     def voices(self) -> list[dict[str, Any]]:
@@ -1401,7 +1623,13 @@ class AppController(QObject):
 
     @Slot()
     def refreshVoices(self) -> None:
+        self._profile_clones_generation += 1
+        self._profile_clones_loading = False
+        self._profile_clones_cache = None
+        self._profile_clones_cache_profile = ""
         self._voices = self._build_voices()
+        if self._active_profile != engine_profiles.VIENEU:
+            self._refresh_profile_clones_async(force=True, emit_on_inline=False)
         self.voicesChanged.emit()
         # The profile-scoped catalog moves with it: an enrollment lands in the
         # clone store (or the SDK registry), and the shared picker's groups and
@@ -1622,7 +1850,7 @@ class AppController(QObject):
             if announce_errors:
                 self._set_error(self.tr("Không kiểm tra được bản cập nhật: {}").format(exc))
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
 
     def _publish_update_info(self, info: UpdateInfo, *, announce_errors: bool) -> None:
         self._update_info = info
@@ -1889,6 +2117,9 @@ class AppController(QObject):
         picked = str(voice or "").strip()
         if not picked or not engine_profiles.is_qwen_profile(self._active_profile):
             return picked, ""
+        caps = engine_profiles.get_capabilities(self._active_profile)
+        if not caps.supports_cloning:
+            return picked, ""
         for clone in self._profile_clone_rows():
             if picked in (clone["id"], clone["label"]):
                 return "", str(clone["id"])
@@ -1966,24 +2197,87 @@ class AppController(QObject):
 
         VieNeu's catalog is its SDK voice registry (the app-owned persisted
         names); a Qwen profile's is the profile-scoped clone store, so a clone
-        enrolled for one engine can never be offered for another.
+        enrolled for one engine can never be offered for another. Served from
+        an in-memory cache populated asynchronously so QML binding evaluations
+        never touch disk on the GUI thread.
         """
         return self._profile_clone_rows()
 
     def _profile_clone_rows(self) -> list[dict[str, Any]]:
-        """The active profile's clones as UI rows (empty when it has none)."""
-        if self._active_profile == engine_profiles.VIENEU:
-            return [
-                {"id": name, "label": name, "transcript": ""}
-                for name in self._saved_names_fn(self._voices_dir)
+        """The active profile's cached clones as UI rows (empty while loading)."""
+        profile = self._active_profile
+        if self._profile_clones_cache is not None and self._profile_clones_cache_profile == profile:
+            return [dict(row) for row in self._profile_clones_cache]
+        self._refresh_profile_clones_async(force=False, emit_on_inline=False)
+        if self._profile_clones_cache is not None and self._profile_clones_cache_profile == profile:
+            return [dict(row) for row in self._profile_clones_cache]
+        return []
+
+    def _refresh_profile_clones_async(
+        self, *, force: bool = False, emit_on_inline: bool = True
+    ) -> None:
+        """Load the active profile's clone catalog off the GUI thread."""
+        if self._shutting_down:
+            return
+        profile = self._active_profile
+        if not force and self._profile_clones_loading:
+            return
+        self._profile_clones_generation += 1
+        generation = self._profile_clones_generation
+        self._profile_clones_loading = True
+        data_dir = self._data_dir
+        voices_dir = self._voices_dir
+        saved_names_fn = self._saved_names_fn
+        store_snapshot = self._clone_store
+        store_factory = self._clone_store_factory
+        inline = True
+
+        def work() -> tuple[Any | None, list[dict[str, Any]]]:
+            if profile == engine_profiles.VIENEU:
+                rows = [
+                    {"id": name, "label": name, "transcript": ""}
+                    for name in saved_names_fn(voices_dir)
+                ]
+                return None, rows
+            store = store_snapshot if store_snapshot is not None else store_factory(data_dir)
+            rows = [
+                {"id": clone.clone_id, "label": clone.name, "transcript": clone.transcript}
+                for clone in store.list(profile=profile)
             ]
-        store = self._clone_store_instance()
-        if store is None:
-            return []
-        return [
-            {"id": clone.clone_id, "label": clone.name, "transcript": clone.transcript}
-            for clone in store.list(profile=self._active_profile)
-        ]
+            return store, rows
+
+        def on_done(result: Any) -> None:
+            if generation != self._profile_clones_generation:
+                return
+            self._profile_clones_loading = False
+            if self._shutting_down or profile != self._active_profile:
+                return
+            store, rows = _unwrap_bg_result(result)
+            if profile != engine_profiles.VIENEU and store is not None:
+                self._clone_store = store
+            previous = (
+                self._profile_clones_cache
+                if self._profile_clones_cache_profile == profile
+                else None
+            )
+            self._profile_clones_cache = list(rows)
+            self._profile_clones_cache_profile = profile
+            if (not inline or emit_on_inline) and rows != previous:
+                self.profileCatalogChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._profile_clones_generation:
+                return
+            self._profile_clones_loading = False
+            # Do not cache broken-store failures: a subsequent read retries.
+            logger.exception("could not load profile clones", exc_info=exc)
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception:  # noqa: BLE001 - pool rejection must not wedge loading
+            self._profile_clones_loading = False
+        finally:
+            inline = False
 
     @Property(str, notify=engineDeviceChanged)
     def engineDevice(self) -> str:
@@ -2178,6 +2472,10 @@ class AppController(QObject):
     def _reset_profile_state(self) -> None:
         """Drop per-profile state after a switch (catalogs + readiness)."""
         self._clone_store = None
+        self._profile_clones_generation += 1
+        self._profile_clones_loading = False
+        self._profile_clones_cache = None
+        self._profile_clones_cache_profile = ""
         self._profile_device = ""
         if self._active_profile == engine_profiles.VIENEU:
             # The official install is engine-independent, so its already
@@ -2340,7 +2638,7 @@ class AppController(QObject):
             self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001 - pool rejection must not wedge downloading
             on_error(exc)
 
@@ -2463,16 +2761,28 @@ class AppController(QObject):
             return
         self._publish_cuda_runtime_status(status)
 
+    def _cached_driver_cuda_version(self) -> str | None:
+        """Cached CUDA version from the async driver probe (never invokes nvidia-smi)."""
+        if not self._cuda_runtime_driver_checked or not self._cuda_runtime_driver_available:
+            return None
+        return self._cuda_runtime_driver_version
+
     def _publish_cuda_runtime_driver_probe(self, probe: CudaDriverProbe) -> None:
         """Publish a lightweight NVIDIA driver probe without importing torch."""
+        previous_driver_cuda = self._cached_driver_cuda_version()
         # The version lands before the signal: slots re-resolving the engine
         # readout run while the signal is emitted and must see the fresh value.
+        self._cuda_runtime_driver_available = bool(probe.available)
         self._cuda_runtime_driver_version = probe.cuda_version
         ready_changed = probe.usable != self._cuda_runtime_driver_ready
-        if not self._cuda_runtime_driver_checked or ready_changed:
-            self._cuda_runtime_driver_checked = True
-            self._cuda_runtime_driver_ready = probe.usable
+        was_checked = self._cuda_runtime_driver_checked
+        self._cuda_runtime_driver_checked = True
+        self._cuda_runtime_driver_ready = probe.usable
+        if not was_checked or ready_changed:
             self.cudaRuntimeDriverChanged.emit()
+        if self._cached_driver_cuda_version() != previous_driver_cuda:
+            self._audiocpp_variants_cache = None
+            self.aiModelsInstallChanged.emit()
         if ready_changed:
             self._reprobe_torch_availability()
 
@@ -2567,7 +2877,7 @@ class AppController(QObject):
             self._publish_cuda_runtime_status(CudaRuntimeStatus("failed", error=str(exc)))
             self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
 
     @Slot()
     def discoverLocalCudaRuntimes(self) -> None:
@@ -2597,7 +2907,7 @@ class AppController(QObject):
             ]
             self.localCudaRuntimesChanged.emit()
 
-        self._run_bg(work, on_done, self)
+        self._submit_bg(work, on_done, pool=POOL_INTERACTIVE)
 
     @Slot()
     def installCudaRuntime(self) -> None:
@@ -2640,7 +2950,7 @@ class AppController(QObject):
                 logger.warning("CUDA driver probe failed: %s", exc)
                 self._cuda_runtime_operation = None
 
-            self._run_bg(probe_work, probe_done, self, on_error=probe_error)
+            self._submit_bg(probe_work, probe_done, on_error=probe_error, pool=POOL_INTERACTIVE)
             return
         if not self.cudaRuntimeInstallAllowed:
             return
@@ -2692,7 +3002,7 @@ class AppController(QObject):
             self._cuda_runtime_installing = False
             self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_DOWNLOADS)
 
     @Slot()
     def cancelCudaRuntimeInstall(self) -> None:
@@ -2765,7 +3075,7 @@ class AppController(QObject):
             self._publish_cuda_runtime_status(CudaRuntimeStatus("failed", error=str(exc)))
             self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
 
     # ── managed Qwen runtime + models (Task 6.1) ─────────────────────────────
 
@@ -3034,11 +3344,11 @@ class AppController(QObject):
             finish([str(exc)])
 
         try:
-            self._run_bg(
+            self._submit_bg(
                 work,
                 lambda result: finish(list(_unwrap_bg_result(result))),
-                self,
                 on_error=on_error,
+                pool=POOL_INTERACTIVE,
             )
         except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
             on_error(exc)
@@ -3059,6 +3369,14 @@ class AppController(QObject):
             return str(root)
         leaf = "gguf-runtime" if self._is_gguf_selected() else "runtime"
         return str(self._data_dir / "qwen" / leaf)
+
+    def _sync_qwen_model_list(self) -> None:
+        self._qwen_model_list.sync(self.qwenModels)
+
+    @Property(QObject, constant=True)
+    def qwenModelsModel(self) -> DictListModel:
+        """Row-level model of :attr:`qwenModels` for QML views (in-place updates)."""
+        return self._qwen_model_list
 
     @Property("QVariantList", notify=qwenModelsChanged)
     def qwenModels(self) -> list[dict[str, Any]]:
@@ -3649,7 +3967,7 @@ class AppController(QObject):
             self._publish_qwen_runtime(None, error=str(exc))
             self.qwenModelsChanged.emit()
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
 
     @staticmethod
     def _qwen_key_for_format(device: str, device_setting: str, *, gguf: bool) -> str:
@@ -3880,7 +4198,8 @@ class AppController(QObject):
                 return
             self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        pool = POOL_DOWNLOADS if action in ("install", "repair") else POOL_INTERACTIVE
+        self._submit_bg(work, on_done, on_error=on_error, pool=pool)
 
     @Slot()
     def installQwenRuntime(self) -> None:
@@ -3944,7 +4263,7 @@ class AppController(QObject):
             self._qwen_operation = None
             self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
 
     @Slot(str)
     def importQwenRuntimePack(self, source: str) -> None:
@@ -4001,7 +4320,7 @@ class AppController(QObject):
                 return
             self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_DOWNLOADS)
 
     def _qwen_model_work(self, key: str, action: str, *, start_state: str) -> None:
         """Run one model manager call on the shared lane with progress.
@@ -4081,7 +4400,8 @@ class AppController(QObject):
             statuses[key] = ProfileReadiness(state="failed", error=str(exc))
             self._publish_qwen_models(statuses)
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        pool = POOL_DOWNLOADS if action in ("install", "repair") else POOL_INTERACTIVE
+        self._submit_bg(work, on_done, on_error=on_error, pool=pool)
 
     @Slot(str)
     def installQwenModel(self, profile_key: str) -> None:
@@ -4192,7 +4512,7 @@ class AppController(QObject):
             statuses[profile_key] = ProfileReadiness(state="failed", error=str(exc))
             self._publish_qwen_models(statuses)
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_DOWNLOADS)
 
     def _qwen_model_in_use(self, key: str) -> bool:
         """GUI-thread check whether the live engine currently holds model ``key``."""
@@ -4299,7 +4619,7 @@ class AppController(QObject):
                 return
             self._publish_model_status(status)
 
-        self._run_bg(work, on_done, self)
+        self._submit_bg(work, on_done, pool=POOL_INTERACTIVE)
 
     @Slot()
     def downloadOfficialModel(self) -> None:
@@ -4368,7 +4688,7 @@ class AppController(QObject):
             self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001 - pool rejection must not wedge downloading
             on_error(exc)
 
@@ -4481,6 +4801,7 @@ class AppController(QObject):
         self._reset_audition_tracking()
         self._stop_stream_playback_now()
         self._set_error("")
+        self._voice_op_generation += 1
         self._set_busy(True)
         return worker
 
@@ -4809,7 +5130,7 @@ class AppController(QObject):
             on_done(source)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception:  # noqa: BLE001 - pool rejection: play the artifact as-is
             on_done(source)
 
@@ -4828,6 +5149,7 @@ class AppController(QObject):
     @Slot()
     def cancel(self) -> None:
         """Cancel the foreground job AND stop stream playback now (FR-4.2)."""
+        self._voice_op_generation += 1
         self._stop_audition_session()
         self._reset_audition_tracking()
         job_id = self._foreground_job_id
@@ -4974,7 +5296,7 @@ class AppController(QObject):
 
         self._set_exporting(True)
         try:
-            self._run_bg(work, done, self, on_error=on_error)
+            self._submit_bg(work, done, on_error=on_error, pool=POOL_EXPORTS)
         except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak protection
             self._set_exporting(False)
             release_once()
@@ -5670,7 +5992,7 @@ class AppController(QObject):
                 self._set_error(message)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
             if stale(seq):
                 self._studio_render_settled(seq)
@@ -5733,32 +6055,104 @@ class AppController(QObject):
             return None
         return self._studio_project
 
+    def _publish_studio_loaded_project(
+        self,
+        seq: int,
+        project: Any,
+        duration_ms: int,
+        envelope: list[float],
+        *,
+        reset_regen: bool = True,
+        reset_pending: bool = True,
+        clear_cache: bool = True,
+    ) -> None:
+        """Apply a loaded/updated Studio project + overview rendered off the GUI thread."""
+        if clear_cache:
+            self._clear_studio_stretch_cache()
+        self._studio_project = project
+        if reset_regen:
+            self._reset_studio_regen()
+        if reset_pending:
+            self._reset_studio_pending()
+        self._studio_duration_ms = int(duration_ms)
+        self._studio_envelope = list(envelope)
+        self._studio_render_settled(seq)
+        self.studioProjectChanged.emit()
+        self.studioControlsChanged.emit()
+        self.studioEnvelopeChanged.emit()
+
     @Slot(str, str, result=bool)
     def openInStudio(self, owner: str, text: str) -> bool:
-        """Load the current artifact as a paragraph-clip project."""
-        from vienetts_app.core.studio import load_project_from_artifact
+        """Load the current artifact as a paragraph-clip project off the GUI thread."""
+        from vienetts_app.core.studio import load_project_from_artifact, render_overview
 
         self._invalidate_studio_preview()
-        # Supersedes any chapter load still reading on the pool.
+        self._clear_studio_stretch_cache()
+        # Supersedes any chapter/subtitle/artifact load still reading on the pool.
         self._studio_open_generation += 1
+        generation = self._studio_open_generation
         artifact = self._current_artifact
         if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
             return False
-        try:
-            self._studio_project = load_project_from_artifact(
-                str(artifact.path), text or "", context=self._current_artifact_context
+        artifact_path = str(artifact.path)
+        artifact_text = text or ""
+        artifact_context = self._current_artifact_context
+        seq = self._studio_render_start("open")
+        self._artifact_store.protect(artifact)
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            self._release_artifact_after_export(artifact)
+
+        def work() -> tuple[Any, int, list[float]]:
+            project = load_project_from_artifact(
+                artifact_path, artifact_text, context=artifact_context
             )
-        except ValueError as exc:
-            self._set_error(str(exc))
+            _mix, duration_ms, envelope = render_overview(project)
+            return project, duration_ms, envelope
+
+        def on_done(result: Any) -> None:
+            try:
+                if (
+                    self._shutting_down
+                    or generation != self._studio_open_generation
+                    or seq != self._studio_seq
+                ):
+                    self._studio_render_settled(seq)
+                    return
+                project, duration_ms, envelope = _unwrap_bg_result(result)
+                self._publish_studio_loaded_project(seq, project, duration_ms, envelope)
+            finally:
+                release_once()
+
+        def on_error(exc: BaseException) -> None:
+            try:
+                self._studio_render_settled(seq)
+                if (
+                    self._shutting_down
+                    or generation != self._studio_open_generation
+                    or seq != self._studio_seq
+                ):
+                    return
+                if isinstance(exc, ValueError | OSError):
+                    self._set_error(str(exc))
+                else:
+                    self._set_error(self.tr("Không mở được trong Studio: {}").format(exc))
+            finally:
+                release_once()
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not leak protection or busy
+            self._studio_render_settled(seq)
+            release_once()
+            self._set_error(self.tr("Không mở được trong Studio: {}").format(exc))
             return False
-        except OSError as exc:
-            self._set_error(str(exc))
-            return False
-        self._clear_studio_stretch_cache()
-        self._reset_studio_regen()
-        self._reset_studio_pending()
-        self._emit_studio()
         return True
 
     @Slot(str, int, result=bool)
@@ -5773,39 +6167,50 @@ class AppController(QObject):
         finishes, unless a newer open superseded it meanwhile.
         """
         from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
-        from vienetts_app.core.studio import load_project_from_chapters
+        from vienetts_app.core.studio import load_project_from_chapters, render_overview
 
         self._invalidate_studio_preview()
         self._clear_studio_stretch_cache()
         self._studio_open_generation += 1
         generation = self._studio_open_generation
+        seq = self._studio_render_start("open")
         books_dir = self._data_dir / "audiobooks"
 
-        def work() -> Any:
+        def work() -> tuple[Any, int, list[float]] | None:
             library = AudiobookLibrary(books_dir)
             state = library.load_book(book_id)
             chapters = [c for c in state.chapters if c.index == index]
             if not chapters:
                 return None
-            return load_project_from_chapters(
+            project = load_project_from_chapters(
                 library, book_id, [index], [chapters[0].text], contexts=state.contexts
             )
+            _mix, duration_ms, envelope = render_overview(project)
+            return project, duration_ms, envelope
 
         def on_done(result: Any) -> None:
-            if generation != self._studio_open_generation:
+            if (
+                self._shutting_down
+                or generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
+                self._studio_render_settled(seq)
                 return
-            project = _unwrap_bg_result(result)
-            if project is None:
+            unwrapped = _unwrap_bg_result(result)
+            if unwrapped is None:
+                self._studio_render_settled(seq)
                 self._set_error(self.tr("Không tìm thấy chương này trong sách."))
                 return
-            self._clear_studio_stretch_cache()
-            self._studio_project = project
-            self._reset_studio_regen()
-            self._reset_studio_pending()
-            self._emit_studio()
+            project, duration_ms, envelope = unwrapped
+            self._publish_studio_loaded_project(seq, project, duration_ms, envelope)
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._studio_open_generation:
+            self._studio_render_settled(seq)
+            if (
+                self._shutting_down
+                or generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
                 return
             if isinstance(exc, AudiobookError | ValueError | OSError):
                 self._set_error(str(exc))
@@ -5813,8 +6218,9 @@ class AppController(QObject):
                 self._set_error(self.tr("Không mở được chương trong Studio: {}").format(exc))
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            self._studio_render_settled(seq)
             self._set_error(self.tr("Không mở được chương trong Studio: {}").format(exc))
             return False
         return True
@@ -5823,7 +6229,11 @@ class AppController(QObject):
     @Slot(str, int, result=bool)
     def openSubtitleInStudio(self, project_id: str, start_cue: int = 0) -> bool:
         """Load one 50-cue window from a rendered SRT project into Studio."""
-        from vienetts_app.core.studio import MAX_STUDIO_SRT_CUES, load_project_from_subtitle
+        from vienetts_app.core.studio import (
+            MAX_STUDIO_SRT_CUES,
+            load_project_from_subtitle,
+            render_overview,
+        )
         from vienetts_app.core.subtitle_project import SubtitleProjectError, SubtitleProjectStore
 
         project_id = str(project_id or "").strip()
@@ -5834,25 +6244,34 @@ class AppController(QObject):
         self._clear_studio_stretch_cache()
         self._studio_open_generation += 1
         generation = self._studio_open_generation
+        seq = self._studio_render_start("open")
         sub_dir = self._data_dir / "subtitles"
         cue_idx = (max(0, int(start_cue)) // MAX_STUDIO_SRT_CUES) * MAX_STUDIO_SRT_CUES
 
-        def work() -> Any:
+        def work() -> tuple[Any, int, list[float]]:
             store = SubtitleProjectStore(sub_dir)
-            return load_project_from_subtitle(store, project_id, start_cue=cue_idx)
+            project = load_project_from_subtitle(store, project_id, start_cue=cue_idx)
+            _mix, duration_ms, envelope = render_overview(project)
+            return project, duration_ms, envelope
 
         def on_done(result: Any) -> None:
-            if generation != self._studio_open_generation:
+            if (
+                self._shutting_down
+                or generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
+                self._studio_render_settled(seq)
                 return
-            project = _unwrap_bg_result(result)
-            self._clear_studio_stretch_cache()
-            self._studio_project = project
-            self._reset_studio_regen()
-            self._reset_studio_pending()
-            self._emit_studio()
+            project, duration_ms, envelope = _unwrap_bg_result(result)
+            self._publish_studio_loaded_project(seq, project, duration_ms, envelope)
 
         def on_error(exc: BaseException) -> None:
-            if generation != self._studio_open_generation:
+            self._studio_render_settled(seq)
+            if (
+                self._shutting_down
+                or generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
                 return
             if isinstance(exc, SubtitleProjectError | ValueError | OSError):
                 self._set_error(str(exc))
@@ -5860,30 +6279,77 @@ class AppController(QObject):
                 self._set_error(self.tr("Không mở được phụ đề trong Studio: {}").format(exc))
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            self._studio_render_settled(seq)
             self._set_error(self.tr("Không mở được phụ đề trong Studio: {}").format(exc))
             return False
         return True
 
     @Slot(str, float, result=bool)
     def studioSetClipSpeed(self, clip_id: str, rate: float) -> bool:
-        """Update one SRT cue clip's speed factor (<= 0 means auto-fit to policy)."""
-        from vienetts_app.core.studio import set_subtitle_clip_speed
+        """Update one SRT cue clip's speed factor off the GUI thread (<= 0 = auto-fit)."""
+        from vienetts_app.core.studio import render_overview, set_subtitle_clip_speed
 
         project = self._require_studio()
         if project is None:
             return False
-        self._invalidate_studio_preview()
-        custom = float(rate) if rate and float(rate) > 0 else None
-        try:
-            self._studio_project = set_subtitle_clip_speed(
-                project, str(clip_id), custom_rate=custom
-            )
-        except ValueError as exc:
-            self._set_error(str(exc))
+        target_clip_id = str(clip_id)
+        if getattr(project, "subtitle_meta", None) is None:
+            self._set_error("project is not a subtitle studio project")
             return False
-        self._emit_studio(kind="speed")
+        if not any(c.id == target_clip_id for c in project.clips):
+            self._set_error(f"unknown clip {target_clip_id!r}")
+            return False
+        self._invalidate_studio_preview()
+        open_generation = self._studio_open_generation
+        seq = self._studio_render_start("speed")
+        snapshot = project
+        custom = float(rate) if rate and float(rate) > 0 else None
+
+        def work() -> tuple[Any, int, list[float]]:
+            updated = set_subtitle_clip_speed(snapshot, target_clip_id, custom_rate=custom)
+            _mix, duration_ms, envelope = render_overview(updated)
+            return updated, duration_ms, envelope
+
+        def on_done(result: Any) -> None:
+            if (
+                self._shutting_down
+                or open_generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
+                self._studio_render_settled(seq)
+                return
+            updated, duration_ms, envelope = _unwrap_bg_result(result)
+            self._publish_studio_loaded_project(
+                seq,
+                updated,
+                duration_ms,
+                envelope,
+                reset_regen=False,
+                reset_pending=False,
+                clear_cache=False,
+            )
+
+        def on_error(exc: BaseException) -> None:
+            self._studio_render_settled(seq)
+            if (
+                self._shutting_down
+                or open_generation != self._studio_open_generation
+                or seq != self._studio_seq
+            ):
+                return
+            if isinstance(exc, ValueError | OSError):
+                self._set_error(str(exc))
+            else:
+                self._set_error(self.tr("Không thể chỉnh tốc độ đoạn: {}").format(exc))
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
+            self._studio_render_settled(seq)
+            self._set_error(self.tr("Không thể chỉnh tốc độ đoạn: {}").format(exc))
+            return False
         return True
 
     @Slot(result=bool)
@@ -5954,7 +6420,7 @@ class AppController(QObject):
             self.exportFinished.emit("", False)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_EXPORTS)
         except Exception as exc:  # noqa: BLE001
             self._studio_render_settled(seq)
             msg = self.tr("Lưu phụ đề thất bại: {}").format(exc)
@@ -6106,7 +6572,7 @@ class AppController(QObject):
             self.exportFinished.emit("", False)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_EXPORTS)
         except Exception as exc:  # noqa: BLE001
             self._studio_render_settled(seq)
             self._set_exporting(False)
@@ -6735,7 +7201,7 @@ class AppController(QObject):
                 )
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
             self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
             return False
@@ -6808,7 +7274,7 @@ class AppController(QObject):
                 )
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001
             self._set_error(self.tr("Nghe âm gốc thất bại: {}").format(exc))
             return False
@@ -6905,7 +7371,7 @@ class AppController(QObject):
 
         self._set_exporting(True)
         try:
-            self._run_bg(work, done, self, on_error=on_error)
+            self._submit_bg(work, done, on_error=on_error, pool=POOL_EXPORTS)
         except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak state
             self._set_exporting(False)
             self._set_error(self.tr("Xuất {} thất bại: {}").format(label, exc))
@@ -6988,7 +7454,7 @@ class AppController(QObject):
         return True
 
     def _maybe_splice_regen(self, value: Any) -> None:
-        """Splice a finished regen job into its clip (10 ms crossfade)."""
+        """Splice a finished regen job into its clip off the GUI thread (10 ms crossfade)."""
         clip_id = self._studio_regen_clip_id
         new_text = self._studio_regen_clip_text
         context = self._studio_regen_context
@@ -7006,20 +7472,34 @@ class AppController(QObject):
             self.studioProjectChanged.emit()
             return
         from vienetts_app.core.audio import read_wav
-        from vienetts_app.core.studio import refit_subtitle_clips, splice_clip_audio
+        from vienetts_app.core.studio import (
+            refit_subtitle_clips,
+            render_overview,
+            splice_clip_audio,
+        )
 
-        try:
-            audio, sr = read_wav(value.path)
-        except OSError:
-            self.studioProjectChanged.emit()
-            return
-        if sr != 48_000:
-            self.studioProjectChanged.emit()
-            return
-        try:
-            if getattr(project, "subtitle_meta", None) is not None:
-                self._studio_project = refit_subtitle_clips(
-                    project,
+        self._invalidate_studio_preview()
+        open_generation = self._studio_open_generation
+        seq = self._studio_render_start("regen")
+        snapshot = project
+        wav_path = value.path
+        self._artifact_store.protect(value)
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            self._release_artifact_after_export(value)
+
+        def work() -> tuple[Any, int, list[float]] | None:
+            audio, sr = read_wav(wav_path)
+            if sr != 48_000:
+                return None
+            if getattr(snapshot, "subtitle_meta", None) is not None:
+                updated = refit_subtitle_clips(
+                    snapshot,
                     clip_id,
                     audio,
                     new_text=new_text,
@@ -7027,14 +7507,61 @@ class AppController(QObject):
                     custom_rate=custom_rate,
                 )
             else:
-                self._studio_project = splice_clip_audio(
-                    project, clip_id, audio, new_text=new_text, context=context
+                updated = splice_clip_audio(
+                    snapshot, clip_id, audio, new_text=new_text, context=context
                 )
-        except ValueError:
+            _mix, duration_ms, envelope = render_overview(updated)
+            return updated, duration_ms, envelope
+
+        def on_done(result: Any) -> None:
+            try:
+                if (
+                    self._shutting_down
+                    or open_generation != self._studio_open_generation
+                    or seq != self._studio_seq
+                ):
+                    self._studio_render_settled(seq)
+                    return
+                unwrapped = _unwrap_bg_result(result)
+                if unwrapped is None:
+                    self._studio_render_settled(seq)
+                    self.studioProjectChanged.emit()
+                    return
+                updated, duration_ms, envelope = unwrapped
+                self._publish_studio_loaded_project(
+                    seq,
+                    updated,
+                    duration_ms,
+                    envelope,
+                    reset_regen=False,
+                    reset_pending=False,
+                    clear_cache=False,
+                )
+            finally:
+                release_once()
+
+        def on_error(exc: BaseException) -> None:
+            try:
+                self._studio_render_settled(seq)
+                if (
+                    self._shutting_down
+                    or open_generation != self._studio_open_generation
+                    or seq != self._studio_seq
+                ):
+                    return
+                if not isinstance(exc, OSError | ValueError):
+                    logger.warning("studio regen splice failed: %s", exc)
+                self.studioProjectChanged.emit()
+            finally:
+                release_once()
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
+            self._studio_render_settled(seq)
+            release_once()
+            logger.warning("studio regen splice submit failed: %s", exc)
             self.studioProjectChanged.emit()
-            return
-        self._invalidate_studio_preview()
-        self._emit_studio()
 
     def _default_export_path(self, format: str = "wav") -> Path:
         base = self._settings.output_dir.strip()
@@ -7569,7 +8096,7 @@ class AppController(QObject):
             self._set_error(message)
             self.documentImported.emit(path, "")
 
-        self._run_bg(work, on_done, self, on_error=on_error)
+        self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         return True
 
     def _on_document_imported(self, path: str, result: Any) -> None:
@@ -7678,6 +8205,7 @@ class AppController(QObject):
             with contextlib.suppress(Exception):
                 self._file_playback.stop()
         self._set_error("")
+        self._voice_op_generation += 1
         self._set_busy(True)
         self._foreground_job_id = job.id
         self._foreground_is_voice_op = True
@@ -7766,7 +8294,7 @@ class AppController(QObject):
             stand_in.fail_all(str(exc))
 
         try:
-            self._run_bg(inspect, on_done, self, on_error=on_error)
+            self._submit_bg(inspect, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection fails like a build error
             on_error(exc)
         if failure and not stand_in.queued:
@@ -8097,6 +8625,12 @@ class AppController(QObject):
             self._update_generation += 1
             self._profile_generation += 1
             self._studio_open_generation += 1
+            self._profile_clones_generation += 1
+            self._asr_status_generation += 1
+            self._diarization_status_generation += 1
+            self._audio_models_generation += 1
+            self._ffmpeg_status_generation += 1
+            self._voice_op_generation += 1
         # Stop/wait on the worker thread and force-close active or retired
         # subprocess-backed Qwen hosts BEFORE draining pools so no Qwen child
         # process or live QThread survives app exit (FR-1.5).
@@ -8410,7 +8944,7 @@ class AppController(QObject):
                 return
             self._set_waveform_envelope(envelope)
 
-        self._run_bg(work, done, self)
+        self._submit_bg(work, done, pool=POOL_INTERACTIVE)
 
     def _cancel_foreground_audio(self, job_id: str) -> None:
         # User-initiated: stop playback immediately + reset silently and
@@ -8448,6 +8982,9 @@ class AppController(QObject):
     ) -> None:
         payload = value if isinstance(value, dict) else {}
         op = payload.get("op")
+        self._voice_op_generation += 1
+        generation = self._voice_op_generation
+        data_dir = self._data_dir
         if op == "denoise":
             audio = payload.get("audio")
             sample_rate = int(payload.get("sample_rate") or 44_100)
@@ -8460,32 +8997,110 @@ class AppController(QObject):
             if self._file_playback is not None and hasattr(self._file_playback, "stop"):
                 with contextlib.suppress(Exception):
                     self._file_playback.stop()
-            try:
+            audio_arr = np.asarray(audio)
+
+            def work() -> str:
                 stem = PREVIEW_FILENAME.rsplit(".", 1)[0]
-                target = self._data_dir / f"{stem}_{time.time_ns()}.wav"
-                write_wav_file(np.asarray(audio), target, sample_rate=sample_rate)
-            except Exception as exc:  # noqa: BLE001
+                target = data_dir / f"{stem}_{time.time_ns()}.wav"
+                write_wav_file(audio_arr, target, sample_rate=sample_rate)
+                AppController._remove_preview_file_in(data_dir, previous)
+                return str(target)
+
+            def on_done(result: Any) -> None:
+                written = str(_unwrap_bg_result(result))
+                if generation != self._voice_op_generation:
+                    AppController._remove_preview_file_in(data_dir, written)
+                    return
+                self._preview_path = written
+                self.previewPathChanged.emit()
+                self._set_busy(False)
+
+            def on_error(exc: BaseException) -> None:
+                if generation != self._voice_op_generation:
+                    return
                 self._set_error(f"Preview failed: {exc}")
                 self._set_busy(False)
+
+            try:
+                self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+            except Exception as exc:  # noqa: BLE001
+                on_error(exc)
+            return
+
+        # Enroll/remove completion: rebuild voices + active clone catalog off the GUI thread.
+        profile = self._active_profile
+        voices_dir = self._voices_dir
+        catalog_fn = self._catalog_fn
+        saved_names_fn = self._saved_names_fn
+        store_snapshot = self._clone_store
+        store_factory = self._clone_store_factory
+        self._profile_clones_generation += 1
+        clones_generation = self._profile_clones_generation
+        self._profile_clones_loading = True
+        enrolled_id = str(payload.get("cloneId") or payload.get("name") or "")
+
+        def refresh_work() -> tuple[list[dict[str, Any]], Any | None, list[dict[str, Any]] | None]:
+            voices, vieneu_clones = AppController._build_voices_and_vieneu_clones(
+                catalog_fn, saved_names_fn, voices_dir
+            )
+            if profile == engine_profiles.VIENEU:
+                return voices, None, vieneu_clones
+            try:
+                store = store_snapshot if store_snapshot is not None else store_factory(data_dir)
+                clones = [
+                    {"id": clone.clone_id, "label": clone.name, "transcript": clone.transcript}
+                    for clone in store.list(profile=profile)
+                ]
+            except Exception:  # noqa: BLE001 - unusable store degrades empty without crashing
+                logger.exception("could not refresh clone catalog after voice op")
+                return voices, None, None
+            return voices, store, clones
+
+        def refresh_done(result: Any) -> None:
+            if clones_generation == self._profile_clones_generation:
+                self._profile_clones_loading = False
+            if generation != self._voice_op_generation:
                 return
-            self._remove_preview_file(previous)
-            self._preview_path = str(target)
-            self.previewPathChanged.emit()
-        else:
-            self.refreshVoices()
+            voices, store, clones = _unwrap_bg_result(result)
+            self._voices = voices
+            if (
+                clones_generation == self._profile_clones_generation
+                and profile == self._active_profile
+            ):
+                if profile != engine_profiles.VIENEU and store is not None:
+                    self._clone_store = store
+                self._profile_clones_cache = list(clones) if clones is not None else None
+                self._profile_clones_cache_profile = profile if clones is not None else ""
+            self.voicesChanged.emit()
+            self.profileCatalogChanged.emit()
             if op == "add" and callable(on_enrolled):
-                enrolled_id = str(payload.get("cloneId") or payload.get("name") or "")
                 with contextlib.suppress(Exception):
                     on_enrolled(enrolled_id)
-        self._set_busy(False)
+            self._set_busy(False)
 
-    def _remove_preview_file(self, path: str) -> None:
+        def refresh_error(exc: BaseException) -> None:
+            if clones_generation == self._profile_clones_generation:
+                self._profile_clones_loading = False
+            if generation != self._voice_op_generation:
+                return
+            logger.warning("voice catalog refresh failed after voice op: %s", exc)
+            self._set_busy(False)
+
+        try:
+            self._submit_bg(
+                refresh_work, refresh_done, on_error=refresh_error, pool=POOL_INTERACTIVE
+            )
+        except Exception as exc:  # noqa: BLE001
+            refresh_error(exc)
+
+    @staticmethod
+    def _remove_preview_file_in(data_dir: Path, path: str) -> None:
         """Best-effort cleanup of a superseded preview (never a user file)."""
         if not path:
             return
         try:
             candidate = Path(path)
-            if candidate.parent != self._data_dir:
+            if candidate.parent != data_dir:
                 return
             name = candidate.name
             if name != PREVIEW_FILENAME and not (
@@ -8498,6 +9113,10 @@ class AppController(QObject):
             # Still held by the player (or an AV scan): the orphan is a
             # seconds-long clip; the next completion retries the removal.
             logger.debug("superseded preview cleanup deferred", exc_info=True)
+
+    def _remove_preview_file(self, path: str) -> None:
+        """Best-effort cleanup of a superseded preview (never a user file)."""
+        self._remove_preview_file_in(self._data_dir, path)
 
     # (Voice-op terminals land in _on_terminal → _complete_voice_op.)
 
@@ -8566,7 +9185,7 @@ class AppController(QObject):
             logger.warning("torch availability re-probe failed (%s)", exc)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception:  # noqa: BLE001 - pool rejection: fall back to a lazy re-probe
             self._torch_available = None
             self.torchAvailableChanged.emit()
@@ -8605,7 +9224,7 @@ class AppController(QObject):
             logger.warning("torch availability pre-warm probe failed (%s)", exc)
 
         try:
-            self._run_bg(work, on_done, self, on_error=on_error)
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001 - pool rejection: fall back to lazy read
             logger.warning("could not schedule torch availability probe (%s)", exc)
 
@@ -8735,6 +9354,8 @@ class AppController(QObject):
         if not isinstance(value, str):
             return
         self._set_setting("asr_model", value.strip() or Settings.asr_model)
+        self._asr_snapshot = None
+        self._refresh_asr_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
 
     @Property(str, notify=aiSettingsChanged)
@@ -8758,6 +9379,8 @@ class AppController(QObject):
             str(value or "auto").strip().lower(),
             allowed={"auto", "cpu", "cuda", "metal"},
         )
+        self._asr_snapshot = None
+        self._refresh_asr_status_async(force=True, emit_on_inline=False)
 
     @Property(int, notify=aiSettingsChanged)
     def asrThreads(self) -> int:
@@ -8827,6 +9450,8 @@ class AppController(QObject):
         if not isinstance(value, str):
             return
         self._set_setting("diarization_model", value.strip() or "nemotron-3-diarization-q8_0")
+        self._diarization_snapshot = None
+        self._refresh_diarization_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
 
     @Property(int, notify=aiSettingsChanged)
@@ -9003,32 +9628,86 @@ class AppController(QObject):
             self.llmTestChanged.emit()
 
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=POOL_INTERACTIVE)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
         return True
 
+    def _ensure_asr_snapshot(self) -> _AsrInstallSnapshot:
+        """Return cached ASR install snapshot; schedule async refresh on first read."""
+        model_id = self.asrModel
+        device = self.asrDevice
+        snap = self._asr_snapshot
+        if snap is not None and snap.model_id == model_id and snap.device == device:
+            return snap
+        self._refresh_asr_status_async(force=False, emit_on_inline=False)
+        snap = self._asr_snapshot
+        if snap is not None and snap.model_id == model_id and snap.device == device:
+            return snap
+        return _AsrInstallSnapshot(model_id=model_id, device=device)
+
+    def _refresh_asr_status_async(
+        self, *, force: bool = False, emit_on_inline: bool = True, emit_always: bool = False
+    ) -> None:
+        """Scan Whisper models and whisper-cli off the GUI thread."""
+        if self._shutting_down:
+            return
+        if not force and self._asr_status_loading:
+            return
+        self._asr_status_generation += 1
+        generation = self._asr_status_generation
+        self._asr_status_loading = True
+        data_dir = self._data_dir
+        model_id = self.asrModel
+        device = self.asrDevice
+        inline = True
+
+        def work() -> _AsrInstallSnapshot:
+            return _scan_asr_install_snapshot(data_dir, model_id, device)
+
+        def on_done(result: Any) -> None:
+            if generation != self._asr_status_generation:
+                return
+            self._asr_status_loading = False
+            if self._shutting_down:
+                return
+            snap = _unwrap_bg_result(result)
+            changed = snap != self._asr_snapshot
+            self._asr_snapshot = snap
+            if emit_always or (not inline and changed) or (emit_on_inline and changed):
+                self.aiModelsInstallChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._asr_status_generation:
+                return
+            self._asr_status_loading = False
+            logger.warning("ASR status scan failed: %s", exc)
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception:  # noqa: BLE001
+            self._asr_status_loading = False
+        finally:
+            inline = False
+
     @Property(bool, notify=aiModelsInstallChanged)
     def asrModelInstalled(self) -> bool:
-        from vienetts_app.core.ai_models import is_asr_model_installed
-
-        return is_asr_model_installed(self.asrModel, self._data_dir)
+        return self._ensure_asr_snapshot().model_installed
 
     @Property(bool, notify=aiModelsInstallChanged)
     def whisperCppInstalled(self) -> bool:
-        from vienetts_app.core.ai_models import is_whisper_cpp_installed
-
-        return is_whisper_cpp_installed(self._data_dir)
+        return self._ensure_asr_snapshot().whisper_cpp_installed
 
     @Property(str, notify=aiModelsInstallChanged)
     def whisperCppRuntimeVariant(self) -> str:
-        from vienetts_app.core.ai_models import installed_whisper_cpp_variant
-
-        return installed_whisper_cpp_variant(self._data_dir)
+        return self._ensure_asr_snapshot().whisper_cpp_variant
 
     @Property(list, notify=aiModelsInstallChanged)
     def whisperCppAvailableVariants(self) -> list[str]:
+        snap = self._ensure_asr_snapshot()
+        if snap.whisper_cpp_available_variants:
+            return list(snap.whisper_cpp_available_variants)
         from vienetts_app.core.ai_models import available_whisper_cpp_variants
 
         return sorted(available_whisper_cpp_variants())
@@ -9046,37 +9725,16 @@ class AppController(QObject):
         On macOS an unpublished pack carries the Homebrew hint, shown before an
         install attempt rather than only as the failed install's error.
         """
-        from vienetts_app.core.ai_models import (
-            AiModelInstallError,
-            is_whisper_cpp_installed,
-            resolve_whisper_cpp_variant,
-        )
-
-        if is_whisper_cpp_installed(self._data_dir):
-            return ""
-        try:
-            variant = resolve_whisper_cpp_variant(self._whisper_cpp_runtime_variant())
-        except AiModelInstallError:
-            return ""
-        return variant.unavailable_reason
+        return self._ensure_asr_snapshot().whisper_cpp_runtime_note
 
     @Slot()
     def refreshAsrRuntimeStatus(self) -> None:
-        """Re-check whisper-cli and the Whisper models (e.g. after a Homebrew install)."""
-        self.aiModelsInstallChanged.emit()
+        """Re-check whisper-cli and the Whisper models off the GUI thread."""
+        self._refresh_asr_status_async(force=True, emit_always=True)
 
     def _whisper_model_available(self) -> bool:
-        """Whether whisper.cpp has a model: the configured one or any catalog model.
-
-        Mirrors ``asr._whisper_model_choice`` — auto mode falls back to the
-        largest installed catalog model.
-        """
-        from vienetts_app.core.ai_models import WHISPER_GGUF_MODELS, is_asr_model_installed
-
-        return any(
-            is_asr_model_installed(model, self._data_dir)
-            for model in (self.asrModel, *WHISPER_GGUF_MODELS)
-        )
+        """Whether whisper.cpp has a model: the configured one or any catalog model."""
+        return self._ensure_asr_snapshot().any_model_installed
 
     @Property(str, notify=asrReadinessChanged)
     def asrSetupHint(self) -> str:
@@ -9088,13 +9746,12 @@ class AppController(QObject):
         back; the API backend always has a URL (the LLM server's, else a local
         default).
         """
-        from vienetts_app.core.ai_models import is_whisper_cpp_installed
-
         backend = self.asrBackend
         if backend in {"openai_api", "faster_whisper"}:
             return ""
-        has_cli = is_whisper_cpp_installed(self._data_dir)
-        has_model = self._whisper_model_available()
+        snap = self._ensure_asr_snapshot()
+        has_cli = snap.whisper_cpp_installed
+        has_model = snap.any_model_installed
         if has_cli and has_model:
             return ""
         if backend == "auto":
@@ -9148,10 +9805,9 @@ class AppController(QObject):
             return False
         data_dir = self._data_dir
         model_id = self.asrModel
+        device = self.asrDevice
         variant = self._whisper_cpp_runtime_variant()
-        need_runtime = self.asrBackend in ("auto", "whisper_cpp") and not is_whisper_cpp_installed(
-            data_dir
-        )
+        wants_runtime = self.asrBackend in ("auto", "whisper_cpp")
         self._asr_download_generation += 1
         generation = self._asr_download_generation
         relay = self._asr_download_relay
@@ -9168,8 +9824,9 @@ class AppController(QObject):
                 or generation != self._asr_download_generation
             )
 
-        def work() -> tuple[str, str]:
+        def work() -> tuple[str, str, _AsrInstallSnapshot]:
             warning = ""
+            need_runtime = wants_runtime and not is_whisper_cpp_installed(data_dir)
             if need_runtime:
                 try:
                     download_whisper_cpp_runtime(
@@ -9189,10 +9846,11 @@ class AppController(QObject):
                 progress_cb=_download_progress_cb(relay, generation, base_p, span_p),
                 cancel_check=cancel_check,
             )
-            return str(path), warning
+            return str(path), warning, _scan_asr_install_snapshot(data_dir, model_id, device)
 
-        def done(result: tuple[str, str]) -> None:
-            path, warning = result
+        def done(result: tuple[str, str, _AsrInstallSnapshot]) -> None:
+            path, warning, snap = _unwrap_bg_result(result)
+            self._asr_snapshot = snap
             self._asr_download_busy = False
             self._asr_download_progress = 1.0
             if warning:
@@ -9216,7 +9874,7 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
 
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
@@ -9234,6 +9892,8 @@ class AppController(QObject):
         if self._shutting_down or self._asr_download_busy:
             return False
         data_dir = self._data_dir
+        model_id = self.asrModel
+        device = self.asrDevice
         variant = self._whisper_cpp_runtime_variant()
         if (
             self.asrDevice in {"cuda", "metal"}
@@ -9260,16 +9920,18 @@ class AppController(QObject):
                 or generation != self._asr_download_generation
             )
 
-        def work() -> str:
+        def work() -> tuple[str, _AsrInstallSnapshot]:
             cli = download_whisper_cpp_runtime(
                 data_dir,
                 variant=variant,
                 progress_cb=progress_cb,
                 cancel_check=cancel_check,
             )
-            return str(cli)
+            return str(cli), _scan_asr_install_snapshot(data_dir, model_id, device)
 
-        def done(path: str) -> None:
+        def done(result: tuple[str, _AsrInstallSnapshot]) -> None:
+            path, snap = _unwrap_bg_result(result)
+            self._asr_snapshot = snap
             self._asr_download_busy = False
             self._asr_download_progress = 1.0
             self._asr_download_status = self.tr("Đã cài đặt whisper.cpp: {name}").format(
@@ -9288,7 +9950,7 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
 
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
@@ -9304,6 +9966,8 @@ class AppController(QObject):
         self._asr_download_status = (
             "" if removed else self.tr("Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.")
         )
+        self._asr_snapshot = None
+        self._refresh_asr_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
         return removed
 
@@ -9317,20 +9981,94 @@ class AppController(QObject):
         self._asr_download_status = (
             "" if removed else self.tr("Runtime whisper.cpp chưa được cài đặt.")
         )
+        self._asr_snapshot = None
+        self._refresh_asr_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
         return removed
 
+    def _ensure_diarization_snapshot(self) -> _DiarizationInstallSnapshot:
+        """Return cached diarization install snapshot; schedule async refresh on first read."""
+        model_id = self.diarizationModel
+        snap = self._diarization_snapshot
+        if snap is not None and snap.model_id == model_id:
+            return snap
+        self._refresh_diarization_status_async(force=False, emit_on_inline=False)
+        snap = self._diarization_snapshot
+        if snap is not None and snap.model_id == model_id:
+            return snap
+        return _DiarizationInstallSnapshot(model_id=model_id)
+
+    def _refresh_diarization_status_async(
+        self, *, force: bool = False, emit_on_inline: bool = True, emit_always: bool = False
+    ) -> None:
+        """Scan diarization GGUF and audio.cpp CLI off the GUI thread."""
+        if self._shutting_down:
+            return
+        if not force and self._diarization_status_loading:
+            return
+        self._diarization_status_generation += 1
+        generation = self._diarization_status_generation
+        self._diarization_status_loading = True
+        data_dir = self._data_dir
+        model_id = self.diarizationModel
+        inline = True
+
+        def work() -> _DiarizationInstallSnapshot:
+            return _scan_diarization_install_snapshot(data_dir, model_id)
+
+        def on_done(result: Any) -> None:
+            if generation != self._diarization_status_generation:
+                return
+            self._diarization_status_loading = False
+            if self._shutting_down:
+                return
+            snap = _unwrap_bg_result(result)
+            changed = snap != self._diarization_snapshot
+            self._diarization_snapshot = snap
+            if emit_always or (not inline and changed) or (emit_on_inline and changed):
+                self.aiModelsInstallChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._diarization_status_generation:
+                return
+            self._diarization_status_loading = False
+            logger.warning("diarization status scan failed: %s", exc)
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception:  # noqa: BLE001
+            self._diarization_status_loading = False
+        finally:
+            inline = False
+
+    def _available_audiocpp_variants(self) -> Mapping[str, Any]:
+        """Offered audio.cpp variants using the cached async CUDA driver version (0 nvidia-smi)."""
+        from vienetts_app.core.ai_models import available_audiocpp_variants
+
+        return _call_with_driver_cuda(
+            available_audiocpp_variants, self._cached_driver_cuda_version()
+        )
+
+    def _audiocpp_variants_snapshot(self) -> tuple[tuple[str, ...], str]:
+        """Cached ``(sorted_variants, unavailable_reason)`` for the async CUDA driver version."""
+        driver_cuda = self._cached_driver_cuda_version()
+        cached = self._audiocpp_variants_cache
+        if cached is not None and cached[0] == driver_cuda:
+            return cached[1], cached[2]
+        from vienetts_app.core.ai_models import audiocpp_unavailable_reason
+
+        variants = tuple(sorted(self._available_audiocpp_variants()))
+        reason = str(_call_with_driver_cuda(audiocpp_unavailable_reason, driver_cuda) or "")
+        self._audiocpp_variants_cache = (driver_cuda, variants, reason)
+        return variants, reason
+
     @Property(bool, notify=aiModelsInstallChanged)
     def diarizationModelInstalled(self) -> bool:
-        from vienetts_app.core.ai_models import is_diarization_model_installed
-
-        return is_diarization_model_installed(self.diarizationModel, self._data_dir)
+        return self._ensure_diarization_snapshot().model_installed
 
     @Property(bool, notify=aiModelsInstallChanged)
     def audiocppInstalled(self) -> bool:
-        from vienetts_app.core.ai_models import is_audiocpp_installed
-
-        return is_audiocpp_installed(self._data_dir)
+        return self._ensure_diarization_snapshot().audiocpp_installed
 
     @Property(bool, notify=aiModelsInstallChanged)
     def diarizationDownloadBusy(self) -> bool:
@@ -9346,16 +10084,25 @@ class AppController(QObject):
 
     @Property(str, notify=aiModelsInstallChanged)
     def audiocppRuntimeVariant(self) -> str:
-        from vienetts_app.core.ai_models import installed_audiocpp_variant
-
-        return installed_audiocpp_variant(self._data_dir)
+        return self._ensure_diarization_snapshot().audiocpp_variant
 
     @Property(list, notify=aiModelsInstallChanged)
     def audiocppAvailableVariants(self) -> list[str]:
-        """GPU variants the current OS can actually install (cpu is always offered)."""
-        from vienetts_app.core.ai_models import available_audiocpp_variants
+        """GPU variants the current OS can actually install (never runs GUI-thread nvidia-smi)."""
+        variants, _reason = self._audiocpp_variants_snapshot()
+        return list(variants)
 
-        return sorted(available_audiocpp_variants())
+    @Property(str, notify=aiModelsInstallChanged)
+    def audiocppUnavailableReason(self) -> str:
+        """Reason upstream ships no audio.cpp build for this host ("" when supported)."""
+        _variants, reason = self._audiocpp_variants_snapshot()
+        return reason
+
+    @Slot()
+    def refreshDiarizationRuntimeStatus(self) -> None:
+        """Re-check audio.cpp and the diarization GGUF models off the GUI thread."""
+        self._audiocpp_variants_cache = None
+        self._refresh_diarization_status_async(force=True, emit_always=True)
 
     def _diar_runtime_variant(self) -> str:
         """The audio.cpp build the diarization device asks for ("" = the default build).
@@ -9363,10 +10110,8 @@ class AppController(QObject):
         ``cuda`` is passed on as the alias the installer resolves to the
         newest CUDA build the driver runs.
         """
-        from vienetts_app.core.ai_models import available_audiocpp_variants
-
         device = self.diarizationDevice
-        return device if _audiocpp_offers(device, available_audiocpp_variants()) else ""
+        return device if _audiocpp_offers(device, self._available_audiocpp_variants()) else ""
 
     @Slot(result=bool)
     def downloadDiarizationModel(self) -> bool:
@@ -9405,7 +10150,7 @@ class AppController(QObject):
                 or generation != self._diar_download_generation
             )
 
-        def work() -> tuple[str, str]:
+        def work() -> tuple[str, str, _DiarizationInstallSnapshot]:
             warning = ""
             if not is_audiocpp_installed(data_dir):
                 try:
@@ -9425,10 +10170,11 @@ class AppController(QObject):
                 progress_cb=_download_progress_cb(relay, generation, 0.30, 0.69),
                 cancel_check=cancel_check,
             )
-            return str(path), warning
+            return str(path), warning, _scan_diarization_install_snapshot(data_dir, model_id)
 
-        def done(result: tuple[str, str]) -> None:
-            path, warning = result
+        def done(result: tuple[str, str, _DiarizationInstallSnapshot]) -> None:
+            path, warning, snap = _unwrap_bg_result(result)
+            self._diarization_snapshot = snap
             self._diar_download_busy = False
             self._diar_download_progress = 1.0
             if warning:
@@ -9452,7 +10198,7 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
 
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
@@ -9470,20 +10216,20 @@ class AppController(QObject):
         """
         from vienetts_app.core.ai_models import (
             AiModelDownloadCancelled,
-            available_audiocpp_variants,
             download_audiocpp_runtime,
         )
 
         if self._shutting_down or self._diar_download_busy:
             return False
         data_dir = self._data_dir
-        offered = available_audiocpp_variants()
+        model_id = self.diarizationModel
+        offered = self._available_audiocpp_variants()
         requested = str(variant or "").strip().lower()
         if requested in ("", "auto"):
             device = self.diarizationDevice
             gpu = device in {"vulkan", "metal", "cuda"}
             refused = device if gpu and not _audiocpp_offers(device, offered) else ""
-            target = self._diar_runtime_variant()
+            target = device if _audiocpp_offers(device, offered) else ""
         else:
             refused = "" if _audiocpp_offers(requested, offered) else requested
             target = requested
@@ -9509,16 +10255,18 @@ class AppController(QObject):
                 or generation != self._diar_download_generation
             )
 
-        def work() -> str:
+        def work() -> tuple[str, _DiarizationInstallSnapshot]:
             cli = download_audiocpp_runtime(
                 data_dir,
                 variant=target,
                 progress_cb=progress_cb,
                 cancel_check=cancel_check,
             )
-            return str(cli)
+            return str(cli), _scan_diarization_install_snapshot(data_dir, model_id)
 
-        def done(path: str) -> None:
+        def done(result: tuple[str, _DiarizationInstallSnapshot]) -> None:
+            path, snap = _unwrap_bg_result(result)
+            self._diarization_snapshot = snap
             self._diar_download_busy = False
             self._diar_download_progress = 1.0
             self._diar_download_status = self.tr("Đã cài đặt audio.cpp: {name}").format(
@@ -9537,7 +10285,7 @@ class AppController(QObject):
             self.aiModelsInstallChanged.emit()
 
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=POOL_DOWNLOADS)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
@@ -9553,6 +10301,8 @@ class AppController(QObject):
         self._diar_download_status = (
             "" if removed else self.tr("Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.")
         )
+        self._diarization_snapshot = None
+        self._refresh_diarization_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
         return removed
 
@@ -9566,6 +10316,8 @@ class AppController(QObject):
         self._diar_download_status = (
             "" if removed else self.tr("Runtime audio.cpp chưa được cài đặt.")
         )
+        self._diarization_snapshot = None
+        self._refresh_diarization_status_async(force=True, emit_on_inline=False)
         self.aiModelsInstallChanged.emit()
         return removed
 
@@ -9580,10 +10332,12 @@ class AppController(QObject):
         work: Callable[[], Any],
         done: Callable[[Any], None],
         failed: Callable[[BaseException], None],
+        *,
+        pool: str = POOL_DOWNLOADS,
     ) -> bool:
         """Hand one op to the bg runner; a runner that raises fails the op instead."""
         try:
-            self._run_bg(work, done, self, on_error=failed)
+            self._submit_bg(work, done, on_error=failed, pool=pool)
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
@@ -9591,19 +10345,69 @@ class AppController(QObject):
 
     # ── Optional audio models (Silero VAD, speaker embedding) ───────────────
 
+    def _refresh_audio_models_async(
+        self, *, force: bool = False, emit_on_inline: bool = True, emit_always: bool = False
+    ) -> None:
+        """Scan optional audio model files off the GUI thread."""
+        if self._shutting_down:
+            return
+        if not force and self._audio_models_loading:
+            return
+        self._audio_models_generation += 1
+        generation = self._audio_models_generation
+        self._audio_models_loading = True
+        data_dir = self._data_dir
+        inline = True
+
+        def work() -> dict[str, str]:
+            return _scan_audio_model_paths(data_dir)
+
+        def on_done(result: Any) -> None:
+            if generation != self._audio_models_generation:
+                return
+            self._audio_models_loading = False
+            if self._shutting_down:
+                return
+            paths = dict(_unwrap_bg_result(result))
+            changed = paths != self._audio_models_paths
+            self._audio_models_paths = paths
+            if emit_always or (not inline and changed) or (emit_on_inline and changed):
+                self.audioModelsChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._audio_models_generation:
+                return
+            self._audio_models_loading = False
+            logger.warning("audio models scan failed: %s", exc)
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception:  # noqa: BLE001
+            self._audio_models_loading = False
+        finally:
+            inline = False
+
+    @Slot()
+    def refreshAudioModelsStatus(self) -> None:
+        """Re-scan optional audio model files off the GUI thread."""
+        self._refresh_audio_models_async(force=True, emit_always=True)
+
     @Property("QVariantList", notify=audioModelsChanged)
     def audioModels(self) -> list[dict[str, Any]]:
         """One row per optional audio model, in catalog order.
 
         ``{id, label, filename, sizeBytes, license, source, installed, path,
-        busy}`` — rows change on start/finish/remove only; the running op's
-        progress is ``audioModelProgress``.
+        busy}`` — served from an async-refreshed cache so QML bindings never
+        stat disk on the GUI thread; rows change on start/finish/remove only.
         """
-        from vienetts_app.core.ai_models import audio_model_catalog, audio_model_path
+        from vienetts_app.core.ai_models import audio_model_catalog
 
+        if self._audio_models_paths is None:
+            self._refresh_audio_models_async(force=False, emit_on_inline=False)
+        paths = self._audio_models_paths or {}
         rows: list[dict[str, Any]] = []
         for spec in audio_model_catalog():
-            path = audio_model_path(spec.id, self._data_dir)
+            path = paths.get(spec.id, "")
             rows.append(
                 {
                     "id": spec.id,
@@ -9612,8 +10416,8 @@ class AppController(QObject):
                     "sizeBytes": spec.size_bytes,
                     "license": spec.license,
                     "source": spec.source,
-                    "installed": path is not None,
-                    "path": str(path) if path is not None else "",
+                    "installed": bool(path),
+                    "path": path,
                     "busy": spec.id == self._audio_model_busy_id,
                 }
             )
@@ -9678,13 +10482,15 @@ class AppController(QObject):
         self.aiDownloadProgressChanged.emit()
         self.audioModelsChanged.emit()
 
-        def work() -> str:
+        def work() -> tuple[str, dict[str, str]]:
             path = download_audio_model(
                 spec.id, data_dir, progress_cb=progress_cb, cancel_check=cancel_check
             )
-            return str(path)
+            return str(path), _scan_audio_model_paths(data_dir)
 
-        def done(path: str) -> None:
+        def done(result: tuple[str, dict[str, str]]) -> None:
+            path, paths = _unwrap_bg_result(result)
+            self._audio_models_paths = paths
             self._finish_audio_model_op(
                 1.0, self.tr("Đã tải xong: {name}").format(name=Path(path).name)
             )
@@ -9692,7 +10498,7 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._finish_audio_model_op(0.0, str(exc))
 
-        return self._start_download_op(work, done, failed)
+        return self._start_download_op(work, done, failed, pool=POOL_DOWNLOADS)
 
     @Slot(str, result=bool)
     def removeAudioModel(self, model_id: str) -> bool:
@@ -9709,7 +10515,13 @@ class AppController(QObject):
         self._audio_model_status = self.tr("Đang gỡ {label}…").format(label=spec.label)
         self.audioModelsChanged.emit()
 
-        def done(removed: bool) -> None:
+        def work() -> tuple[dict[str, str], bool]:
+            removed = remove_audio_model(spec.id, data_dir)
+            return _scan_audio_model_paths(data_dir), removed
+
+        def done(result: tuple[dict[str, str], bool]) -> None:
+            paths, removed = _unwrap_bg_result(result)
+            self._audio_models_paths = paths
             self._finish_audio_model_op(
                 0.0,
                 self.tr("Đã gỡ {name}.").format(name=spec.filename)
@@ -9722,21 +10534,68 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._finish_audio_model_op(0.0, str(exc))
 
-        return self._start_download_op(lambda: remove_audio_model(spec.id, data_dir), done, failed)
+        return self._start_download_op(work, done, failed, pool=POOL_INTERACTIVE)
 
     # ── Managed ffmpeg runtime (ffmpeg + ffprobe) ────────────────────────────
+
+    def _refresh_ffmpeg_status_async(
+        self, *, force: bool = False, emit_on_inline: bool = True, emit_always: bool = False
+    ) -> None:
+        """Resolve ffmpeg/ffprobe status off the GUI thread (avoids GUI-thread PATH/stat)."""
+        if self._shutting_down:
+            return
+        if not force and self._ffmpeg_status_loading:
+            return
+        self._ffmpeg_status_generation += 1
+        generation = self._ffmpeg_status_generation
+        self._ffmpeg_status_loading = True
+        data_dir = self._data_dir
+        inline = True
+
+        def work() -> dict[str, Any]:
+            return _ffmpeg_status_row(data_dir)
+
+        def on_done(result: Any) -> None:
+            if generation != self._ffmpeg_status_generation:
+                return
+            self._ffmpeg_status_loading = False
+            if self._shutting_down:
+                return
+            row = dict(_unwrap_bg_result(result))
+            changed = row != self._ffmpeg_status
+            self._ffmpeg_status = row
+            if emit_always or (not inline and changed) or (emit_on_inline and changed):
+                self.ffmpegRuntimeChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._ffmpeg_status_generation:
+                return
+            self._ffmpeg_status_loading = False
+            logger.warning("ffmpeg runtime status scan failed: %s", exc)
+
+        try:
+            self._submit_bg(work, on_done, on_error=on_error, pool=POOL_INTERACTIVE)
+        except Exception:  # noqa: BLE001
+            self._ffmpeg_status_loading = False
+        finally:
+            inline = False
 
     @Property("QVariantMap", notify=ffmpegRuntimeChanged)
     def ffmpegRuntimeStatus(self) -> dict[str, Any]:
         """What dubbing runs for ffmpeg and whether this host can install it (FR-2.3).
 
         ``{cell, downloadable, managed, available, ffmpeg, ffprobe, version,
-        note, license, source, sizeBytes}`` (see ``_ffmpeg_status_row``). Read
-        lazily, refreshed by install/remove and ``refreshFfmpegRuntimeStatus()``.
+        note, license, source, sizeBytes}`` (see ``_ffmpeg_status_row``). Served
+        from an async-refreshed cache so QML bindings never probe PATH or disk
+        on the GUI thread.
         """
         if self._ffmpeg_status is None:
-            self._ffmpeg_status = _ffmpeg_status_row(self._data_dir)
-        return dict(self._ffmpeg_status)
+            self._refresh_ffmpeg_status_async(force=False, emit_on_inline=False)
+        return (
+            dict(self._ffmpeg_status)
+            if self._ffmpeg_status is not None
+            else dict(_EMPTY_FFMPEG_STATUS)
+        )
 
     @Property(bool, notify=ffmpegRuntimeChanged)
     def ffmpegRuntimeBusy(self) -> bool:
@@ -9752,9 +10611,8 @@ class AppController(QObject):
 
     @Slot()
     def refreshFfmpegRuntimeStatus(self) -> None:
-        """Re-resolve ffmpeg/ffprobe (e.g. after a Homebrew/apt/winget install)."""
-        self._ffmpeg_status = _ffmpeg_status_row(self._data_dir)
-        self.ffmpegRuntimeChanged.emit()
+        """Re-resolve ffmpeg/ffprobe off the GUI thread."""
+        self._refresh_ffmpeg_status_async(force=True, emit_always=True)
 
     def _finish_ffmpeg_op(self, progress: float, message: str) -> None:
         self._ffmpeg_busy = False
@@ -9774,8 +10632,10 @@ class AppController(QObject):
 
         if self._shutting_down or self._ffmpeg_busy:
             return False
-        status = self.ffmpegRuntimeStatus
-        if not status["downloadable"]:
+        if self._ffmpeg_status is None:
+            self._refresh_ffmpeg_status_async(force=False, emit_on_inline=False)
+        status = self._ffmpeg_status
+        if status is not None and not status["downloadable"]:
             self._ffmpeg_message = status["note"]
             self.ffmpegRuntimeChanged.emit()
             return False
@@ -9797,12 +10657,20 @@ class AppController(QObject):
         self.aiDownloadProgressChanged.emit()
         self.ffmpegRuntimeChanged.emit()
 
-        def work() -> dict[str, Any]:
+        def work() -> tuple[dict[str, Any], bool]:
+            if status is None:
+                fresh = _ffmpeg_status_row(data_dir)
+                if not fresh["downloadable"]:
+                    return fresh, False
             install_ffmpeg_runtime(data_dir, progress_cb=progress_cb, cancel_check=cancel_check)
-            return _ffmpeg_status_row(data_dir)
+            return _ffmpeg_status_row(data_dir), True
 
-        def done(row: dict[str, Any]) -> None:
+        def done(result: tuple[dict[str, Any], bool]) -> None:
+            row, installed = _unwrap_bg_result(result)
             self._ffmpeg_status = row
+            if not installed:
+                self._finish_ffmpeg_op(0.0, row["note"])
+                return
             self._finish_ffmpeg_op(
                 1.0, self.tr("Đã cài đặt ffmpeg {version}.").format(version=row["version"])
             )
@@ -9810,7 +10678,7 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._finish_ffmpeg_op(0.0, str(exc))
 
-        return self._start_download_op(work, done, failed)
+        return self._start_download_op(work, done, failed, pool=POOL_DOWNLOADS)
 
     @Slot(result=bool)
     def removeFfmpegRuntime(self) -> bool:
@@ -9824,11 +10692,12 @@ class AppController(QObject):
         self._ffmpeg_message = self.tr("Đang gỡ ffmpeg…")
         self.ffmpegRuntimeChanged.emit()
 
-        def work() -> tuple[bool, dict[str, Any]]:
-            return remove_ffmpeg_runtime(data_dir), _ffmpeg_status_row(data_dir)
+        def work() -> tuple[dict[str, Any], bool]:
+            removed = remove_ffmpeg_runtime(data_dir)
+            return _ffmpeg_status_row(data_dir), removed
 
-        def done(result: tuple[bool, dict[str, Any]]) -> None:
-            removed, row = result
+        def done(result: tuple[dict[str, Any], bool]) -> None:
+            row, removed = _unwrap_bg_result(result)
             self._ffmpeg_status = row
             self._finish_ffmpeg_op(
                 0.0,
@@ -9840,7 +10709,7 @@ class AppController(QObject):
         def failed(exc: BaseException) -> None:
             self._finish_ffmpeg_op(0.0, str(exc))
 
-        return self._start_download_op(work, done, failed)
+        return self._start_download_op(work, done, failed, pool=POOL_INTERACTIVE)
 
     @Property(str, notify=outputDirChanged)
     def outputDirUrl(self) -> str:

@@ -99,6 +99,59 @@ class TestDictListModel:
         model.sync([])
         assert model.property("count") == 0
 
+    def test_progress_ticks_update_in_place_without_resets_and_keep_64bit_bytes(
+        self, qcoreapp
+    ) -> None:
+        roles = ("key", "state", "busy", "installedBytes", "requiredBytes", "progress")
+        model = DictListModel(roles, key="key")
+        large_total = 3_500_000_000  # > 2^31 (64-bit byte counter)
+        model.sync(
+            [
+                {
+                    "key": "customvoice",
+                    "state": "unavailable",
+                    "busy": False,
+                    "installedBytes": 0,
+                    "requiredBytes": large_total,
+                    "progress": 0.0,
+                },
+                {
+                    "key": "base",
+                    "state": "downloading",
+                    "busy": True,
+                    "installedBytes": 500_000_000,
+                    "requiredBytes": large_total,
+                    "progress": 0.14,
+                },
+            ]
+        )
+        rec = Recorder(model)
+        model.sync(
+            [
+                {
+                    "key": "customvoice",
+                    "state": "unavailable",
+                    "busy": False,
+                    "installedBytes": 0,
+                    "requiredBytes": large_total,
+                    "progress": 0.0,
+                },
+                {
+                    "key": "base",
+                    "state": "downloading",
+                    "busy": True,
+                    "installedBytes": 2_500_000_000,
+                    "requiredBytes": large_total,
+                    "progress": 0.71,
+                },
+            ]
+        )
+        assert rec.events == [("changed", 1, 1, ["installedBytes", "modelData", "progress"])]
+        role_ids = {bytes(n).decode(): r for r, n in model.roleNames().items()}
+        assert "index" not in role_ids
+        assert model.data(model.index(1), role_ids["installedBytes"]) == 2_500_000_000
+        assert model.data(model.index(1), role_ids["requiredBytes"]) == large_total
+
 
 class TestDictListModelBenchmark:
     @pytest.mark.benchmark

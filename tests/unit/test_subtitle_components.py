@@ -49,8 +49,16 @@ _DRIVER = textwrap.dedent(
     import sys
     from pathlib import Path
 
-    from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Signal, Slot
-    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtCore import (
+        Property,
+        QMetaObject,
+        QObject,
+        QUrl,
+        Signal,
+        Slot,
+        qInstallMessageHandler,
+    )
+    from PySide6.QtGui import QAccessible, QGuiApplication
     from PySide6.QtQml import QQmlComponent, QQmlEngine
     from PySide6.QtQuick import QQuickItem  # noqa: F401 - registers the item converter
 
@@ -58,6 +66,18 @@ _DRIVER = textwrap.dedent(
 
     qml_dir, files = sys.argv[1], sys.argv[2:]
     DOCK_BUTTONS = ("subtitleRenderButton", "subtitlePlayButton", "subtitleExportMenuButton")
+    qt_warnings = []
+    qInstallMessageHandler(lambda _mode, _ctx, message: qt_warnings.append(str(message)))
+
+    def tooltip_text_of(obj):
+        for child in obj.children():
+            if child.metaObject().className() == "QQuickToolTipAttached":
+                return str(child.property("text") or "")
+        return ""
+
+    def accessible_desc_of(obj):
+        iface = QAccessible.queryAccessibleInterface(obj)
+        return str(iface.text(QAccessible.Text.Description)) if iface is not None else ""
 
 
     class CountingCueModel(DictListModel):
@@ -491,6 +511,104 @@ _DRIVER = textwrap.dedent(
                 QMetaObject.invokeMethod(cap_btn, "click")
                 app.processEvents()
 
+                # Task 6.1: AppIconButton inherits AppButton's disabledReason
+                # ToolTip + Accessible.description contract without shadowing.
+                play_btn = item.findChild(QObject, "subtitleVideoPlayButton")
+                extra["icon_btn_enabled_tooltip"] = tooltip_text_of(play_btn)
+                extra["icon_btn_enabled_expected"] = str(play_btn.property("tooltipText") or "")
+                extra["icon_btn_enabled_a11y_desc"] = accessible_desc_of(play_btn)
+                item.setProperty("busyReason", "Đang xuất video")
+                item.setProperty("exporting", True)
+                app.processEvents()
+                extra["icon_btn_disabled_flag"] = bool(play_btn.property("enabled"))
+                extra["icon_btn_disabled_tooltip"] = tooltip_text_of(play_btn)
+                extra["icon_btn_disabled_a11y_desc"] = accessible_desc_of(play_btn)
+                item.setProperty("exporting", False)
+                item.setProperty("busyReason", "")
+                app.processEvents()
+
+                # Task 6.3: lazy MediaPlayer Loader mounts only while hasVideo
+                # and not released.
+                player_loader = item.findChild(QObject, "subtitleVideoPlayerLoader")
+                extra["player_loader_active_initial"] = bool(player_loader.property("active"))
+                extra["player_mounted_initial"] = bool(item.property("playerMounted"))
+                controller._has_video = False
+                controller.videoChanged.emit()
+                app.processEvents()
+                extra["player_loader_active_no_video"] = bool(player_loader.property("active"))
+                extra["player_mounted_no_video"] = bool(item.property("playerMounted"))
+                controller._has_video = True
+                controller.videoChanged.emit()
+                app.processEvents()
+                extra["player_loader_active_reattached"] = bool(player_loader.property("active"))
+                extra["player_mounted_reattached"] = bool(item.property("playerMounted"))
+
+                # Task 6.3: scrubbing subtitleVideoScrubSlider produces zero
+                # QML binding-loop warnings.
+                scrub = item.findChild(QObject, "subtitleVideoScrubSlider")
+                warn_start = len(qt_warnings)
+                synced_start = len(controller.synced_positions)
+                scrub.setProperty("pressed", True)
+                for pos in (1200, 2400, 3600, 4800):
+                    scrub.setProperty("value", pos)
+                    scrub.moved.emit()
+                    app.processEvents()
+                scrub.setProperty("pressed", False)
+                app.processEvents()
+                extra["scrub_binding_loop_warnings"] = [
+                    w for w in qt_warnings[warn_start:] if "binding loop" in w.lower()
+                ]
+                extra["scrub_synced_positions"] = list(
+                    controller.synced_positions[synced_start:]
+                )
+
+                # Task 6.3: activeCueChanged bumps only _activeCueRevision
+                # (never _cuesRevision); cuesChanged bumps _cuesRevision.
+                cues_rev_before = int(item.property("_cuesRevision"))
+                active_rev_before = int(item.property("_activeCueRevision"))
+                controller.activeCue = 1
+                app.processEvents()
+                controller.activeCue = 0
+                app.processEvents()
+                extra["cues_rev_delta_on_active"] = (
+                    int(item.property("_cuesRevision")) - cues_rev_before
+                )
+                extra["active_rev_delta_on_active"] = (
+                    int(item.property("_activeCueRevision")) - active_rev_before
+                )
+                controller.cuesChanged.emit()
+                app.processEvents()
+                extra["cues_rev_delta_on_cues"] = (
+                    int(item.property("_cuesRevision")) - cues_rev_before
+                )
+
+                # Task 6.3: dub-sync drift threshold (300 ms) & seek cooldown
+                # (400 ms) suppress redundant MediaPlayer seeks.
+                extra["dub_sync_drift_threshold_ms"] = int(
+                    item.property("_dubSyncDriftThresholdMs")
+                )
+                extra["dub_sync_seek_cooldown_ms"] = int(
+                    item.property("_dubSyncSeekCooldownMs")
+                )
+                controller.positionMs = 0
+                controller.playerState = "playing"
+                app.processEvents()
+                controller.positionMs = 200
+                app.processEvents()
+                extra["dub_seek_ts_below_drift"] = float(item.property("_lastDubSeekAtMs"))
+                controller.positionMs = 1500
+                app.processEvents()
+                seek_ts_1 = float(item.property("_lastDubSeekAtMs"))
+                extra["dub_seek_ts_above_drift"] = seek_ts_1
+                controller.positionMs = 2500
+                app.processEvents()
+                extra["dub_seek_ts_in_cooldown"] = float(item.property("_lastDubSeekAtMs"))
+                controller.playerState = "stopped"
+                controller.positionMs = 0
+                controller.activeCue = 0
+                item.setProperty("preferredAudioMode", "source")
+                app.processEvents()
+
                 # Auto-collapse in compact mode outside "source" stage
                 item.setProperty("compact", True)
                 item.setProperty("stageName", "prepare")
@@ -537,6 +655,10 @@ _DRIVER = textwrap.dedent(
                 controller.videoReleaseRequested.emit()
                 app.processEvents()
                 extra["released_source"] = str(item.property("mediaSourceString"))
+                extra["player_loader_active_after_release"] = bool(
+                    player_loader.property("active")
+                )
+                extra["player_mounted_after_release"] = bool(item.property("playerMounted"))
 
                 # Codec/backend fallback state
                 item.setProperty("forceFallbackError", True)
@@ -621,6 +743,31 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     assert vp["caption_speaker_0"] == "SPEAKER_01"
     assert vp["captions_enabled_initial"] is True
     assert vp["captions_enabled_after_click"] is False
+    # Task 6.1: AppIconButton disabledReason restoration.
+    assert vp["icon_btn_enabled_tooltip"] == vp["icon_btn_enabled_expected"]
+    assert vp["icon_btn_enabled_tooltip"] != ""
+    assert vp["icon_btn_enabled_a11y_desc"] == ""
+    assert vp["icon_btn_disabled_flag"] is False
+    assert vp["icon_btn_disabled_tooltip"] == "Đang xuất video"
+    assert vp["icon_btn_disabled_a11y_desc"] == "Đang xuất video"
+    # Task 6.3: lazy MediaPlayer Loader, binding-loop-free scrub, split
+    # revisions, and dub-sync drift threshold + cooldown.
+    assert vp["player_loader_active_initial"] is True
+    assert vp["player_mounted_initial"] is True
+    assert vp["player_loader_active_no_video"] is False
+    assert vp["player_mounted_no_video"] is False
+    assert vp["player_loader_active_reattached"] is True
+    assert vp["player_mounted_reattached"] is True
+    assert vp["scrub_binding_loop_warnings"] == []
+    assert vp["scrub_synced_positions"] == [1200, 2400, 3600, 4800]
+    assert vp["cues_rev_delta_on_active"] == 0
+    assert vp["active_rev_delta_on_active"] >= 2
+    assert vp["cues_rev_delta_on_cues"] == 1
+    assert vp["dub_sync_drift_threshold_ms"] == 300
+    assert vp["dub_sync_seek_cooldown_ms"] == 400
+    assert vp["dub_seek_ts_below_drift"] == 0.0
+    assert vp["dub_seek_ts_above_drift"] > 0.0
+    assert vp["dub_seek_ts_in_cooldown"] == vp["dub_seek_ts_above_drift"]
     assert vp["auto_collapsed_compact_prepare"] is True
     assert vp["expanded_after_toggle"] is True
     assert vp["dub_playing_mode"] == "dub"
@@ -631,6 +778,8 @@ def test_extracted_subtitle_components_instantiate_standalone(tmp_path: Path) ->
     assert vp["tick_row_reads"] <= 2  # one per tick inside a cue, none in silence
     assert vp["seek_position_ms"] == 4200
     assert vp["released_source"] == ""
+    assert vp["player_loader_active_after_release"] is False
+    assert vp["player_mounted_after_release"] is False
     assert vp["fallback_error_active"] is True
 
     # FR-1.1: Render/Play/Export are disabled (with the owner's reason) while

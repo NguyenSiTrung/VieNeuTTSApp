@@ -4,718 +4,730 @@
 <context>
     <name>AppController</name>
     <message>
-        <location filename="../controller.py" line="2245"/>
+        <location filename="../controller.py" line="2550"/>
         <source>Không mở được thư mục mô hình: {}</source>
         <translation>Could not open the model folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2917"/>
+        <location filename="../controller.py" line="3263"/>
         <source>Runtime Qwen</source>
         <translation>Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2918"/>
+        <location filename="../controller.py" line="3264"/>
         <source>Mô hình Qwen</source>
         <translation>Qwen model</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2957"/>
+        <location filename="../controller.py" line="3303"/>
         <source>Hãy chọn một hồ sơ Qwen trước khi kiểm tra tệp.</source>
         <translation>Select a Qwen profile before verifying files.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2960"/>
+        <location filename="../controller.py" line="3306"/>
         <source>Đang cài đặt Qwen — vui lòng đợi rồi kiểm tra lại.</source>
         <translation>Qwen is installing — wait, then verify again.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2965"/>
+        <location filename="../controller.py" line="3311"/>
         <source>Không kiểm tra được tệp Qwen: {}</source>
         <translation>Could not verify Qwen files: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2989"/>
+        <location filename="../controller.py" line="3335"/>
         <source>Mọi tệp Qwen đều khớp với bản đã ghim.</source>
         <translation>All Qwen files match their pinned versions.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2991"/>
+        <location filename="../controller.py" line="3337"/>
         <source>Phát hiện tệp thiếu hoặc hỏng — {}</source>
         <translation>Missing or corrupt files found — {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3138"/>
+        <location filename="../controller.py" line="3492"/>
         <source>Tự động (khuyến nghị)</source>
         <translation>Auto (recommended)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3172"/>
-        <location filename="../controller.py" line="3174"/>
+        <location filename="../controller.py" line="3526"/>
+        <location filename="../controller.py" line="3528"/>
         <source>Nền tảng này không có runtime Qwen cho thiết bị đã chọn.</source>
         <translation>This platform has no Qwen runtime for the selected device.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3181"/>
+        <location filename="../controller.py" line="3535"/>
         <source>Không phát hiện GPU NVIDIA trên máy này.</source>
         <translation>No NVIDIA GPU was detected on this machine.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3183"/>
+        <location filename="../controller.py" line="3537"/>
         <source>MPS chỉ có trên Apple Silicon.</source>
         <translation>MPS is available only on Apple Silicon.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3185"/>
+        <location filename="../controller.py" line="3539"/>
         <source>Metal chỉ có trên Apple Silicon.</source>
         <translation>Metal is only available on Apple Silicon.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3205"/>
+        <location filename="../controller.py" line="3559"/>
         <source>Chạy Qwen trên CPU sẽ rất chậm (chậm hơn nhiều lần so với GPU). Hãy cài runtime CPU nếu máy không có GPU, và dùng văn bản ngắn để thử trước.</source>
         <translation>Running Qwen on CPU is very slow (many times slower than on a GPU). Install the CPU runtime if this machine has no GPU, and try short text first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3224"/>
+        <location filename="../controller.py" line="3578"/>
         <source>Thiết bị Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen device: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3231"/>
+        <location filename="../controller.py" line="3585"/>
         <source>Đang cài đặt Qwen — vui lòng đợi.</source>
         <translation>A Qwen install is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3239"/>
+        <location filename="../controller.py" line="3593"/>
         <source>Không thể đổi thiết bị Qwen khi đang xử lý: {}</source>
         <translation>Cannot change the Qwen device while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3325"/>
+        <location filename="../controller.py" line="3679"/>
         <source>Trọng lượng đầy đủ (PyTorch)</source>
         <translation>Full weights (PyTorch)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3359"/>
+        <location filename="../controller.py" line="3713"/>
         <source>Định dạng mô hình Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen model format: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3365"/>
+        <location filename="../controller.py" line="3719"/>
         <source>Trọng lượng đầy đủ không có lượng tử hóa — chọn định dạng GGUF.</source>
         <translation>Full weights have no quantization — choose the GGUF format.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3378"/>
+        <location filename="../controller.py" line="3732"/>
         <source>Lượng tử hóa GGUF không hợp lệ: {}</source>
         <translation>Invalid GGUF quantization: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3392"/>
+        <location filename="../controller.py" line="3746"/>
         <source>Không thể đổi biến thể khi đang xử lý: {}</source>
         <translation>Cannot change variant while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3767"/>
-        <location filename="../controller.py" line="3845"/>
-        <location filename="../controller.py" line="3892"/>
+        <location filename="../controller.py" line="4149"/>
+        <location filename="../controller.py" line="4235"/>
+        <location filename="../controller.py" line="4282"/>
         <source>Nền tảng này không có runtime Qwen được hỗ trợ.</source>
         <translation>This platform has no supported Qwen runtime.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3886"/>
+        <location filename="../controller.py" line="4276"/>
         <source>Chọn thư mục chứa các tệp wheel của runtime Qwen.</source>
         <translation>Choose the folder holding the Qwen runtime wheel files.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4037"/>
+        <location filename="../controller.py" line="4451"/>
         <source>Chọn thư mục chứa mô hình Qwen ngoại tuyến.</source>
         <translation>Choose the folder holding the offline Qwen model.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4144"/>
+        <location filename="../controller.py" line="4581"/>
         <source>Hồ sơ Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen profile: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4152"/>
+        <location filename="../controller.py" line="4589"/>
         <source>Không mở được thư mục runtime Qwen: {}</source>
         <translation>Could not open the Qwen runtime folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4160"/>
+        <location filename="../controller.py" line="4597"/>
         <source>Không mở được thư mục mô hình Qwen: {}</source>
         <translation>Could not open the Qwen model folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4309"/>
-        <location filename="../controller.py" line="4389"/>
-        <location filename="../controller.py" line="4498"/>
+        <location filename="../controller.py" line="4762"/>
+        <location filename="../controller.py" line="4843"/>
+        <location filename="../controller.py" line="4952"/>
         <source>Yêu cầu không hợp lệ: {}</source>
         <translation>Invalid request: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4361"/>
+        <location filename="../controller.py" line="4815"/>
         <source>Bản văn quá dài ({chars:,} ký tự, giới hạn {limit:,}). Hãy dùng tab Sách nói (EPUB) để tạo văn bản dài theo từng chương.</source>
         <translation>Text is too long ({chars:,} characters, limit {limit:,}). Use the Audiobook (EPUB) tab to synthesize long text chapter by chapter.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4412"/>
-        <location filename="../controller.py" line="4506"/>
+        <location filename="../controller.py" line="4866"/>
+        <location filename="../controller.py" line="4960"/>
         <source>Không thể khởi động bộ tổng hợp giọng nói: {}</source>
         <translation>Could not start speech synthesis: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4429"/>
-        <location filename="../controller.py" line="4519"/>
-        <location filename="../controller.py" line="7526"/>
-        <location filename="../controller.py" line="7586"/>
+        <location filename="../controller.py" line="4883"/>
+        <location filename="../controller.py" line="4973"/>
+        <location filename="../controller.py" line="8222"/>
+        <location filename="../controller.py" line="8282"/>
         <source>Không thể thêm tác vụ vì ứng dụng đang đóng.</source>
         <translation>Cannot queue a job because the app is shutting down.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4640"/>
-        <location filename="../controller.py" line="8108"/>
+        <location filename="../controller.py" line="5094"/>
+        <location filename="../controller.py" line="8886"/>
         <source>Tệp âm thanh không hợp lệ.</source>
         <translation>The audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4775"/>
-        <location filename="../controller.py" line="5604"/>
+        <location filename="../controller.py" line="5232"/>
+        <location filename="../controller.py" line="6096"/>
         <source>Chưa có gì để xuất — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to export yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4778"/>
-        <location filename="../controller.py" line="5842"/>
-        <location filename="../controller.py" line="6696"/>
+        <location filename="../controller.py" line="5235"/>
+        <location filename="../controller.py" line="6460"/>
+        <location filename="../controller.py" line="7321"/>
         <source>Đang xuất một tệp khác — vui lòng đợi.</source>
         <translation>Another export is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4810"/>
-        <location filename="../controller.py" line="6733"/>
+        <location filename="../controller.py" line="5267"/>
+        <location filename="../controller.py" line="7358"/>
         <source>Tệp đang được sử dụng bởi ứng dụng khác: {}</source>
         <translation>The file is being used by another application: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4812"/>
-        <location filename="../controller.py" line="4814"/>
-        <location filename="../controller.py" line="4835"/>
-        <location filename="../controller.py" line="4846"/>
-        <location filename="../controller.py" line="6735"/>
-        <location filename="../controller.py" line="6737"/>
-        <location filename="../controller.py" line="6744"/>
-        <location filename="../controller.py" line="6752"/>
+        <location filename="../controller.py" line="5269"/>
+        <location filename="../controller.py" line="5271"/>
+        <location filename="../controller.py" line="5292"/>
+        <location filename="../controller.py" line="5303"/>
+        <location filename="../controller.py" line="7360"/>
+        <location filename="../controller.py" line="7362"/>
+        <location filename="../controller.py" line="7369"/>
+        <location filename="../controller.py" line="7377"/>
         <source>Xuất {} thất bại: {}</source>
         <translation>{} export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4968"/>
+        <location filename="../controller.py" line="5425"/>
         <source>Lồng tiếng (tối đa {rate}×)</source>
         <translation>Dubbing (up to {rate}×)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4969"/>
+        <location filename="../controller.py" line="5426"/>
         <source>Bản thoại tự nhiên</source>
         <translation>Natural dialogue</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5002"/>
+        <location filename="../controller.py" line="5459"/>
         <source>Đoạn {a}–{b} / {total}</source>
         <translation>Cues {a}–{b} / {total}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5038"/>
+        <location filename="../controller.py" line="5495"/>
         <source>Giữ nhạc nền ({gain:.0f} dB)</source>
         <translation>Keep background audio ({gain:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5039"/>
+        <location filename="../controller.py" line="5496"/>
         <source>Thay thế âm gốc</source>
         <translation>Replace original audio</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5184"/>
+        <location filename="../controller.py" line="5641"/>
         <source>cuối</source>
         <translation>end</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5191"/>
+        <location filename="../controller.py" line="5648"/>
         <source>Khuếch đại</source>
         <translation>Gain</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5192"/>
+        <location filename="../controller.py" line="5649"/>
         <source>Khuếch đại {}</source>
         <translation>Gain {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5195"/>
+        <location filename="../controller.py" line="5652"/>
         <source>vào</source>
         <translation>in</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5195"/>
+        <location filename="../controller.py" line="5652"/>
         <source>ra</source>
         <translation>out</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5196"/>
+        <location filename="../controller.py" line="5653"/>
         <source>Mờ dần</source>
         <translation>Fade</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5197"/>
+        <location filename="../controller.py" line="5654"/>
         <source>Mờ {} {} ms</source>
         <translation>Fade {} {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5200"/>
+        <location filename="../controller.py" line="5657"/>
         <source>Tốc độ</source>
         <translation>Speed</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5201"/>
+        <location filename="../controller.py" line="5658"/>
         <source>Tốc độ {:.2f}×</source>
         <translation>Speed {:.2f}×</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5204"/>
+        <location filename="../controller.py" line="5661"/>
         <source>Chuẩn hóa</source>
         <translation>Normalize</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5205"/>
+        <location filename="../controller.py" line="5662"/>
         <source>Chuẩn hóa đỉnh ({:.0%})</source>
         <translation>Normalize peak ({:.0%})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5208"/>
+        <location filename="../controller.py" line="5665"/>
         <source>Cắt lặng</source>
         <translation>Trim silence</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5209"/>
+        <location filename="../controller.py" line="5666"/>
         <source>Cắt khoảng lặng ({:.0f} dB)</source>
         <translation>Trim silence ({:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5212"/>
+        <location filename="../controller.py" line="5669"/>
         <source>Khoảng lặng</source>
         <translation>Gap</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5213"/>
+        <location filename="../controller.py" line="5670"/>
         <source>Khoảng lặng {} ms</source>
         <translation>Gap {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5224"/>
+        <location filename="../controller.py" line="5681"/>
         <source>Hiệu ứng</source>
         <translation>Effect</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5323"/>
+        <location filename="../controller.py" line="5780"/>
         <source>Trọng lượng đầy đủ ({})</source>
         <translation>Full weights ({})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5590"/>
+        <location filename="../controller.py" line="6054"/>
         <source>Chưa có dự án studio — hãy mở âm thanh trong Studio trước.</source>
         <translation>No studio project — open audio in Studio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5655"/>
+        <location filename="../controller.py" line="6145"/>
+        <location filename="../controller.py" line="6154"/>
+        <source>Không mở được trong Studio: {}</source>
+        <translation>Could not open in Studio: {}</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="6202"/>
         <source>Không tìm thấy chương này trong sách.</source>
         <translation>Chapter not found in this book.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5668"/>
-        <location filename="../controller.py" line="5673"/>
+        <location filename="../controller.py" line="6218"/>
+        <location filename="../controller.py" line="6224"/>
         <source>Không mở được chương trong Studio: {}</source>
         <translation>Could not open the chapter in Studio: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5686"/>
+        <location filename="../controller.py" line="6241"/>
         <source>Chưa có dự án phụ đề để mở trong Studio.</source>
         <translation>No subtitle project to open in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5713"/>
-        <location filename="../controller.py" line="5718"/>
+        <location filename="../controller.py" line="6279"/>
+        <location filename="../controller.py" line="6285"/>
         <source>Không mở được phụ đề trong Studio: {}</source>
         <translation>Could not open subtitles in Studio: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5757"/>
-        <location filename="../controller.py" line="5835"/>
+        <location filename="../controller.py" line="6345"/>
+        <location filename="../controller.py" line="6351"/>
+        <source>Không thể chỉnh tốc độ đoạn: {}</source>
+        <translation>Could not adjust clip speed: {}</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="6370"/>
+        <location filename="../controller.py" line="6453"/>
         <source>Dự án Studio hiện tại không phải phụ đề.</source>
         <translation>The current Studio project is not a subtitle project.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5760"/>
-        <location filename="../controller.py" line="5845"/>
-        <location filename="../controller.py" line="6466"/>
-        <location filename="../controller.py" line="6699"/>
+        <location filename="../controller.py" line="6373"/>
+        <location filename="../controller.py" line="6463"/>
+        <location filename="../controller.py" line="7091"/>
+        <location filename="../controller.py" line="7324"/>
         <source>Đang xử lý studio — vui lòng đợi.</source>
         <translation>Studio is rendering — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5799"/>
-        <location filename="../controller.py" line="5808"/>
+        <location filename="../controller.py" line="6417"/>
+        <location filename="../controller.py" line="6426"/>
         <source>Lưu phụ đề thất bại: {}</source>
         <translation>Saving subtitles failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5839"/>
+        <location filename="../controller.py" line="6457"/>
         <source>Chưa có tệp video nguồn hợp lệ để xuất video lồng tiếng.</source>
         <translation>No valid source video file selected for dubbed video export.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5944"/>
-        <location filename="../controller.py" line="5954"/>
+        <location filename="../controller.py" line="6569"/>
+        <location filename="../controller.py" line="6579"/>
         <source>Xuất video lồng tiếng thất bại: {}</source>
         <translation>Dubbed video export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6596"/>
+        <location filename="../controller.py" line="7221"/>
         <source>Dự án hiện tại không có video nguồn để nghe âm gốc.</source>
         <translation>The current project has no source video for original audio preview.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6648"/>
-        <location filename="../controller.py" line="6654"/>
+        <location filename="../controller.py" line="7273"/>
+        <location filename="../controller.py" line="7279"/>
         <source>Nghe âm gốc thất bại: {}</source>
         <translation>Original audio preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8433"/>
+        <location filename="../controller.py" line="9317"/>
         <source>faster-whisper không có trong bản cài đặt này — hãy chọn whisper.cpp hoặc Tự động.</source>
         <translation>faster-whisper is not included in this installation — choose whisper.cpp or Auto.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8445"/>
+        <location filename="../controller.py" line="9329"/>
         <source>faster-whisper không có trong bản cài đặt này — đang dùng chế độ Tự động.</source>
         <translation>faster-whisper is not included in this installation — using Auto mode.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8723"/>
+        <location filename="../controller.py" line="9613"/>
         <source>Đang kiểm tra kết nối…</source>
         <translation>Testing connection…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8841"/>
+        <location filename="../controller.py" line="9763"/>
         <source>Chưa cài runtime whisper.cpp và chưa tải mô hình Whisper.</source>
         <translation>The whisper.cpp runtime is not installed and no Whisper model is downloaded.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8843"/>
+        <location filename="../controller.py" line="9765"/>
         <source>Chưa cài runtime whisper.cpp.</source>
         <translation>The whisper.cpp runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8845"/>
+        <location filename="../controller.py" line="9767"/>
         <source>Chưa tải mô hình Whisper.</source>
         <translation>No Whisper model is downloaded.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8847"/>
+        <location filename="../controller.py" line="9769"/>
         <source>Hãy cài trong Cài đặt › Mô hình.</source>
         <translation>Install it from Settings › Models.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8850"/>
+        <location filename="../controller.py" line="9772"/>
         <source>Hãy cài trong Cài đặt › Mô hình, hoặc nhập URL Whisper API để dùng dự phòng đám mây.</source>
         <translation>Install it from Settings › Models, or enter a Whisper API URL to use cloud fallback.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8855"/>
+        <location filename="../controller.py" line="9777"/>
         <source>Hãy cài trong Cài đặt › Mô hình, hoặc bật “Cho phép dự phòng đám mây” và nhập URL Whisper API.</source>
         <translation>Install it from Settings › Models, or turn on “Allow cloud fallback” and enter a Whisper API URL.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8893"/>
+        <location filename="../controller.py" line="9816"/>
         <source>Đang tải mô hình Whisper ({m})…</source>
         <translation>Downloading Whisper model ({m})…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8922"/>
+        <location filename="../controller.py" line="9858"/>
         <source>Đã tải mô hình {name}, nhưng chưa cài được runtime whisper.cpp: {err}</source>
         <translation>Downloaded model {name}, but could not install whisper.cpp runtime: {err}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8925"/>
-        <location filename="../controller.py" line="9366"/>
+        <location filename="../controller.py" line="9861"/>
+        <location filename="../controller.py" line="10495"/>
         <source>Đã tải xong: {name}</source>
         <translation>Downloaded: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8961"/>
+        <location filename="../controller.py" line="9903"/>
         <source>Không có bản runtime whisper.cpp cho thiết bị {device} trên hệ điều hành này.</source>
         <translation>No whisper.cpp runtime is available for device {device} on this operating system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8971"/>
+        <location filename="../controller.py" line="9912"/>
         <source>Đang tải runtime whisper.cpp…</source>
         <translation>Downloading whisper.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8986"/>
+        <location filename="../controller.py" line="9937"/>
         <source>Đã cài đặt whisper.cpp: {name}</source>
         <translation>Installed whisper.cpp: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9027"/>
+        <location filename="../controller.py" line="9982"/>
         <source>Runtime whisper.cpp chưa được cài đặt.</source>
         <translation>whisper.cpp runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9104"/>
+        <location filename="../controller.py" line="10142"/>
         <source>Đang tải {m} &amp; runtime audio.cpp…</source>
         <translation>Downloading {m} &amp; audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9132"/>
+        <location filename="../controller.py" line="10182"/>
         <source>Đã tải mô hình {name}, nhưng chưa cài được runtime audio.cpp: {err}</source>
         <translation>Downloaded model {name}, but the audio.cpp runtime could not be installed: {err}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9135"/>
+        <location filename="../controller.py" line="10185"/>
         <source>Đã sẵn sàng: {name}</source>
         <translation>Ready: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9184"/>
+        <location filename="../controller.py" line="10238"/>
         <source>Không có bản runtime audio.cpp cho thiết bị {device} trên hệ điều hành này.</source>
         <translation>No audio.cpp runtime build is available for {device} on this operating system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9194"/>
+        <location filename="../controller.py" line="10247"/>
         <source>Đang tải runtime audio.cpp…</source>
         <translation>Downloading audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9209"/>
+        <location filename="../controller.py" line="10272"/>
         <source>Đã cài đặt audio.cpp: {name}</source>
         <translation>Installed audio.cpp: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9014"/>
-        <location filename="../controller.py" line="9237"/>
+        <location filename="../controller.py" line="9967"/>
+        <location filename="../controller.py" line="10302"/>
         <source>Không thể gỡ mô hình nằm ngoài thư mục ứng dụng.</source>
         <translation>Cannot remove a model stored outside the app directory.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9250"/>
+        <location filename="../controller.py" line="10317"/>
         <source>Runtime audio.cpp chưa được cài đặt.</source>
         <translation>The audio.cpp runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9691"/>
+        <location filename="../controller.py" line="10891"/>
         <source>Không thể đổi {} khi đang xử lý: {}</source>
         <translation>Cannot change {} while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5533"/>
-        <location filename="../controller.py" line="5545"/>
-        <location filename="../controller.py" line="6575"/>
-        <location filename="../controller.py" line="6581"/>
+        <location filename="../controller.py" line="5990"/>
+        <location filename="../controller.py" line="6002"/>
+        <location filename="../controller.py" line="7200"/>
+        <location filename="../controller.py" line="7206"/>
         <source>Nghe thử thất bại: {}</source>
         <translation>Preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6538"/>
-        <location filename="../controller.py" line="6600"/>
-        <location filename="../controller.py" line="6778"/>
+        <location filename="../controller.py" line="7163"/>
+        <location filename="../controller.py" line="7225"/>
+        <location filename="../controller.py" line="7403"/>
         <source>Không tìm thấy đoạn này trong Studio.</source>
         <translation>Clip not found in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6781"/>
+        <location filename="../controller.py" line="7406"/>
         <source>Đang tổng hợp — vui lòng đợi.</source>
         <translation>Synthesizing — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6906"/>
+        <location filename="../controller.py" line="7592"/>
         <source>Chưa có gì để phát — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to play yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6500"/>
-        <location filename="../controller.py" line="6517"/>
-        <location filename="../controller.py" line="6542"/>
-        <location filename="../controller.py" line="6607"/>
-        <location filename="../controller.py" line="6665"/>
-        <location filename="../controller.py" line="6680"/>
-        <location filename="../controller.py" line="6911"/>
-        <location filename="../controller.py" line="6933"/>
-        <location filename="../controller.py" line="7247"/>
-        <location filename="../controller.py" line="7257"/>
+        <location filename="../controller.py" line="7125"/>
+        <location filename="../controller.py" line="7142"/>
+        <location filename="../controller.py" line="7167"/>
+        <location filename="../controller.py" line="7232"/>
+        <location filename="../controller.py" line="7290"/>
+        <location filename="../controller.py" line="7305"/>
+        <location filename="../controller.py" line="7597"/>
+        <location filename="../controller.py" line="7619"/>
+        <location filename="../controller.py" line="7942"/>
+        <location filename="../controller.py" line="7952"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1734"/>
+        <location filename="../controller.py" line="1967"/>
         <source>{} không hỗ trợ ngôn ngữ {} — chọn một trong: {}</source>
         <translation>{} does not support language {} — choose one of: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1744"/>
-        <location filename="../controller.py" line="2078"/>
-        <location filename="../controller.py" line="3252"/>
-        <location filename="../controller.py" line="3416"/>
+        <location filename="../controller.py" line="1977"/>
+        <location filename="../controller.py" line="2377"/>
+        <location filename="../controller.py" line="3606"/>
+        <location filename="../controller.py" line="3770"/>
         <source>Không thể lưu cài đặt: {}</source>
         <translation>Could not save settings: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2042"/>
+        <location filename="../controller.py" line="2341"/>
         <source>Hồ sơ engine không hợp lệ: {}</source>
         <translation>Invalid engine profile: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2050"/>
+        <location filename="../controller.py" line="2349"/>
         <source>Không thể đổi engine khi đang xử lý: {}</source>
         <translation>Cannot switch engines while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5216"/>
+        <location filename="../controller.py" line="5673"/>
         <source>Giữ đoạn</source>
         <translation>Keep range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5217"/>
+        <location filename="../controller.py" line="5674"/>
         <source>Giữ {}</source>
         <translation>Keep {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5220"/>
+        <location filename="../controller.py" line="5677"/>
         <source>Bỏ đoạn</source>
         <translation>Remove range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5221"/>
+        <location filename="../controller.py" line="5678"/>
         <source>Bỏ {}</source>
         <translation>Remove {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6801"/>
+        <location filename="../controller.py" line="7426"/>
         <source>Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại.</source>
         <translation>This clip was produced with {profile}. Switch to that profile to re-synthesize it.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7379"/>
+        <location filename="../controller.py" line="8074"/>
         <source>Đang nhập một tệp khác — vui lòng đợi.</source>
         <translation>Another import is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7389"/>
+        <location filename="../controller.py" line="8084"/>
         <source>Không tìm thấy tệp: {}</source>
         <translation>File not found: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7393"/>
-        <location filename="../controller.py" line="7400"/>
+        <location filename="../controller.py" line="8088"/>
+        <location filename="../controller.py" line="8095"/>
         <source>Lỗi nhập tệp: {}</source>
         <translation>Could not import file: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7504"/>
+        <location filename="../controller.py" line="8199"/>
         <source>Không thể khởi động mô hình: {}</source>
         <translation>Could not start the model: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8372"/>
+        <location filename="../controller.py" line="9256"/>
         <source>modelRepo phải là chuỗi ký tự.</source>
         <translation>modelRepo must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8385"/>
+        <location filename="../controller.py" line="9269"/>
         <source>defaultVoice phải là chuỗi ký tự không trống.</source>
         <translation>defaultVoice must be a non-empty string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8396"/>
+        <location filename="../controller.py" line="9280"/>
         <source>outputDir phải là chuỗi ký tự.</source>
         <translation>outputDir must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9324"/>
+        <location filename="../controller.py" line="10445"/>
         <source>Mô hình {m} không có trong danh mục của ứng dụng.</source>
         <translation>Model {m} is not in the app catalog.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9354"/>
+        <location filename="../controller.py" line="10481"/>
         <source>Đang tải {label}…</source>
         <translation>Downloading {label}…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9386"/>
+        <location filename="../controller.py" line="10515"/>
         <source>Đang gỡ {label}…</source>
         <translation>Removing {label}…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9392"/>
+        <location filename="../controller.py" line="10527"/>
         <source>Đã gỡ {name}.</source>
         <translation>Removed {name}.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9395"/>
+        <location filename="../controller.py" line="10530"/>
         <source>Không thể gỡ {name}: chưa cài đặt hoặc nằm ngoài thư mục ứng dụng.</source>
         <translation>Cannot remove {name}: it is not installed or is outside the app directory.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9465"/>
+        <location filename="../controller.py" line="10656"/>
         <source>Đang tải và kiểm tra ffmpeg…</source>
         <translation>Downloading and verifying ffmpeg…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9476"/>
+        <location filename="../controller.py" line="10675"/>
         <source>Đã cài đặt ffmpeg {version}.</source>
         <translation>Installed ffmpeg {version}.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9493"/>
+        <location filename="../controller.py" line="10692"/>
         <source>Đang gỡ ffmpeg…</source>
         <translation>Removing ffmpeg…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9504"/>
+        <location filename="../controller.py" line="10704"/>
         <source>Đã gỡ ffmpeg do ứng dụng cài.</source>
         <translation>Removed the app-installed ffmpeg.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9506"/>
+        <location filename="../controller.py" line="10706"/>
         <source>Chưa có ffmpeg do ứng dụng cài để gỡ.</source>
         <translation>There is no app-installed ffmpeg to remove.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9562"/>
+        <location filename="../controller.py" line="10762"/>
         <source>exportFormat phải là chuỗi ký tự.</source>
         <translation>exportFormat must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9574"/>
+        <location filename="../controller.py" line="10774"/>
         <source>m4bBitrate phải là chuỗi ký tự.</source>
         <translation>m4bBitrate must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9594"/>
+        <location filename="../controller.py" line="10794"/>
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9609"/>
+        <location filename="../controller.py" line="10809"/>
         <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
         <translation>speed must be a number between 0.5 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="9624"/>
+        <location filename="../controller.py" line="10824"/>
         <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
         <translation>silence_p must be a number between 0.0 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1618"/>
-        <location filename="../controller.py" line="1629"/>
+        <location filename="../controller.py" line="1851"/>
+        <location filename="../controller.py" line="1862"/>
         <source>Không kiểm tra được bản cập nhật: {}</source>
         <extracomment>The A/B listen targets of ``studioCompareMode``: the applied op stack (&quot;base&quot;, design label &quot;Gốc&quot;) or that stack plus the pending edits (&quot;pending&quot;, design label &quot;Đã chỉnh&quot;).</extracomment>
         <translation>Could not check for updates: {}</translation>
@@ -724,66 +736,66 @@
 <context>
     <name>AudiobookController</name>
     <message>
-        <location filename="../audiobook_controller.py" line="752"/>
+        <location filename="../audiobook_controller.py" line="784"/>
         <source>Đang mở một sách khác — vui lòng đợi.</source>
         <translation>Another book is opening — please wait.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="756"/>
-        <location filename="../audiobook_controller.py" line="774"/>
+        <location filename="../audiobook_controller.py" line="788"/>
+        <location filename="../audiobook_controller.py" line="806"/>
         <source>Không tìm thấy tệp: {}</source>
         <translation>File not found: {}</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="760"/>
+        <location filename="../audiobook_controller.py" line="792"/>
         <source>Không hỗ trợ loại tệp &apos;{}&apos;. Sách nói phải là tệp .epub.</source>
         <translation>Unsupported file type &apos;{}&apos;. Audiobooks must be .epub files.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1268"/>
-        <location filename="../audiobook_controller.py" line="1319"/>
-        <location filename="../audiobook_controller.py" line="1375"/>
+        <location filename="../audiobook_controller.py" line="1348"/>
+        <location filename="../audiobook_controller.py" line="1428"/>
+        <location filename="../audiobook_controller.py" line="1483"/>
         <source>Không thể tạo tác vụ tổng hợp cho chương này.</source>
         <translation>Could not create a synthesis job for this chapter.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1525"/>
+        <location filename="../audiobook_controller.py" line="1641"/>
         <source>Tệp âm thanh chương vừa tạo không hợp lệ.</source>
         <translation>The chapter audio file just generated is invalid.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1855"/>
+        <location filename="../audiobook_controller.py" line="2051"/>
         <source>Định dạng xuất không hỗ trợ: &apos;{}&apos;.</source>
         <translation>Unsupported export format: &apos;{}&apos;.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1880"/>
+        <location filename="../audiobook_controller.py" line="2076"/>
         <source>Chưa có chương nào sẵn sàng để xuất — hãy tạo âm thanh trước.</source>
         <translation>No chapters are ready to export — render audio first.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1918"/>
+        <location filename="../audiobook_controller.py" line="2116"/>
         <source>Chưa mở sách nào.</source>
         <translation>No book is open.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1837"/>
-        <location filename="../audiobook_controller.py" line="1876"/>
+        <location filename="../audiobook_controller.py" line="2033"/>
+        <location filename="../audiobook_controller.py" line="2072"/>
         <source>Chương đang phát — hãy dừng rồi xuất lại.</source>
         <translation>The chapter is playing — stop it, then export again.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="117"/>
+        <location filename="../audiobook_controller.py" line="121"/>
         <source>Chương {title} quá dài ({chars:,} ký tự) — không thể tách thành các đoạn con.</source>
         <translation>Chapter {title} is too long ({chars:,} characters) — it cannot be split into segments.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="1921"/>
+        <location filename="../audiobook_controller.py" line="2119"/>
         <source>Đang xuất âm thanh — vui lòng đợi.</source>
         <translation>Exporting audio — please wait.</translation>
     </message>
     <message>
-        <location filename="../audiobook_controller.py" line="2058"/>
+        <location filename="../audiobook_controller.py" line="2263"/>
         <source>Bỏ qua chương đang phát — hãy dừng rồi xuất lại.</source>
         <translation>Skipping the playing chapter — stop it, then export again.</translation>
     </message>
@@ -858,13 +870,13 @@
         <translation>Remove book from library</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1469"/>
+        <location filename="../qml/AudiobookTab.qml" line="1421"/>
         <source>Trình phát</source>
         <translation>Player</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1720"/>
-        <location filename="../qml/AudiobookTab.qml" line="1723"/>
+        <location filename="../qml/AudiobookTab.qml" line="1672"/>
+        <location filename="../qml/AudiobookTab.qml" line="1675"/>
         <source>Tự chuyển chương</source>
         <translation>Auto-advance chapters</translation>
     </message>
@@ -914,22 +926,22 @@
         <translation>%1/%2 done</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="900"/>
+        <location filename="../qml/AudiobookTab.qml" line="884"/>
         <source>còn ~%1</source>
         <translation>~%1 left</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="931"/>
+        <location filename="../qml/AudiobookTab.qml" line="915"/>
         <source>Tổng: %1/%2 chương</source>
         <translation>Overall: %1/%2 chapters</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1065"/>
+        <location filename="../qml/AudiobookTab.qml" line="1033"/>
         <source>%1 ký tự · %2/%3 đoạn</source>
         <translation>%1 characters · %2/%3 segments</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1068"/>
+        <location filename="../qml/AudiobookTab.qml" line="1036"/>
         <source>%1 ký tự</source>
         <translation>%1 characters</translation>
     </message>
@@ -974,81 +986,81 @@
         <translation>Open in Studio</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="913"/>
+        <location filename="../qml/AudiobookTab.qml" line="897"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1306"/>
+        <location filename="../qml/AudiobookTab.qml" line="1258"/>
         <source>Sao chép chương</source>
         <translation>Copy chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1309"/>
+        <location filename="../qml/AudiobookTab.qml" line="1261"/>
         <source>Sao chép toàn bộ văn bản chương</source>
         <translation>Copy the full chapter text</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1320"/>
-        <location filename="../qml/AudiobookTab.qml" line="1324"/>
+        <location filename="../qml/AudiobookTab.qml" line="1272"/>
+        <location filename="../qml/AudiobookTab.qml" line="1276"/>
         <source>Đóng vùng đọc văn bản</source>
         <translation>Close the reading pane</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1550"/>
+        <location filename="../qml/AudiobookTab.qml" line="1502"/>
         <source>Chọn một chương để bắt đầu</source>
         <translation>Select a chapter to start</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1735"/>
+        <location filename="../qml/AudiobookTab.qml" line="1687"/>
         <source>Văn bản</source>
         <translation>Transcript</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1740"/>
-        <location filename="../qml/AudiobookTab.qml" line="1741"/>
+        <location filename="../qml/AudiobookTab.qml" line="1692"/>
+        <location filename="../qml/AudiobookTab.qml" line="1693"/>
         <source>Xem văn bản chương khi nghe</source>
         <translation>Show the chapter text while listening</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1619"/>
-        <location filename="../qml/AudiobookTab.qml" line="1620"/>
+        <location filename="../qml/AudiobookTab.qml" line="1571"/>
+        <location filename="../qml/AudiobookTab.qml" line="1572"/>
         <source>Chương trước</source>
         <translation>Previous chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1092"/>
+        <location filename="../qml/AudiobookTab.qml" line="1060"/>
         <source>Tạo</source>
         <translation>Render</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1093"/>
+        <location filename="../qml/AudiobookTab.qml" line="1061"/>
         <source>Tạo âm thanh cho %1</source>
         <translation>Render audio for %1</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1114"/>
+        <location filename="../qml/AudiobookTab.qml" line="1082"/>
         <source>Dừng tạo %1</source>
         <translation>Stop rendering %1</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1639"/>
+        <location filename="../qml/AudiobookTab.qml" line="1591"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1639"/>
+        <location filename="../qml/AudiobookTab.qml" line="1591"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1657"/>
-        <location filename="../qml/AudiobookTab.qml" line="1658"/>
+        <location filename="../qml/AudiobookTab.qml" line="1609"/>
+        <location filename="../qml/AudiobookTab.qml" line="1610"/>
         <source>Chương tiếp theo</source>
         <translation>Next chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1689"/>
+        <location filename="../qml/AudiobookTab.qml" line="1641"/>
         <source>Vị trí phát</source>
         <translation>Playback position</translation>
     </message>
@@ -1061,48 +1073,48 @@
 <context>
     <name>BatchFileController</name>
     <message>
-        <location filename="../batch_controller.py" line="285"/>
+        <location filename="../batch_controller.py" line="333"/>
         <source>Không hỗ trợ định dạng tệp: {}</source>
         <translation>Unsupported file type: {}</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="312"/>
+        <location filename="../batch_controller.py" line="360"/>
         <source>Không thể nhập tệp</source>
         <translation>Could not import file</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="401"/>
+        <location filename="../batch_controller.py" line="454"/>
         <source>Không thể tạo tác vụ tổng hợp cho cấu hình engine hiện tại.</source>
         <translation>Could not create a synthesis job for the current engine configuration.</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="470"/>
-        <location filename="../batch_controller.py" line="490"/>
+        <location filename="../batch_controller.py" line="522"/>
+        <location filename="../batch_controller.py" line="542"/>
         <source>Không thể tạo tác vụ tổng hợp.</source>
         <translation>Could not create a synthesis job.</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="568"/>
+        <location filename="../batch_controller.py" line="622"/>
         <source>Tổng hợp thất bại.</source>
         <translation>Synthesis failed.</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="584"/>
+        <location filename="../batch_controller.py" line="638"/>
         <source>Tệp âm thanh vừa tạo không hợp lệ.</source>
         <translation>The generated audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="613"/>
+        <location filename="../batch_controller.py" line="678"/>
         <source>Không thể lưu tệp âm thanh: {}</source>
         <translation>Could not save the audio file: {}</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="699"/>
+        <location filename="../batch_controller.py" line="753"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../batch_controller.py" line="725"/>
+        <location filename="../batch_controller.py" line="779"/>
         <source>Không mở được thư mục chứa tệp.</source>
         <translation>Could not open the file&apos;s folder.</translation>
     </message>
@@ -1409,12 +1421,12 @@
         <translation>Voices you create above will appear here</translation>
     </message>
     <message>
-        <location filename="../qml/CloningTab.qml" line="734"/>
+        <location filename="../qml/CloningTab.qml" line="735"/>
         <source>Đang xử lý…</source>
         <translation>Processing…</translation>
     </message>
     <message>
-        <location filename="../qml/CloningTab.qml" line="772"/>
+        <location filename="../qml/CloningTab.qml" line="758"/>
         <source>Không thể tạo giọng nói</source>
         <translation>Could not create voice</translation>
     </message>
@@ -1483,109 +1495,109 @@
 <context>
     <name>CreateInspector</name>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="110"/>
+        <location filename="../qml/components/CreateInspector.qml" line="125"/>
         <source>Giọng đọc</source>
         <translation>Voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="149"/>
+        <location filename="../qml/components/CreateInspector.qml" line="164"/>
         <source>Chưa có giọng đọc</source>
         <translation>No voice available</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="150"/>
+        <location filename="../qml/components/CreateInspector.qml" line="165"/>
         <source>Chưa chọn giọng</source>
         <translation>No voice selected</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="181"/>
+        <location filename="../qml/components/CreateInspector.qml" line="196"/>
         <source>Dừng</source>
         <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="181"/>
+        <location filename="../qml/components/CreateInspector.qml" line="196"/>
         <source>Nghe thử</source>
         <translation>Preview</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="183"/>
-        <location filename="../qml/components/CreateInspector.qml" line="320"/>
+        <location filename="../qml/components/CreateInspector.qml" line="198"/>
+        <location filename="../qml/components/CreateInspector.qml" line="335"/>
         <source>Dừng nghe thử</source>
         <translation>Stop preview</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="183"/>
-        <location filename="../qml/components/CreateInspector.qml" line="321"/>
+        <location filename="../qml/components/CreateInspector.qml" line="198"/>
+        <location filename="../qml/components/CreateInspector.qml" line="336"/>
         <source>Nghe thử %1</source>
         <translation>Preview %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="189"/>
+        <location filename="../qml/components/CreateInspector.qml" line="204"/>
         <source>Không thể nghe thử khi đang tạo âm thanh.</source>
         <translation>Previews are unavailable while audio is generating.</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="199"/>
+        <location filename="../qml/components/CreateInspector.qml" line="214"/>
         <source>Đổi giọng…</source>
         <translation>Change voice…</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="218"/>
+        <location filename="../qml/components/CreateInspector.qml" line="233"/>
         <source>Gần đây</source>
         <translation>Recent</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="229"/>
+        <location filename="../qml/components/CreateInspector.qml" line="244"/>
         <source>Chưa có giọng nào gần đây.</source>
         <translation>No recent voices yet.</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="254"/>
+        <location filename="../qml/components/CreateInspector.qml" line="269"/>
         <source>Chọn giọng %1</source>
         <translation>Select voice %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="350"/>
+        <location filename="../qml/components/CreateInspector.qml" line="365"/>
         <source>Lần tạo này</source>
         <translation>This run</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="364"/>
+        <location filename="../qml/components/CreateInspector.qml" line="379"/>
         <source>Tốc độ</source>
         <translation>Speed</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="385"/>
+        <location filename="../qml/components/CreateInspector.qml" line="416"/>
         <source>Tốc độ đọc</source>
         <translation>Reading speed</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="401"/>
+        <location filename="../qml/components/CreateInspector.qml" line="478"/>
         <source>Ngắt giữa câu</source>
         <translation>Sentence pause</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="420"/>
+        <location filename="../qml/components/CreateInspector.qml" line="513"/>
         <source>Khoảng lặng ngắt câu</source>
         <translation>Sentence pause</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="458"/>
+        <location filename="../qml/components/CreateInspector.qml" line="597"/>
         <source>Phát trực tiếp</source>
         <translation>Live playback</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="461"/>
+        <location filename="../qml/components/CreateInspector.qml" line="600"/>
         <source>Phát trực tiếp khi đang tạo</source>
         <translation>Play live while generating</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="462"/>
+        <location filename="../qml/components/CreateInspector.qml" line="601"/>
         <source>Tắt: tạo xong tự phát lại từ đầu</source>
         <translation>Off: replay from the start when finished</translation>
     </message>
     <message>
-        <location filename="../qml/components/CreateInspector.qml" line="472"/>
+        <location filename="../qml/components/CreateInspector.qml" line="611"/>
         <source>Nghe ngay khi đang tạo</source>
         <translation>Hear it while it generates</translation>
     </message>
@@ -2083,7 +2095,7 @@
 <context>
     <name>PlaybackController</name>
     <message>
-        <location filename="../playback.py" line="300"/>
+        <location filename="../playback.py" line="304"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
@@ -2124,352 +2136,352 @@
 <context>
     <name>QwenInstallCards</name>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="106"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="137"/>
         <source>đang kiểm tra…</source>
         <translation>checking…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="177"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="208"/>
         <source>Runtime Qwen được quản lý</source>
         <translation>Managed Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="183"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="214"/>
         <source>Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.</source>
         <translation>The managed Qwen runtime supports only Windows/Linux x64 and Apple Silicon.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="185"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="216"/>
         <source>Gói runtime đã xác thực cho %1.</source>
         <translation>A verified runtime bundle for %1.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="186"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="249"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="217"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="280"/>
         <source>Đang kiểm tra runtime Qwen trên máy này…</source>
         <translation>Checking the Qwen runtime on this machine…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="190"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="221"/>
         <source>Không hỗ trợ</source>
         <translation>Unsupported</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="193"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="665"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="224"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="718"/>
         <source>Sẵn sàng</source>
         <translation>Ready</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="195"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="669"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="226"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="722"/>
         <source>Đang tải</source>
         <translation>Downloading</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="197"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="671"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="228"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="724"/>
         <source>Đang xác thực</source>
         <translation>Verifying</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="199"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="667"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="230"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="720"/>
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="201"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="673"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="232"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="726"/>
         <source>Đang kiểm tra</source>
         <translation>Checking</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="203"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="675"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="234"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="728"/>
         <source>Chưa cài đặt</source>
         <translation>Not installed</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="238"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="269"/>
         <source>Runtime Qwen không khả dụng trên nền tảng này.</source>
         <translation>The Qwen runtime is unavailable on this platform.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="241"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="272"/>
         <source>Runtime Qwen đã sẵn sàng và đã được xác thực.</source>
         <translation>The Qwen runtime is ready and verified.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="243"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="274"/>
         <source>Đang tải runtime Qwen…</source>
         <translation>Downloading the Qwen runtime…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="245"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="276"/>
         <source>Đang xác thực các tệp runtime Qwen…</source>
         <translation>Verifying the Qwen runtime files…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="247"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="278"/>
         <source>Không thể chuẩn bị runtime Qwen.</source>
         <translation>Could not prepare the Qwen runtime.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="251"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="282"/>
         <source>Chưa cài đặt runtime Qwen được quản lý.</source>
         <translation>The managed Qwen runtime is not installed yet.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="267"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="298"/>
         <source>Không hỗ trợ runtime Qwen</source>
         <translation>Qwen runtime unsupported</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="280"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="311"/>
         <source>Cài đặt runtime Qwen thất bại</source>
         <translation>Qwen runtime installation failed</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="294"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="545"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="325"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="576"/>
         <source>Chạy Qwen trên CPU rất chậm</source>
         <translation>Running Qwen on CPU is very slow</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="334"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="365"/>
         <source>Cần %1 dung lượng tải</source>
         <translation>%1 to download</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="336"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="367"/>
         <source>Đã tải %1 / cần %2</source>
         <translation>Downloaded %1 of %2</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="352"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="879"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="383"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="949"/>
         <source>Mở thư mục</source>
         <translation>Open folder</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="353"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="384"/>
         <source>Mở thư mục runtime Qwen</source>
         <translation>Open the Qwen runtime folder</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="369"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="400"/>
         <source>Tiến trình tải runtime Qwen</source>
         <translation>Qwen runtime download progress</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="384"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="385"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="415"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="416"/>
         <source>Cài đặt runtime Qwen</source>
         <translation>Install Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="399"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="400"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="430"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="431"/>
         <source>Hủy tải runtime Qwen</source>
         <translation>Cancel the Qwen runtime download</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="413"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="414"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="444"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="445"/>
         <source>Sửa chữa runtime Qwen</source>
         <translation>Repair Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="427"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="428"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="458"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="459"/>
         <source>Gỡ runtime Qwen</source>
         <translation>Remove Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="444"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="475"/>
         <source>Đang kiểm tra…</source>
         <translation>Verifying…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="445"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="476"/>
         <source>Kiểm tra tệp</source>
         <translation>Verify files</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="446"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="477"/>
         <source>Kiểm tra toàn bộ tệp Qwen đã cài</source>
         <translation>Verify every installed Qwen file</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="459"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="490"/>
         <source>Nhập gói runtime ngoại tuyến</source>
         <translation>Import offline runtime bundle</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="460"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="491"/>
         <source>Nhập gói runtime Qwen ngoại tuyến</source>
         <translation>Import an offline Qwen runtime bundle</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="488"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="519"/>
         <source>Gói ngoại tuyến là thư mục chứa đúng các tệp runtime đã ghim; dùng khi máy không có mạng.</source>
         <translation>An offline pack is a folder containing the pinned runtime files; use it when this machine has no network.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="489"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="520"/>
         <source>Gói ngoại tuyến là thư mục chứa đúng các tệp wheel đã ghim; dùng khi máy không có mạng.</source>
         <translation>An offline bundle is a folder holding exactly the pinned wheel files; use it when this machine has no network.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="503"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="534"/>
         <source>Chọn thư mục gói runtime Qwen</source>
         <translation>Choose the Qwen runtime bundle folder</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="523"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="554"/>
         <source>Mô hình Qwen</source>
         <translation>Qwen model</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="525"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="556"/>
         <source>Chỉ mô hình đang chọn được hiển thị và cài đặt tại đây.</source>
         <translation>Only the selected model is shown and installed here.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="527"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="558"/>
         <source>Bốn gói GGUF 0.6B (hai hồ sơ × hai lượng tử hóa): mỗi lượng tử hóa dùng chung một codec.</source>
         <translation>Four 0.6B GGUF packs (two profiles × two quantizations): each quantization shares one codec.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="528"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="559"/>
         <source>Hai checkpoint 0.6B dùng chung bộ tokenizer: cài một lần, cả hai dùng lại.</source>
         <translation>Both 0.6B checkpoints share one tokenizer set: install it once and both reuse it.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="529"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="560"/>
         <source>%1/%2 đã cài</source>
         <translation>%1/%2 installed</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="607"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="657"/>
         <source>Đã chọn</source>
         <translation>Selected</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="628"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="679"/>
         <source>Đang dùng</source>
         <translation>In use</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="704"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="758"/>
         <source>Đã cài %1 · tải về %2</source>
         <translation>Installed %1 · %2 downloaded</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="707"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="761"/>
         <source>Cần tải %1</source>
         <translation>%1 to download</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="725"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="781"/>
         <source>Tiến trình tải mô hình Qwen</source>
         <translation>Qwen model download progress</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="756"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="814"/>
         <source>Cài đặt mô hình</source>
         <translation>Install</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="757"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="815"/>
         <source>Cài đặt %1</source>
         <translation>Install %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="766"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="826"/>
         <source>Máy này không có runtime Qwen — xem thẻ Runtime ở trên.</source>
         <translation>This machine has no Qwen runtime — see the Runtime card above.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="778"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="839"/>
         <source>Hủy tải</source>
         <translation>Cancel download</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="779"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="840"/>
         <source>Hủy tải %1</source>
         <translation>Cancel the %1 download</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="791"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="854"/>
         <source>Sửa chữa</source>
         <translation>Repair</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="792"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="855"/>
         <source>Sửa chữa %1</source>
         <translation>Repair %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="805"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="915"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="871"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="985"/>
         <source>Gỡ mô hình</source>
         <translation>Remove model</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="806"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="872"/>
         <source>Gỡ %1</source>
         <translation>Remove %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="819"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="889"/>
         <source>Nhập gói ngoại tuyến</source>
         <translation>Import offline bundle</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="820"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="890"/>
         <source>Nhập gói ngoại tuyến cho %1</source>
         <translation>Import an offline bundle for %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="845"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="915"/>
         <source>Dùng chung: %1 codec cho mỗi lượng tử hóa</source>
         <translation>Shared: %1 codec per quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="847"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="917"/>
         <source>Dùng chung: %1 tokenizer cho cả hai checkpoint</source>
         <translation>Shared: %1 tokenizer set for both checkpoints</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="880"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="950"/>
         <source>Mở thư mục mô hình Qwen</source>
         <translation>Open the Qwen model folder</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="891"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="961"/>
         <source>Chọn thư mục gói mô hình Qwen</source>
         <translation>Choose the Qwen model bundle folder</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="901"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="971"/>
         <source>Gỡ runtime Qwen?</source>
         <translation>Remove the Qwen runtime?</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="902"/>
-        <location filename="../qml/components/QwenInstallCards.qml" line="914"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="972"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="984"/>
         <source>Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.</source>
         <translation>Every downloaded file will be deleted from this machine. You will need to download it again to use it.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="903"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="973"/>
         <source>Gỡ runtime</source>
         <translation>Remove runtime</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenInstallCards.qml" line="913"/>
+        <location filename="../qml/components/QwenInstallCards.qml" line="983"/>
         <source>Gỡ mô hình Qwen?</source>
         <translation>Remove the Qwen model?</translation>
     </message>
@@ -4619,440 +4631,441 @@
 <context>
     <name>StudioTab</name>
     <message>
-        <location filename="../qml/StudioTab.qml" line="270"/>
+        <location filename="../qml/StudioTab.qml" line="297"/>
         <source>Tạo lại đoạn #%1</source>
         <translation>Regenerate segment #%1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="348"/>
+        <location filename="../qml/StudioTab.qml" line="375"/>
         <source>Giọng đọc mới</source>
         <translation>New voice</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="459"/>
+        <location filename="../qml/StudioTab.qml" line="486"/>
         <source>Tạo lại đoạn</source>
         <translation>Regenerate segment</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="244"/>
+        <location filename="../qml/StudioTab.qml" line="271"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="287"/>
+        <location filename="../qml/StudioTab.qml" line="314"/>
         <source>Tổng hợp lại đoạn âm thanh này bằng giọng đọc khác hoặc chỉnh sửa lại câu từ mà không ảnh hưởng đến các đoạn còn lại:</source>
         <translation>Resynthesize this audio segment with a different voice or edit the text without affecting other segments:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="302"/>
+        <location filename="../qml/StudioTab.qml" line="329"/>
         <source>Nội dung đoạn văn:</source>
         <translation>Segment text:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="310"/>
+        <location filename="../qml/StudioTab.qml" line="337"/>
         <source>%1 ký tự</source>
         <translation>%1 characters</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1266"/>
+        <location filename="../qml/StudioTab.qml" line="1293"/>
         <source>%1 đoạn</source>
         <translation>%1 segments</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1604"/>
+        <location filename="../qml/StudioTab.qml" line="1669"/>
         <source>Vùng chọn: %1</source>
         <translation>Selection: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1616"/>
+        <location filename="../qml/StudioTab.qml" line="1681"/>
         <source>Giữ vùng chọn</source>
         <translation>Keep selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1617"/>
+        <location filename="../qml/StudioTab.qml" line="1682"/>
         <source>Chỉ giữ lại đoạn đã chọn, bỏ phần còn lại</source>
         <translation>Keep only the selected part and drop the rest</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1630"/>
+        <location filename="../qml/StudioTab.qml" line="1695"/>
         <source>Xoá vùng chọn</source>
         <translation>Delete selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1631"/>
+        <location filename="../qml/StudioTab.qml" line="1696"/>
         <source>Bỏ đoạn đã chọn và nối hai phần còn lại</source>
         <translation>Remove the selected part and join what is left</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1639"/>
+        <location filename="../qml/StudioTab.qml" line="1704"/>
         <source>Bỏ chọn</source>
         <translation>Clear selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="704"/>
-        <location filename="../qml/StudioTab.qml" line="705"/>
+        <location filename="../qml/StudioTab.qml" line="731"/>
+        <location filename="../qml/StudioTab.qml" line="732"/>
         <source>Xuất nhanh</source>
         <translation>Quick export</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="713"/>
+        <location filename="../qml/StudioTab.qml" line="740"/>
         <source>Xuất âm thanh…</source>
         <translation>Export audio…</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1153"/>
+        <location filename="../qml/StudioTab.qml" line="1180"/>
         <source>Đoạn này được tạo bằng %1. Chuyển sang hồ sơ đó để tạo lại.</source>
         <translation>This segment was produced with %1. Switch to that profile to regenerate it.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1166"/>
+        <location filename="../qml/StudioTab.qml" line="1193"/>
         <source>Chuyển sang %1</source>
         <translation>Switch to %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="947"/>
+        <location filename="../qml/StudioTab.qml" line="974"/>
         <source>Mở âm thanh vừa tạo vào Studio</source>
         <translation>Open generated audio in Studio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1253"/>
+        <location filename="../qml/StudioTab.qml" line="1280"/>
         <source>Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc</source>
         <translation>Remove all applied effects and return to the original audio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1207"/>
+        <location filename="../qml/StudioTab.qml" line="1234"/>
         <source>Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào</source>
         <translation>Return to the original audio with no effects applied</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1239"/>
+        <location filename="../qml/StudioTab.qml" line="1266"/>
         <source>Quay lại bước %1</source>
         <translation>Return to step %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="108"/>
+        <location filename="../qml/StudioTab.qml" line="119"/>
         <source>Sẵn sàng</source>
         <translation>Ready</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1470"/>
+        <location filename="../qml/StudioTab.qml" line="1535"/>
         <source>Tiếp tục</source>
         <translation>Resume</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="109"/>
-        <location filename="../qml/StudioTab.qml" line="1470"/>
+        <location filename="../qml/StudioTab.qml" line="120"/>
+        <location filename="../qml/StudioTab.qml" line="1535"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="109"/>
+        <location filename="../qml/StudioTab.qml" line="120"/>
         <source>Đang phát</source>
         <translation>Playing</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="111"/>
+        <location filename="../qml/StudioTab.qml" line="124"/>
         <source>Đoạn #%1</source>
         <translation>Segment #%1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="112"/>
+        <location filename="../qml/StudioTab.qml" line="125"/>
         <source>Toàn bộ dự án</source>
         <translation>Whole project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="115"/>
+        <location filename="../qml/StudioTab.qml" line="129"/>
         <source>Gốc</source>
         <translation>Original</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="116"/>
+        <location filename="../qml/StudioTab.qml" line="130"/>
         <source>Đã chỉnh</source>
         <translation>Edited</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="118"/>
+        <location filename="../qml/StudioTab.qml" line="132"/>
         <source>%1 – %2</source>
         <translation>%1 – %2</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="370"/>
+        <location filename="../qml/StudioTab.qml" line="397"/>
         <source>Khung SRT: %1 (%2) · Tốc độ hiện tại: %3×</source>
         <translation>SRT window: %1 (%2) · Current speed: %3×</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="392"/>
+        <location filename="../qml/StudioTab.qml" line="419"/>
         <source>Tự động theo SRT (≤%1×)</source>
         <translation>Auto-fit to SRT (≤%1×)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="409"/>
+        <location filename="../qml/StudioTab.qml" line="436"/>
         <source>Tùy chỉnh: %1×</source>
         <translation>Custom: %1×</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="438"/>
-        <location filename="../qml/StudioTab.qml" line="517"/>
+        <location filename="../qml/StudioTab.qml" line="465"/>
+        <location filename="../qml/StudioTab.qml" line="544"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="446"/>
+        <location filename="../qml/StudioTab.qml" line="473"/>
         <source>Chỉ đổi tốc độ</source>
         <translation>Change speed only</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="487"/>
+        <location filename="../qml/StudioTab.qml" line="514"/>
         <source>Đặt lại về bản gốc?</source>
         <translation>Reset to original?</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="501"/>
+        <location filename="../qml/StudioTab.qml" line="528"/>
         <source>Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.</source>
         <translation>All %1 applied effects will be removed. The original audio is kept.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="642"/>
+        <location filename="../qml/StudioTab.qml" line="669"/>
         <source>Studio</source>
         <translation>Studio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="651"/>
+        <location filename="../qml/StudioTab.qml" line="678"/>
         <source>%1 đoạn · %2</source>
         <translation>%1 segments · %2</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="668"/>
+        <location filename="../qml/StudioTab.qml" line="695"/>
         <source>Hoàn tác: %1</source>
         <translation>Undo: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="678"/>
+        <location filename="../qml/StudioTab.qml" line="705"/>
         <source>Lưu về Phụ đề (SRT)</source>
         <translation>Save to Subtitles (SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="683"/>
+        <location filename="../qml/StudioTab.qml" line="710"/>
         <source>Lưu âm thanh và mốc thời gian cửa sổ này về dự án Phụ đề</source>
         <translation>Save this window&apos;s audio and timestamps back to the Subtitle project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="689"/>
+        <location filename="../qml/StudioTab.qml" line="716"/>
         <source>Lưu &amp; Xuất Video</source>
         <translation>Save &amp; Export Video</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="697"/>
+        <location filename="../qml/StudioTab.qml" line="724"/>
         <source>Lưu chỉnh sửa cửa sổ này và xuất video lồng tiếng ngay</source>
         <translation>Save this window&apos;s edits and export the dubbed video now</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="758"/>
+        <location filename="../qml/StudioTab.qml" line="785"/>
         <source>Phụ đề: %1</source>
         <translation>Subtitles: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="773"/>
+        <location filename="../qml/StudioTab.qml" line="800"/>
         <source>Chế độ: %1 · Tổng %2 phụ đề</source>
         <translation>Mode: %1 · Total %2 cues</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="790"/>
+        <location filename="../qml/StudioTab.qml" line="817"/>
         <source> · Video: %1 (%2)</source>
         <translation> · Video: %1 (%2)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="804"/>
+        <location filename="../qml/StudioTab.qml" line="831"/>
         <source>Nhúng phụ đề</source>
         <translation>Embed subtitles</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="826"/>
+        <location filename="../qml/StudioTab.qml" line="853"/>
         <source>Bật/tắt trong trình phát</source>
         <translation>Toggle in player</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="827"/>
+        <location filename="../qml/StudioTab.qml" line="854"/>
         <source>In cố định lên hình</source>
         <translation>Burn into picture</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="841"/>
+        <location filename="../qml/StudioTab.qml" line="868"/>
         <source>‹ Trước</source>
         <translation>‹ Previous</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="842"/>
+        <location filename="../qml/StudioTab.qml" line="869"/>
         <source>Cửa sổ phụ đề trước</source>
         <translation>Previous subtitle window</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="891"/>
+        <location filename="../qml/StudioTab.qml" line="918"/>
         <source>Sau ›</source>
         <translation>Next ›</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="892"/>
+        <location filename="../qml/StudioTab.qml" line="919"/>
         <source>Cửa sổ phụ đề tiếp theo</source>
         <translation>Next subtitle window</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="935"/>
+        <location filename="../qml/StudioTab.qml" line="962"/>
         <source>Âm thanh vừa tạo đã sẵn sàng. Mở vào Studio để chỉnh âm lượng, tốc độ, khoảng lặng, mờ dần hoặc tạo lại từng đoạn.</source>
         <translation>Your new audio is ready. Open it in Studio to adjust volume, speed, silences and fades, or regenerate individual segments.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="961"/>
+        <location filename="../qml/StudioTab.qml" line="988"/>
         <source>Chưa có âm thanh để chỉnh. Hãy tạo âm thanh ở một trong các mục dưới đây, rồi bấm “Mở trong Studio” để đưa vào đây.</source>
         <translation>No audio to edit yet. Generate audio in one of the places below, then press “Open in Studio” to bring it here.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1001"/>
+        <location filename="../qml/StudioTab.qml" line="1028"/>
         <source>Tạo giọng đọc</source>
         <translation>Create voice</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1002"/>
+        <location filename="../qml/StudioTab.qml" line="1029"/>
         <source>Soạn văn bản, chọn giọng và tạo nhanh từng câu.</source>
         <translation>Write text, pick a voice and generate sentence by sentence.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1004"/>
+        <location filename="../qml/StudioTab.qml" line="1031"/>
         <source>Mở Tạo giọng đọc</source>
         <translation>Open Create voice</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1014"/>
+        <location filename="../qml/StudioTab.qml" line="1041"/>
         <source>Tài liệu</source>
         <translation>Document</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1015"/>
+        <location filename="../qml/StudioTab.qml" line="1042"/>
         <source>Nhập tài liệu dài, tự chia đoạn và tạo lần lượt.</source>
         <translation>Import a long document, split it automatically and generate it in turn.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1017"/>
+        <location filename="../qml/StudioTab.qml" line="1044"/>
         <source>Mở Tài liệu</source>
         <translation>Open Document</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1028"/>
+        <location filename="../qml/StudioTab.qml" line="1055"/>
         <source>Phụ đề (SRT)</source>
         <translation>Subtitles (SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1029"/>
+        <location filename="../qml/StudioTab.qml" line="1056"/>
         <source>Nhập tệp .srt, căn chỉnh thời gian và chỉnh từng câu phụ đề.</source>
         <translation>Import an .srt file, align timestamps, and polish individual cues.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1031"/>
+        <location filename="../qml/StudioTab.qml" line="1058"/>
         <source>Mở Phụ đề</source>
         <translation>Open Subtitles</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1040"/>
+        <location filename="../qml/StudioTab.qml" line="1067"/>
         <source>Sách nói</source>
         <translation>Audiobooks</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1041"/>
+        <location filename="../qml/StudioTab.qml" line="1068"/>
         <source>Nhập sách EPUB, tạo từng chương và đồng bộ chữ.</source>
         <translation>Import an EPUB book, generate chapter by chapter with synced text.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1043"/>
+        <location filename="../qml/StudioTab.qml" line="1070"/>
         <source>Mở Sách nói</source>
         <translation>Open Audiobooks</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1194"/>
+        <location filename="../qml/StudioTab.qml" line="1221"/>
         <source>Lịch sử</source>
         <translation>History</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1265"/>
+        <location filename="../qml/StudioTab.qml" line="1292"/>
+        <location filename="../qml/StudioTab.qml" line="1319"/>
         <source>Các đoạn</source>
         <translation>Segments</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1457"/>
-        <location filename="../qml/StudioTab.qml" line="1458"/>
+        <location filename="../qml/StudioTab.qml" line="1522"/>
+        <location filename="../qml/StudioTab.qml" line="1523"/>
         <source>Lùi 5 giây</source>
         <translation>Back 5 seconds</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1476"/>
+        <location filename="../qml/StudioTab.qml" line="1541"/>
         <source>Phát tiếp từ vị trí đã dừng</source>
         <translation>Resume from the paused position</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1476"/>
+        <location filename="../qml/StudioTab.qml" line="1541"/>
         <source>Tạm dừng, giữ nguyên vị trí</source>
         <translation>Pause, keeping the position</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1477"/>
+        <location filename="../qml/StudioTab.qml" line="1542"/>
         <source>Nghe thử toàn bộ dự án</source>
         <translation>Preview the whole project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1492"/>
-        <location filename="../qml/StudioTab.qml" line="1493"/>
+        <location filename="../qml/StudioTab.qml" line="1557"/>
+        <location filename="../qml/StudioTab.qml" line="1558"/>
         <source>Tiến 5 giây</source>
         <translation>Forward 5 seconds</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1512"/>
+        <location filename="../qml/StudioTab.qml" line="1577"/>
         <source>Phát lại từ đầu</source>
         <translation>Restart from the beginning</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1513"/>
+        <location filename="../qml/StudioTab.qml" line="1578"/>
         <source>Dừng và phát lại từ đầu dự án</source>
         <translation>Stop and restart the project from the beginning</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="705"/>
+        <location filename="../qml/StudioTab.qml" line="732"/>
         <source>xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt</source>
         <translation>export straight to the output folder chosen in Settings</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="524"/>
-        <location filename="../qml/StudioTab.qml" line="1252"/>
+        <location filename="../qml/StudioTab.qml" line="551"/>
+        <location filename="../qml/StudioTab.qml" line="1279"/>
         <source>Đặt lại gốc</source>
         <translation>Reset to original</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1206"/>
+        <location filename="../qml/StudioTab.qml" line="1233"/>
         <source>Bản gốc</source>
         <translation>Original</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1316"/>
+        <location filename="../qml/StudioTab.qml" line="1382"/>
         <source>Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.</source>
         <translation>Current audio consists of a single segment. Click Regenerate to change voice or edit text for this segment.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="921"/>
+        <location filename="../qml/StudioTab.qml" line="948"/>
         <source>Dự án Studio</source>
         <translation>Studio project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1502"/>
-        <location filename="../qml/StudioTab.qml" line="1503"/>
+        <location filename="../qml/StudioTab.qml" line="1567"/>
+        <location filename="../qml/StudioTab.qml" line="1568"/>
         <source>Dừng</source>
         <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="663"/>
-        <location filename="../qml/StudioTab.qml" line="669"/>
+        <location filename="../qml/StudioTab.qml" line="690"/>
+        <location filename="../qml/StudioTab.qml" line="696"/>
         <source>Hoàn tác</source>
         <translation>Undo</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1471"/>
+        <location filename="../qml/StudioTab.qml" line="1536"/>
         <source>Nghe thử</source>
         <translation>Preview</translation>
     </message>
@@ -5060,7 +5073,7 @@
 <context>
     <name>StudioTimeline</name>
     <message>
-        <location filename="../qml/components/StudioTimeline.qml" line="135"/>
+        <location filename="../qml/components/StudioTimeline.qml" line="108"/>
         <source>Đoạn %1</source>
         <translation>Segment %1</translation>
     </message>
@@ -5410,422 +5423,423 @@
 <context>
     <name>SubtitleController</name>
     <message>
-        <location filename="../subtitle_controller.py" line="1354"/>
+        <location filename="../subtitle_controller.py" line="1379"/>
         <source>{n} phụ đề</source>
         <translation>{n} subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1357"/>
+        <location filename="../subtitle_controller.py" line="1382"/>
         <source>{n} nén (tối đa {rate}×)</source>
         <translation>{n} squeezed (max {rate}×)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1363"/>
+        <location filename="../subtitle_controller.py" line="1388"/>
         <source>{n} tràn (tối đa {ms} ms)</source>
         <translation>{n} overflowing (max {ms} ms)</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1368"/>
+        <location filename="../subtitle_controller.py" line="1393"/>
         <source>{n} đẩy lùi</source>
         <translation>{n} pushed back</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2209"/>
+        <location filename="../subtitle_controller.py" line="2240"/>
         <source>Không tìm thấy tệp phụ đề: {name}</source>
         <translation>Subtitle file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2219"/>
+        <location filename="../subtitle_controller.py" line="2250"/>
         <source>Không đọc được tệp phụ đề &apos;{name}&apos;: {error}</source>
         <translation>Could not read subtitle file &apos;{name}&apos;: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2227"/>
+        <location filename="../subtitle_controller.py" line="2258"/>
         <source>Tệp &apos;{name}&apos; không có phụ đề nào đọc được. Hãy kiểm tra định dạng SubRip (.srt).</source>
         <translation>No readable cues in &apos;{name}&apos;. Check the SubRip (.srt) format.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2604"/>
+        <location filename="../subtitle_controller.py" line="2696"/>
         <source>Không thể mở tệp ghi phụ đề: {error}</source>
         <translation>Could not open the subtitle output file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2540"/>
-        <location filename="../subtitle_controller.py" line="2688"/>
-        <location filename="../subtitle_controller.py" line="2766"/>
-        <location filename="../subtitle_controller.py" line="2779"/>
+        <location filename="../subtitle_controller.py" line="2626"/>
+        <location filename="../subtitle_controller.py" line="2781"/>
+        <location filename="../subtitle_controller.py" line="2863"/>
+        <location filename="../subtitle_controller.py" line="2876"/>
         <source>Không thể tạo tác vụ tổng hợp.</source>
         <translation>Could not create a synthesis job.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="973"/>
+        <location filename="../subtitle_controller.py" line="990"/>
         <source>{action} sẽ xóa bản lồng tiếng đã tạo và tệp phụ đề đã căn chỉnh. Tiếp tục?</source>
-        <extracomment>Concurrent ASR + Nemotron (FR-4.2) stays off until the bench gate measures a win on a host with real runtimes (unmeasured: bead VieNeuTTSApp-4p0t). How often an idle Whisper model is offered for release (FR-3.7); the model itself goes after ``asr.FASTER_WHISPER_IDLE_S`` without a run. FR-6.3: ``subtitles/_media_cache`` (one entry per video: ``source_16k.wav``, its sidecar, the ASR and diarization caches) is capped at 5 GiB, and an entry unused for 30 days goes. &quot;Used&quot; is its sidecar&apos;s mtime, bumped whenever the controller reads the entry (transcription, speech bounds). A project.json&apos;s identity for the picker cache: (mtime, size, inode) of project.json and of the render stamp the &quot;rendered&quot; flag is checked against. Transcript mode&apos;s real default: preserve pauses but cap them (FR-1.5). Project fields that change no audio. A field setter writes only its own field onto the stored project (FR-1.6), and a render&apos;s commit keeps the value saved during the render. The input edit that won over the commit (``&quot;&quot;`` when none did). Burn-in re-encodes and can take minutes; this carries ffmpeg&apos;s fraction so the card shows a real bar instead of a silent freeze. A render-destroying change is staged and needs a user decision. True once the user set the gap explicitly; until then transcript mode uses its real default instead of &quot;uncapped&quot; (FR-1.5).</extracomment>
+        <extracomment>Concurrent ASR + Nemotron (FR-4.2) stays off until the bench gate measures a win on a host with real runtimes (unmeasured: bead VieNeuTTSApp-4p0t). How often an idle Whisper model is offered for release (FR-3.7); the model itself goes after ``asr.FASTER_WHISPER_IDLE_S`` without a run. FR-6.3: ``subtitles/_media_cache`` (one entry per video: ``source_16k.wav``, its sidecar, the ASR and diarization caches) is capped at 5 GiB, and an entry unused for 30 days goes. &quot;Used&quot; is its sidecar&apos;s mtime, bumped whenever the controller reads the entry (transcription, speech bounds). A project.json&apos;s identity for the picker cache: (mtime, size, inode) of project.json and of the render stamp the &quot;rendered&quot; flag is checked against. Transcript mode&apos;s real default: preserve pauses but cap them (FR-1.5). True for async AI ops whose ``done()`` marks staleness only on success. Project fields that change no audio. A field setter writes only its own field onto the stored project (FR-1.6), and a render&apos;s commit keeps the value saved during the render. The input edit that won over the commit (``&quot;&quot;`` when none did). Burn-in re-encodes and can take minutes; this carries ffmpeg&apos;s fraction so the card shows a real bar instead of a silent freeze. A render-destroying change is staged and needs a user decision. True once the user set the gap explicitly; until then transcript mode uses its real default instead of &quot;uncapped&quot; (FR-1.5).</extracomment>
         <translation>{action} will delete the rendered dub and the retimed subtitle file. Continue?</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1107"/>
+        <location filename="../subtitle_controller.py" line="1132"/>
         <source>Bản lồng tiếng và phụ đề đã căn chỉnh không còn khớp với thay đổi ({reason}). Hãy tạo lại để xuất.</source>
         <translation>The dub and retimed subtitles no longer match the change ({reason}). Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1111"/>
+        <location filename="../subtitle_controller.py" line="1136"/>
         <source>Bản lồng tiếng đã lưu không khớp với cấu hình hiện tại. Hãy tạo lại để xuất.</source>
         <translation>The saved dub does not match the current settings. Render again to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1116"/>
+        <location filename="../subtitle_controller.py" line="1141"/>
         <source>đổi chế độ</source>
         <translation>mode change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1117"/>
+        <location filename="../subtitle_controller.py" line="1142"/>
         <source>đổi mức nén</source>
         <translation>compression change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1118"/>
+        <location filename="../subtitle_controller.py" line="1143"/>
         <source>đổi giới hạn khoảng lặng</source>
         <translation>pause-cap change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1119"/>
+        <location filename="../subtitle_controller.py" line="1144"/>
         <source>đổi độ lệch</source>
         <translation>offset change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1120"/>
+        <location filename="../subtitle_controller.py" line="1145"/>
         <source>đổi cách gộp câu</source>
         <translation>sentence-merge change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1121"/>
+        <location filename="../subtitle_controller.py" line="1146"/>
         <source>đổi giọng đọc</source>
         <translation>voice change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1122"/>
+        <location filename="../subtitle_controller.py" line="1147"/>
         <source>đổi giọng người nói</source>
         <translation>speaker voice change</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1123"/>
+        <location filename="../subtitle_controller.py" line="1148"/>
         <source>sửa phụ đề</source>
         <translation>cue edit</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1124"/>
+        <location filename="../subtitle_controller.py" line="1149"/>
         <source>phân tách người nói</source>
         <translation>speaker diarization</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1125"/>
+        <location filename="../subtitle_controller.py" line="1150"/>
         <source>tinh chỉnh bằng AI</source>
         <translation>AI refinement</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1126"/>
+        <location filename="../subtitle_controller.py" line="1151"/>
         <source>nhận diện lại phụ đề</source>
         <translation>subtitle re-recognition</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1143"/>
+        <location filename="../subtitle_controller.py" line="1168"/>
         <source>Chưa có dự án phụ đề nào. Hãy nhập tệp để bắt đầu.</source>
         <translation>No subtitle project yet. Import a file to start.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1147"/>
+        <location filename="../subtitle_controller.py" line="1172"/>
         <source>Chưa có bản lồng tiếng để xuất. Hãy tạo âm thanh trước.</source>
         <translation>No dub to export yet. Render the audio first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1188"/>
+        <location filename="../subtitle_controller.py" line="1213"/>
         <source>Đang xuất tệp — chờ hoàn tất.</source>
         <translation>Exporting — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1190"/>
+        <location filename="../subtitle_controller.py" line="1215"/>
         <source>Đang tạo âm thanh — chờ hoàn tất.</source>
         <translation>Generating audio — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1192"/>
+        <location filename="../subtitle_controller.py" line="1217"/>
         <source>Đang chạy tác vụ AI — chờ hoàn tất.</source>
         <translation>An AI task is running — wait for it to finish.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1403"/>
+        <location filename="../subtitle_controller.py" line="1428"/>
         <source>Đổi chế độ khớp thời gian</source>
         <translation>Change the timing mode</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1424"/>
+        <location filename="../subtitle_controller.py" line="1449"/>
         <source>Đổi mức nén</source>
         <translation>Change the compression cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1453"/>
+        <location filename="../subtitle_controller.py" line="1478"/>
         <source>Đổi giới hạn khoảng lặng</source>
         <translation>Change the pause cap</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1478"/>
+        <location filename="../subtitle_controller.py" line="1503"/>
         <source>Đổi độ lệch thời gian</source>
         <translation>Change the time offset</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1500"/>
+        <location filename="../subtitle_controller.py" line="1525"/>
         <source>Đổi cách gộp câu</source>
         <translation>Change sentence merging</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="1523"/>
+        <location filename="../subtitle_controller.py" line="1548"/>
         <source>Đổi giọng đọc</source>
         <translation>Change the voice</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2243"/>
+        <location filename="../subtitle_controller.py" line="2274"/>
         <source>Không tìm thấy tệp video: {name}</source>
         <translation>Video file not found: {name}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2410"/>
+        <location filename="../subtitle_controller.py" line="2447"/>
+        <location filename="../subtitle_controller.py" line="2451"/>
         <source>Không mở được dự án phụ đề đã chọn.</source>
         <translation>Could not open the selected subtitle project.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2531"/>
+        <location filename="../subtitle_controller.py" line="2617"/>
         <source>Phụ đề không có lời thoại nào để lồng tiếng (chỉ có chú thích âm thanh, ♪ hoặc ký hiệu).</source>
         <translation>The subtitles have no dialogue to dub (only sound descriptions, ♪ or symbols).</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2556"/>
+        <location filename="../subtitle_controller.py" line="2642"/>
         <source>Giọng đọc &apos;{voice}&apos; của &apos;{speaker}&apos; không hợp lệ.</source>
         <translation>Voice &apos;{voice}&apos; for &apos;{speaker}&apos; is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2665"/>
-        <location filename="../subtitle_controller.py" line="3432"/>
+        <location filename="../subtitle_controller.py" line="2758"/>
+        <location filename="../subtitle_controller.py" line="3528"/>
         <source>Đã hủy xuất.</source>
         <translation>Export cancelled.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2734"/>
+        <location filename="../subtitle_controller.py" line="2831"/>
         <source>Giọng đọc &apos;{voice}&apos; không hợp lệ cho hồ sơ hiện tại.</source>
         <translation>Voice &apos;{voice}&apos; is invalid for the current profile.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2776"/>
+        <location filename="../subtitle_controller.py" line="2873"/>
         <source>Không thể tạo tác vụ tổng hợp: {error}</source>
         <translation>Could not create a synthesis job: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2813"/>
-        <location filename="../subtitle_controller.py" line="2965"/>
+        <location filename="../subtitle_controller.py" line="2910"/>
+        <location filename="../subtitle_controller.py" line="3062"/>
         <source>Tổng hợp thất bại.</source>
         <translation>Synthesis failed.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2833"/>
-        <location filename="../subtitle_controller.py" line="2919"/>
+        <location filename="../subtitle_controller.py" line="2930"/>
+        <location filename="../subtitle_controller.py" line="3016"/>
         <source>Tệp âm thanh vừa tạo không hợp lệ.</source>
         <translation>The generated audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2893"/>
+        <location filename="../subtitle_controller.py" line="2990"/>
         <source>Không đọc được âm thanh đã lưu của một đoạn; hãy tạo lại để tổng hợp lại đoạn đó.</source>
         <translation>Could not read the saved audio of a segment; render again to re-synthesize it.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2925"/>
+        <location filename="../subtitle_controller.py" line="3022"/>
         <source>Không đọc được âm thanh vừa tạo: {error}</source>
         <translation>Could not read the rendered audio: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2929"/>
+        <location filename="../subtitle_controller.py" line="3026"/>
         <source>Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).</source>
         <translation>The rendered audio has an unsupported sample rate ({rate} Hz).</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="2950"/>
+        <location filename="../subtitle_controller.py" line="3047"/>
         <source>Không ghép được âm thanh vào phụ đề: {error}</source>
         <translation>Could not fit audio to subtitles: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3033"/>
+        <location filename="../subtitle_controller.py" line="3133"/>
         <source>Không thể hoàn tất tệp phụ đề âm thanh: {error}</source>
         <translation>Could not finalize the subtitle audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3123"/>
+        <location filename="../subtitle_controller.py" line="3223"/>
         <source>Chưa có bản âm thanh — đang tạo trước khi phát.</source>
         <translation>No audio yet — generating it before playback.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3137"/>
+        <location filename="../subtitle_controller.py" line="3237"/>
         <source>Chưa có tệp âm thanh để phát.</source>
         <translation>Nothing to play yet — generate it first.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3153"/>
+        <location filename="../subtitle_controller.py" line="3253"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3220"/>
+        <location filename="../subtitle_controller.py" line="3320"/>
         <source>Chưa có bản âm thanh — hãy tạo âm thanh trước khi tua phụ đề.</source>
         <translation>No audio yet — generate audio before seeking through subtitles.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3300"/>
+        <location filename="../subtitle_controller.py" line="3400"/>
         <source>Chưa có tệp âm thanh để xuất.</source>
         <translation>There is no audio file to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3341"/>
+        <location filename="../subtitle_controller.py" line="3441"/>
         <source>Chưa có phụ đề đã chỉnh để xuất.</source>
         <translation>There are no retimed subtitles to export.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3381"/>
+        <location filename="../subtitle_controller.py" line="3481"/>
         <source>Chưa có tệp âm thanh để ghép video.</source>
         <translation>There is no audio file to mux into the video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3320"/>
+        <location filename="../subtitle_controller.py" line="3420"/>
         <source>Không thể xuất tệp âm thanh: {error}</source>
         <translation>Could not export the audio file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3363"/>
+        <location filename="../subtitle_controller.py" line="3463"/>
         <source>Không thể xuất tệp phụ đề: {error}</source>
         <translation>Could not export the subtitle file: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3386"/>
+        <location filename="../subtitle_controller.py" line="3486"/>
         <source>Chưa chọn tệp video nguồn hợp lệ để ghép.</source>
         <translation>No valid source video file selected for muxing.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3467"/>
+        <location filename="../subtitle_controller.py" line="3563"/>
         <source>Không thể xuất video lồng tiếng: {error}</source>
         <translation>Could not export dubbed video: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3643"/>
-        <location filename="../subtitle_controller.py" line="3663"/>
+        <location filename="../subtitle_controller.py" line="3739"/>
+        <location filename="../subtitle_controller.py" line="3760"/>
         <source>Chưa có tệp video để nhận diện phụ đề.</source>
         <translation>No video file selected for subtitle transcription.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3652"/>
+        <location filename="../subtitle_controller.py" line="3748"/>
         <source>Nhận diện lại phụ đề</source>
         <translation>Re-recognize subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3670"/>
+        <location filename="../subtitle_controller.py" line="3767"/>
         <source>Đang nhận diện giọng nói (ASR)…</source>
         <translation>Transcribing speech (ASR)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3672"/>
-        <location filename="../subtitle_controller.py" line="3764"/>
+        <location filename="../subtitle_controller.py" line="3769"/>
+        <location filename="../subtitle_controller.py" line="3874"/>
         <source>Đang phân tách người nói…</source>
         <translation>Diarizing speakers…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3675"/>
+        <location filename="../subtitle_controller.py" line="3772"/>
         <source>Đã hủy phân tách người nói; phụ đề vẫn được giữ nguyên.</source>
         <translation>Speaker diarization cancelled; the subtitles were kept.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3676"/>
+        <location filename="../subtitle_controller.py" line="3773"/>
         <source>Không phân tách được người nói: {error}</source>
         <translation>Could not separate speakers: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3677"/>
+        <location filename="../subtitle_controller.py" line="3774"/>
         <source>Không dùng được mô hình Nemotron-3: {error}</source>
         <translation>Could not use the Nemotron-3 model: {error}</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3679"/>
+        <location filename="../subtitle_controller.py" line="3776"/>
         <source>Nhãn người nói được tạo bằng phương pháp dự phòng (âm học), độ chính xác thấp hơn mô hình Nemotron-3.</source>
         <translation>Speaker labels came from the fallback (acoustic) method, which is less accurate than the Nemotron-3 model.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3714"/>
+        <location filename="../subtitle_controller.py" line="3811"/>
         <source>Không nhận diện được phụ đề nào trong video này.</source>
         <translation>No subtitles were recognized in this video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3745"/>
-        <location filename="../subtitle_controller.py" line="3759"/>
+        <location filename="../subtitle_controller.py" line="3852"/>
+        <location filename="../subtitle_controller.py" line="3869"/>
         <source>Cần đính kèm tệp video gốc trước khi phân tách người nói.</source>
         <translation>An original video file must be attached before running speaker diarization.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3749"/>
+        <location filename="../subtitle_controller.py" line="3857"/>
         <source>Phân tách người nói</source>
         <translation>Separate speakers</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3834"/>
+        <location filename="../subtitle_controller.py" line="3950"/>
         <source>Đổi giọng người nói</source>
         <translation>Change the speaker voice</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3930"/>
+        <location filename="../subtitle_controller.py" line="4055"/>
         <source>Nội dung phụ đề không được để trống.</source>
         <translation>Subtitle text cannot be empty.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="3941"/>
+        <location filename="../subtitle_controller.py" line="4066"/>
         <source>Sửa phụ đề</source>
         <translation>Edit subtitles</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4026"/>
+        <location filename="../subtitle_controller.py" line="4151"/>
         <source>Cần video nguồn để nghe mẫu giọng của người nói.</source>
         <translation>A source video is required to play a speaker voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4074"/>
+        <location filename="../subtitle_controller.py" line="4205"/>
         <source>Cần video nguồn và phân tách người nói để lấy mẫu giọng.</source>
         <translation>Source video and speaker diarization are required to extract a voice sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4078"/>
+        <location filename="../subtitle_controller.py" line="4209"/>
         <source>Hồ sơ mô hình hiện tại không hỗ trợ nhân bản giọng nói từ video.</source>
         <translation>The current model profile does not support voice cloning from video.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4084"/>
+        <location filename="../subtitle_controller.py" line="4215"/>
         <source>Vui lòng xác nhận cam kết sử dụng giọng nhân bản trong thẻ Nhân bản giọng trước khi lấy mẫu.</source>
         <translation>Please accept the voice cloning consent in the Voices tab before extracting a sample.</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4096"/>
+        <location filename="../subtitle_controller.py" line="4229"/>
         <source>Đang trích xuất mẫu giọng {spk}…</source>
         <translation>Extracting voice sample for {spk}…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4166"/>
+        <location filename="../subtitle_controller.py" line="4302"/>
         <source>Tinh chỉnh phụ đề bằng AI</source>
         <translation>Refine subtitles with AI</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4186"/>
+        <location filename="../subtitle_controller.py" line="4323"/>
         <source>Đang làm sạch phụ đề &amp; người nói (LLM)…</source>
         <translation>Cleaning subtitles &amp; speakers (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4187"/>
+        <location filename="../subtitle_controller.py" line="4324"/>
         <source>Đang rút gọn phụ đề khớp thời gian (LLM)…</source>
         <translation>Shortening subtitles to fit timing (LLM)…</translation>
     </message>
     <message>
-        <location filename="../subtitle_controller.py" line="4188"/>
+        <location filename="../subtitle_controller.py" line="4325"/>
         <source>Đang dịch phụ đề khớp thời gian (LLM)…</source>
         <translation>Translating subtitles to fit timing (LLM)…</translation>
     </message>
@@ -6169,77 +6183,77 @@
 <context>
     <name>SubtitleVideoPreview</name>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="254"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="321"/>
         <source>XEM TRƯỚC VIDEO · %1</source>
         <translation>VIDEO PREVIEW · %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="255"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="322"/>
         <source>XEM TRƯỚC VIDEO</source>
         <translation>VIDEO PREVIEW</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="265"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="332"/>
         <source>Lồng tiếng</source>
         <translation>Dubbed</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="265"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="332"/>
         <source>Âm gốc</source>
         <translation>Original audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="266"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="333"/>
         <source>Chuyển nguồn âm thanh khi xem trước (Âm gốc / Lồng tiếng)</source>
         <translation>Switch preview audio source (Original audio / Dubbed)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="270"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="337"/>
         <source>Cần tạo âm thanh lồng tiếng trước.</source>
         <translation>Render the dubbed audio track first.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="291"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="357"/>
         <source>Phụ đề</source>
         <translation>Subtitles</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="293"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="359"/>
         <source>Ẩn phụ đề trên khung hình video</source>
         <translation>Hide subtitles on video frame</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="294"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="360"/>
         <source>Hiện phụ đề trên khung hình video</source>
         <translation>Show subtitles on video frame</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="308"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="374"/>
         <source>Mở khung xem trước video</source>
         <translation>Expand video preview panel</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="309"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="375"/>
         <source>Thu gọn khung xem trước video</source>
         <translation>Collapse video preview panel</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="347"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="413"/>
         <source>Không giải mã được khung hình video trên hệ thống này — các chức năng nhận dạng, lồng tiếng và xuất video vẫn hoạt động bình thường.</source>
         <translation>Video frames cannot be decoded on this system — transcription, dubbing, and video export continue to work normally.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="422"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="488"/>
         <source>Tạm dừng xem trước video</source>
         <translation>Pause video preview</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="423"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="489"/>
         <source>Phát xem trước video</source>
         <translation>Play video preview</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleVideoPreview.qml" line="457"/>
+        <location filename="../qml/components/SubtitleVideoPreview.qml" line="527"/>
         <source>Vị trí xem trước video</source>
         <translation>Video preview position</translation>
     </message>
@@ -6292,62 +6306,62 @@
         <translation>Got it</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="191"/>
+        <location filename="../qml/SubtitlesTab.qml" line="199"/>
         <source>Dự án phụ đề đã lưu</source>
         <translation>Saved subtitle projects</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="215"/>
+        <location filename="../qml/SubtitlesTab.qml" line="223"/>
         <source>Chưa có dự án nào. Nhập một tệp .srt hoặc video để bắt đầu.</source>
         <translation>No projects yet. Import an .srt file or a video to start.</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="249"/>
+        <location filename="../qml/SubtitlesTab.qml" line="299"/>
         <source>%1 phụ đề · %2</source>
         <translation>%1 cues · %2</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="250"/>
+        <location filename="../qml/SubtitlesTab.qml" line="300"/>
         <source>đã tạo âm thanh</source>
         <translation>audio rendered</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="251"/>
+        <location filename="../qml/SubtitlesTab.qml" line="301"/>
         <source>chưa tạo âm thanh</source>
         <translation>audio not rendered</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="263"/>
+        <location filename="../qml/SubtitlesTab.qml" line="313"/>
         <source>Đang mở</source>
         <translation>Open now</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="263"/>
+        <location filename="../qml/SubtitlesTab.qml" line="313"/>
         <source>Mở</source>
         <translation>Open</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="276"/>
+        <location filename="../qml/SubtitlesTab.qml" line="326"/>
         <source>Xóa dự án này</source>
         <translation>Delete this project</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="283"/>
+        <location filename="../qml/SubtitlesTab.qml" line="333"/>
         <source>Xóa &apos;%1&apos;?</source>
         <translation>Delete &apos;%1&apos;?</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="300"/>
+        <location filename="../qml/SubtitlesTab.qml" line="365"/>
         <source>Đóng</source>
         <translation>Close</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="311"/>
+        <location filename="../qml/SubtitlesTab.qml" line="376"/>
         <source>Dự án và bản lồng tiếng đã tạo sẽ bị xóa khỏi máy. Không thể hoàn tác.</source>
         <translation>The project and its rendered audio will be deleted from this computer. This cannot be undone.</translation>
     </message>
     <message>
-        <location filename="../qml/SubtitlesTab.qml" line="312"/>
+        <location filename="../qml/SubtitlesTab.qml" line="377"/>
         <source>Xóa dự án</source>
         <translation>Delete project</translation>
     </message>
@@ -6563,68 +6577,68 @@
         <translation>Choose a voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="117"/>
+        <location filename="../qml/components/VoicePicker.qml" line="175"/>
         <source>Đổi giọng đọc: %1</source>
         <translation>Change voice: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="177"/>
+        <location filename="../qml/components/VoicePicker.qml" line="235"/>
         <source>Miền Bắc</source>
         <translation>Northern</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="179"/>
+        <location filename="../qml/components/VoicePicker.qml" line="237"/>
         <source>Miền Trung</source>
         <translation>Central</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="181"/>
+        <location filename="../qml/components/VoicePicker.qml" line="239"/>
         <source>Miền Nam</source>
         <translation>Southern</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="191"/>
+        <location filename="../qml/components/VoicePicker.qml" line="249"/>
         <source>Nam</source>
         <comment>voice gender: male</comment>
         <translation>Male</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="193"/>
+        <location filename="../qml/components/VoicePicker.qml" line="251"/>
         <source>Nữ</source>
         <comment>voice gender: female</comment>
         <translation>Female</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="203"/>
+        <location filename="../qml/components/VoicePicker.qml" line="261"/>
         <source>kể chuyện</source>
         <comment>voice style: storytelling</comment>
         <translation>Storytelling</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="205"/>
+        <location filename="../qml/components/VoicePicker.qml" line="263"/>
         <source>tin tức</source>
         <comment>voice style: news</comment>
         <translation>News</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="207"/>
+        <location filename="../qml/components/VoicePicker.qml" line="265"/>
         <source>tự nhiên</source>
         <comment>voice style: natural</comment>
         <translation>Natural</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="209"/>
+        <location filename="../qml/components/VoicePicker.qml" line="267"/>
         <source>đọc truyện</source>
         <comment>voice style: reading</comment>
         <translation>Reading</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="100"/>
+        <location filename="../qml/components/VoicePicker.qml" line="158"/>
         <source>Chọn giọng đọc…</source>
         <translation>Choose a voice…</translation>
     </message>
     <message numerus="yes">
-        <location filename="../qml/components/VoicePicker.qml" line="685"/>
+        <location filename="../qml/components/VoicePicker.qml" line="777"/>
         <source>%n giọng</source>
         <translation>
             <numerusform>%n voice</numerusform>
@@ -6632,28 +6646,28 @@
         </translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="719"/>
+        <location filename="../qml/components/VoicePicker.qml" line="811"/>
         <source>Tìm giọng đọc…</source>
         <translation>Search voices…</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="736"/>
+        <location filename="../qml/components/VoicePicker.qml" line="844"/>
         <source>Xóa bộ lọc</source>
         <translation>Clear filter</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="959"/>
+        <location filename="../qml/components/VoicePicker.qml" line="1118"/>
         <source>Nghe thử giọng này</source>
         <translation>Preview this voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="531"/>
+        <location filename="../qml/components/VoicePicker.qml" line="617"/>
         <source>Nghe thử giọng đang chọn</source>
         <translation>Preview selected voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="531"/>
-        <location filename="../qml/components/VoicePicker.qml" line="959"/>
+        <location filename="../qml/components/VoicePicker.qml" line="617"/>
+        <location filename="../qml/components/VoicePicker.qml" line="1118"/>
         <source>Dừng nghe thử</source>
         <translation>Stop preview</translation>
     </message>
@@ -6661,191 +6675,191 @@
 <context>
     <name>VoicesTab</name>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="159"/>
+        <location filename="../qml/VoicesTab.qml" line="167"/>
         <source>Miền Bắc</source>
         <translation>Northern</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="161"/>
+        <location filename="../qml/VoicesTab.qml" line="169"/>
         <source>Miền Trung</source>
         <translation>Central</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="163"/>
+        <location filename="../qml/VoicesTab.qml" line="171"/>
         <source>Miền Nam</source>
         <translation>Southern</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="169"/>
-        <location filename="../qml/VoicesTab.qml" line="563"/>
+        <location filename="../qml/VoicesTab.qml" line="177"/>
+        <location filename="../qml/VoicesTab.qml" line="593"/>
         <source>Nam</source>
         <comment>voice gender: male</comment>
         <translation>Male</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="171"/>
-        <location filename="../qml/VoicesTab.qml" line="564"/>
+        <location filename="../qml/VoicesTab.qml" line="179"/>
+        <location filename="../qml/VoicesTab.qml" line="594"/>
         <source>Nữ</source>
         <comment>voice gender: female</comment>
         <translation>Female</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="178"/>
+        <location filename="../qml/VoicesTab.qml" line="186"/>
         <source>Kể chuyện</source>
         <comment>voice style: storytelling</comment>
         <translation>Storytelling</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="180"/>
+        <location filename="../qml/VoicesTab.qml" line="188"/>
         <source>Tin tức</source>
         <comment>voice style: news</comment>
         <translation>News</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="182"/>
+        <location filename="../qml/VoicesTab.qml" line="190"/>
         <source>Tự nhiên</source>
         <comment>voice style: natural</comment>
         <translation>Natural</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="184"/>
+        <location filename="../qml/VoicesTab.qml" line="192"/>
         <source>Đọc truyện</source>
         <comment>voice style: reading</comment>
         <translation>Reading</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="354"/>
+        <location filename="../qml/VoicesTab.qml" line="364"/>
         <source>Đang dùng</source>
         <translation>In use</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="354"/>
+        <location filename="../qml/VoicesTab.qml" line="364"/>
         <source>Dùng giọng này</source>
         <translation>Use this voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="355"/>
+        <location filename="../qml/VoicesTab.qml" line="365"/>
         <source>Dùng %1 cho Tạo giọng đọc</source>
         <translation>Use %1 for Create voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="366"/>
+        <location filename="../qml/VoicesTab.qml" line="376"/>
         <source>Mặc định</source>
         <translation>Default</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="366"/>
+        <location filename="../qml/VoicesTab.qml" line="376"/>
         <source>Đặt làm mặc định</source>
         <translation>Set as default</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="368"/>
+        <location filename="../qml/VoicesTab.qml" line="378"/>
         <source>%1 là giọng mặc định</source>
         <translation>%1 is the default voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="369"/>
+        <location filename="../qml/VoicesTab.qml" line="379"/>
         <source>Đặt %1 làm giọng mặc định</source>
         <translation>Set %1 as the default voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="381"/>
+        <location filename="../qml/VoicesTab.qml" line="391"/>
         <source>Dừng nghe thử</source>
         <translation>Stop preview</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="382"/>
+        <location filename="../qml/VoicesTab.qml" line="392"/>
         <source>Nghe thử %1</source>
         <translation>Preview %1</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="387"/>
+        <location filename="../qml/VoicesTab.qml" line="397"/>
         <source>Không thể nghe thử khi đang tạo âm thanh.</source>
         <translation>Previews are unavailable while audio is generating.</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="415"/>
+        <location filename="../qml/VoicesTab.qml" line="425"/>
         <source>Giọng đọc</source>
         <translation>Voices</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="420"/>
-        <location filename="../qml/VoicesTab.qml" line="604"/>
+        <location filename="../qml/VoicesTab.qml" line="430"/>
+        <location filename="../qml/VoicesTab.qml" line="634"/>
         <source>Tạo giọng mới</source>
         <translation>Create new voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="448"/>
+        <location filename="../qml/VoicesTab.qml" line="458"/>
         <source>Chọn giọng cho Tạo giọng đọc — bấm &quot;Dùng giọng này&quot; trên một giọng.</source>
         <translation>Choosing a voice for Create voice — click &quot;Use this voice&quot; on a voice.</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="458"/>
+        <location filename="../qml/VoicesTab.qml" line="468"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="459"/>
+        <location filename="../qml/VoicesTab.qml" line="469"/>
         <source>Hủy chọn giọng, quay lại Tạo giọng đọc</source>
         <translation>Cancel choosing and go back to Create voice</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="473"/>
+        <location filename="../qml/VoicesTab.qml" line="483"/>
         <source>Giọng mặc định: %1</source>
         <translation>Default voice: %1</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="474"/>
+        <location filename="../qml/VoicesTab.qml" line="484"/>
         <source>Chưa đặt giọng mặc định.</source>
         <translation>No default voice set.</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="532"/>
+        <location filename="../qml/VoicesTab.qml" line="542"/>
         <source>Tìm theo tên, giới tính, vùng miền…</source>
         <translation>Search by name, gender, region…</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="542"/>
+        <location filename="../qml/VoicesTab.qml" line="552"/>
         <source>Tìm giọng đọc</source>
         <translation>Search voices</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="550"/>
+        <location filename="../qml/VoicesTab.qml" line="576"/>
         <source>Xóa tìm kiếm</source>
         <translation>Clear search</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="560"/>
+        <location filename="../qml/VoicesTab.qml" line="590"/>
         <source>Giới tính</source>
         <translation>Gender</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="562"/>
+        <location filename="../qml/VoicesTab.qml" line="592"/>
         <source>Tất cả</source>
         <translation>All</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="589"/>
+        <location filename="../qml/VoicesTab.qml" line="619"/>
         <source>Mọi phong cách</source>
         <translation>All styles</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="617"/>
+        <location filename="../qml/VoicesTab.qml" line="647"/>
         <source>Không có giọng nào khớp bộ lọc.</source>
         <translation>No voices match the filters.</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="627"/>
+        <location filename="../qml/VoicesTab.qml" line="657"/>
         <source>Xóa bộ lọc</source>
         <translation>Clear filter</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="670"/>
+        <location filename="../qml/VoicesTab.qml" line="700"/>
         <source>Giọng đã sao chép</source>
         <translation>Cloned voices</translation>
     </message>
     <message>
-        <location filename="../qml/VoicesTab.qml" line="678"/>
+        <location filename="../qml/VoicesTab.qml" line="708"/>
         <source>Chưa có giọng sao chép nào — chọn &quot;Tạo giọng mới&quot; để tạo từ một đoạn âm thanh mẫu 3–8 giây.</source>
         <translation>No cloned voices yet — choose &quot;Create new voice&quot; to make one from a 3–8 second sample clip.</translation>
     </message>

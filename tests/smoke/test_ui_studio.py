@@ -311,8 +311,8 @@ DRIVER = textwrap.dedent(
                 "studioShortcutPlay", "studioShortcutStop",
                 "studioShortcutSeekBack", "studioShortcutSeekForward",
                 "studioRegenProfileBanner",
-                # New in the rebuild.
-                "studioTimeline", "studioTimelineClip", "studioTimelineSelection",
+                # New in the rebuild (Task 6.2 replaced Repeater clips with one Canvas).
+                "studioTimeline", "studioTimelineCanvas", "studioTimelineSelection",
                 "studioTimelinePlayhead", "studioTimeRuler", "studioFadeInSlider",
                 "studioFadeOutSlider", "studioNormalizeToggle", "studioSilenceToggle",
                 "studioCompareSwitch", "studioApplyButton", "studioClearPendingButton",
@@ -321,15 +321,27 @@ DRIVER = textwrap.dedent(
             out["op_stack_visible"] = bool(item("studioOpStack").property("visible"))
             out["op_stack_count"] = len(items("studioOpStack"))
 
-            # Timeline: one block per clip, widths proportional to duration.
+            # Task 6.2: StudioTab binds studioClipModel directly (no QVariantList
+            # mirror property) into a virtualized ListView, and StudioTimeline
+            # draws clip segments on one Canvas instead of Repeater clip items.
+            clip_list = item("studioClipList")
+            out["clip_list_is_listview"] = bool(clip_list.inherits("QQuickListView"))
+            out["studio_tab_clips_prop"] = studio_tab.property("clips")
+            out["clip_item_count"] = len(items("studioTimelineClip"))
+            out["timeline_canvas_count"] = len(items("studioTimelineCanvas"))
+
+            # Timeline: proportional segments on studioTimelineCanvas.
             clips = jsv(controller.studioClips)
-            blocks = items("studioTimelineClip")
-            out["blocks"] = len(blocks)
-            out["block_labels"] = [str(b.property("labelText")) for b in blocks]
-            widths = [float(b.property("width")) for b in blocks]
+            timeline = item("studioTimeline")
+            segs = jsv(timeline.property("clipSegments"))
+            out["blocks"] = len(segs)
+            out["block_labels"] = [str(s["label"]) for s in segs]
+            widths = [float(s["width"]) for s in segs]
             out["width_ratio"] = widths[0] / widths[1] if len(widths) == 2 else -1
             out["duration_ratio"] = clips[0]["duration"] / clips[1]["duration"]
-            out["blocks_ordered"] = scene_x(blocks[0]) < scene_x(blocks[1])
+            out["blocks_ordered"] = (
+                len(segs) == 2 and float(segs[0]["x"]) < float(segs[1]["x"])
+            )
 
             lane = item("studioTimelineLane")
             lane_w = float(lane.property("width"))
@@ -352,8 +364,16 @@ DRIVER = textwrap.dedent(
             head = item("studioTimelinePlayhead")
             out["playhead_hidden_idle"] = not bool(head.property("visible"))
             out["preview"] = bool(controller.studioPreview())
-            controller._set_replay_position(0.5)
             settle()
+            window.grabWindow()
+            settle()
+            out["timeline_paint_before_ticks"] = int(timeline.property("paintCount"))
+            for pos in (0.15, 0.35, 0.72, 0.5):
+                controller._set_replay_position(pos)
+                settle()
+            window.grabWindow()
+            settle()
+            out["timeline_paint_after_ticks"] = int(timeline.property("paintCount"))
             out["playhead_visible"] = bool(head.property("visible"))
             out["playhead_frac"] = float(head.property("x")) / lane_w
             out["timecode"] = str(item("studioTimecode").property("text"))
@@ -613,6 +633,16 @@ DRIVER = textwrap.dedent(
             out["window_start_initial"] = int(controller.studioSubtitleWindowStart)
             out["window_end_initial"] = int(controller.studioSubtitleWindowEnd)
             out["clips_initial"] = int(controller.studioClipCount)
+            # Task 6.2 virtualization: 50 cues in a bounded ListView viewport
+            # instantiate only visible delegates + cacheBuffer.
+            window.grabWindow()
+            settle()
+            sub_clip_list = item("studioClipList")
+            out["subtitle_clip_list_height"] = float(sub_clip_list.property("height"))
+            out["subtitle_clip_list_content_height"] = float(
+                sub_clip_list.property("contentHeight")
+            )
+            out["subtitle_clip_rows_instantiated"] = len(items("studioClipRow"))
             out["delete_btn_hidden"] = not any(
                 bool(b.property("visible")) for b in items("studioDeleteClipButton")
             )
@@ -737,6 +767,10 @@ class TestStudioSmoke:
         assert r["missing"] == []
         assert r["op_stack_visible"] is True
         assert r["op_stack_count"] == 1
+        assert r["clip_list_is_listview"] is True
+        assert r["studio_tab_clips_prop"] is None
+        assert r["clip_item_count"] == 0
+        assert r["timeline_canvas_count"] == 1
         assert r["blocks"] == 2
         assert r["block_labels"] == ["Đoạn 1", "Đoạn 2"]
         assert r["blocks_ordered"] is True
@@ -751,6 +785,8 @@ class TestStudioSmoke:
         assert r["selection_cleared"] is True
         assert r["playhead_hidden_idle"] is True
         assert r["preview"] is True
+        assert r["timeline_paint_before_ticks"] >= 1
+        assert r["timeline_paint_after_ticks"] == r["timeline_paint_before_ticks"]
         assert r["playhead_visible"] is True
         assert r["playhead_frac"] == pytest.approx(0.5, abs=0.03)
         assert r["timecode"].endswith("/ 0:01")
@@ -841,6 +877,8 @@ class TestStudioSmoke:
         assert r["window_start_initial"] == 0
         assert r["window_end_initial"] == 50
         assert r["clips_initial"] == 50
+        assert 0 < r["subtitle_clip_list_height"] < r["subtitle_clip_list_content_height"]
+        assert 0 < r["subtitle_clip_rows_instantiated"] < 50
         assert r["delete_btn_hidden"] is True
         assert r["srt_meta_visible"] is True
         assert r["window_start_next"] == 50

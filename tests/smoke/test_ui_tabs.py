@@ -178,7 +178,11 @@ DRIVER = textwrap.dedent(
     from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
     from vienetts_app.ui.batch_controller import ITEM_ROLES
     from vienetts_app.ui.bridge import ShellBridge
-    from vienetts_app.ui.controller import STUDIO_CLIP_ROLES, STUDIO_OP_ROLES
+    from vienetts_app.ui.controller import (
+        QWEN_MODEL_ROLES,
+        STUDIO_CLIP_ROLES,
+        STUDIO_OP_ROLES,
+    )
     from vienetts_app.ui.list_models import DictListModel
     from vienetts_app.ui.stream_playback import StreamPlaybackController
     from vienetts_app.ui.subtitle_controller import CUE_ROLES
@@ -317,6 +321,8 @@ DRIVER = textwrap.dedent(
             self._temperature = 0.8
             self._speed = 1.0
             self._silence_p = 0.15
+            self.speed_writes = []
+            self.silence_p_writes = []
             self._backend = "auto"
             self._precision = "int8"
             self._theme = "system"
@@ -557,6 +563,11 @@ DRIVER = textwrap.dedent(
             self.qwen_variant_calls = []
             self._qwen_shared_bytes = 686_752_126
             self._qwen_models = self._gguf_model_rows()
+            self._qwen_model_list = DictListModel(QWEN_MODEL_ROLES, key="key", parent=self)
+            self._sync_qwen_model_list()
+            self.qwenModelsChanged.connect(self._sync_qwen_model_list)
+            self.engineProfileChanged.connect(self._sync_qwen_model_list)
+            self.qwenVariantChanged.connect(self._sync_qwen_model_list)
             self.qwen_install_calls = 0
             self.qwen_cancel_calls = 0
             self.qwen_repair_calls = 0
@@ -721,7 +732,8 @@ DRIVER = textwrap.dedent(
 
         @speed.setter
         def speed(self, value):
-            self._mutate("_speed", float(value), self.speedChanged)
+            if self._mutate("_speed", float(value), self.speedChanged):
+                self.speed_writes.append(float(value))
 
         @Property(float, notify=silencePChanged)
         def silenceP(self):
@@ -729,7 +741,8 @@ DRIVER = textwrap.dedent(
 
         @silenceP.setter
         def silenceP(self, value):
-            self._mutate("_silence_p", float(value), self.silencePChanged)
+            if self._mutate("_silence_p", float(value), self.silencePChanged):
+                self.silence_p_writes.append(float(value))
 
         def _mutate(self, attr, value, signal):
             if value != getattr(self, attr):
@@ -1571,6 +1584,13 @@ DRIVER = textwrap.dedent(
                     row["isSelected"] = quant == self._qwen_gguf_quantization
                     rows.append(row)
             return rows
+
+        def _sync_qwen_model_list(self):
+            self._qwen_model_list.sync(self.qwenModels)
+
+        @Property(QObject, constant=True)
+        def qwenModelsModel(self):
+            return self._qwen_model_list
 
         @Property("QVariantList", notify=qwenModelsChanged)
         def qwenModels(self):
@@ -3417,6 +3437,15 @@ DRIVER = textwrap.dedent(
                 item for item in item_walk(lists[0])
                 if item.objectName() == "voicePickerRow"
             ] if lists else []
+            # Task 6.1: VoicePicker filters voiceList.model via filteredModel
+            # instead of collapsing non-matching rows to height: 0.
+            out["filtered_total_rows"] = len(rows)
+            out["filtered_zero_height_rows"] = sum(
+                1 for row in rows if float(row.property("height")) <= 0
+            )
+            out["filtered_content_height"] = (
+                float(lists[0].property("contentHeight")) if lists else -1.0
+            )
             out["filtered_visible_rows"] = [
                 str(row.property("rowLabel"))
                 for row in rows
@@ -3438,17 +3467,25 @@ DRIVER = textwrap.dedent(
                     for row in selectable_rows
                 )
             )
+            # Close (clears voicePickerFilter via onClosed) and reopen so
+            # Adam is back in filteredModel before locating its audition button.
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
+            out["closed_before_reopen"] = not picker.property("popupOpen")
+            QMetaObject.invokeMethod(picker, "openPopup")
+            app.processEvents()
+            window.grabWindow()
+            app.processEvents()
             buttons = [
                 item for item in item_walk(lists[0])
                 if item.objectName() == "voiceAuditionButton"
             ] if lists else []
             out["audition_button_count"] = len(buttons)
             # Buttons live inside row delegates; item_walk order is not
-            # row order, so find the button whose row matches adam_north.
-            # Do this BEFORE clearing the filter: the filtered-out Adam row
-            # still exists in the visual tree, and clearing the text would
-            # invalidate the width-bound delegate layout mid-scenario.
+            # row order, so find the button whose row matches adam_north
+            # and snapshot its scalar rowLabel (no C++ item kept across close).
             target = None
+            target_label = ""
             for button in buttons:
                 row = button.parent()
                 while row is not None and row.objectName() != "voicePickerRow":
@@ -3456,35 +3493,16 @@ DRIVER = textwrap.dedent(
                 label = str(row.property("rowLabel")) if row is not None else ""
                 if "Adam" in label:
                     target = button
+                    target_label = label
                     break
-            out["audition_button_for_first_row"] = target is not None
-            QMetaObject.invokeMethod(picker, "closePopup")
-            app.processEvents()
-            out["closed"] = not picker.property("popupOpen")
-            # Reopen for the audition click: the click's onClosed-reopen
-            # clears the filter text, and the filtered_visible_rows pin
-            # above already ran while the filter was active.
-            if not picker.property("popupOpen"):
-                QMetaObject.invokeMethod(picker, "openPopup")
-                app.processEvents()
+            out["audition_button_for_first_row"] = (
+                target is not None and "Adam" in target_label
+            )
             if target is not None:
-                from PySide6.QtCore import QPoint, QPointF, Qt
-                from PySide6.QtQuick import QQuickItem
-                from PySide6.QtTest import QTest
-                cands = [
-                    o for o in lists[0].findChildren(QQuickItem)
-                    if o.objectName() == "voiceAuditionButton"
-                ] if lists else []
-                want = str(target.parent().property("rowLabel") or "")
-                btn = next(
-                    (o for o in cands
-                     if str(o.parent().property("rowLabel") or "") == want),
-                    target,
-                )
-                btn.setProperty("visible", True)
-                btn.setProperty("enabled", True)
+                target.setProperty("visible", True)
+                target.setProperty("enabled", True)
                 app.processEvents()
-                click_item(btn)
+                click_item(target)
                 app.processEvents()
                 out["audition_calls"] = list(controller.audition_calls)
                 out["audition_state"] = controller.property("auditionState")
@@ -4011,6 +4029,46 @@ DRIVER = textwrap.dedent(
             insp["pause_written"] = controller.silenceP
             insp["speed_value_text"] = insp_text("inspectorSpeedValue")
             insp["pause_value_text"] = insp_text("inspectorPauseValue")
+            # Task 6.1 slider debounce: dragging while pressed=True must not
+            # spam controller writes; release commits once, and non-drag moved
+            # events debounce through the 200 ms Timer.
+            speed_slider = paragraph_tab.findChildren(QQuickItem, "inspectorSpeedSlider")[0]
+            pause_slider = paragraph_tab.findChildren(QQuickItem, "inspectorPauseSlider")[0]
+            controller.speed_writes.clear()
+            speed_slider.setProperty("pressed", True)
+            for val in (1.4, 1.6, 1.8):
+                speed_slider.setProperty("value", val)
+                speed_slider.moved.emit()
+                app.processEvents()
+            insp["speed_writes_during_drag"] = list(controller.speed_writes)
+            speed_slider.setProperty("pressed", False)
+            app.processEvents()
+            insp["speed_writes_after_release"] = list(controller.speed_writes)
+            controller.speed_writes.clear()
+            speed_slider.setProperty("value", 1.35)
+            speed_slider.moved.emit()
+            app.processEvents()
+            insp["speed_writes_before_debounce"] = list(controller.speed_writes)
+            wait_for(lambda: len(controller.speed_writes) >= 1, 1500)
+            insp["speed_writes_after_debounce"] = list(controller.speed_writes)
+
+            controller.silence_p_writes.clear()
+            pause_slider.setProperty("pressed", True)
+            for val in (0.4, 0.8, 1.25):
+                pause_slider.setProperty("value", val)
+                pause_slider.moved.emit()
+                app.processEvents()
+            insp["pause_writes_during_drag"] = list(controller.silence_p_writes)
+            pause_slider.setProperty("pressed", False)
+            app.processEvents()
+            insp["pause_writes_after_release"] = list(controller.silence_p_writes)
+            controller.silence_p_writes.clear()
+            pause_slider.setProperty("value", 0.65)
+            pause_slider.moved.emit()
+            app.processEvents()
+            insp["pause_writes_before_debounce"] = list(controller.silence_p_writes)
+            wait_for(lambda: len(controller.silence_p_writes) >= 1, 1500)
+            insp["pause_writes_after_debounce"] = list(controller.silence_p_writes)
             # …and the binding follows a write made elsewhere (Settings).
             controller.speed = 1.0
             controller.silenceP = 0.15
@@ -5190,6 +5248,58 @@ DRIVER = textwrap.dedent(
                 click_item(confirm)
                 pump(0.1)
 
+            # Task 6.3: projectsDialog stays bounded at 640×420, scrolls when
+            # populated with many projects, and keeps footer Close on screen.
+            saved_projects = list(fake_subtitle._projects)
+            fake_subtitle._projects = [
+                {
+                    "id": f"proj_{idx:02d}",
+                    "title": f"Dự án thử nghiệm {idx + 1}",
+                    "cueCount": idx + 5,
+                    "rendered": idx % 2 == 0,
+                    "active": idx == 0,
+                    "modifiedAt": "2026-11-27T00:00:00",
+                }
+                for idx in range(16)
+            ]
+            fake_subtitle.projectsChanged.emit()
+            window.setWidth(640)
+            window.setHeight(420)
+            pump(0.1)
+            click_item(sfind("subtitleProjectsButton"))
+            pump(0.1)
+            window.grabWindow()
+            app.processEvents()
+            proj_dlg = sfind("subtitleProjectsDialog")
+            proj_scroll = overlay_named("subtitleProjectsScrollView")[0]
+            proj_bar = overlay_named("subtitleProjectsScrollBar")[0]
+            proj_close = overlay_named("subtitleCloseProjectsButton")[0]
+            close_pos = proj_close.mapToScene(QPointF(0, 0))
+            out["projects_dialog_640"] = {
+                "dialog_height": float(proj_dlg.property("height")),
+                "viewport_height": float(window.height()),
+                "scroll_height": float(proj_scroll.property("height")),
+                "scroll_content_height": float(proj_scroll.property("contentHeight")),
+                "scrollbar_visible": bool(proj_bar.property("visible")),
+                "close_in_viewport": bool(
+                    proj_close.isVisible()
+                    and close_pos.x() >= -0.5
+                    and close_pos.y() >= -0.5
+                    and close_pos.x() + float(proj_close.width()) <= float(window.width()) + 0.5
+                    and close_pos.y() + float(proj_close.height()) <= float(window.height()) + 0.5
+                ),
+            }
+            click_item(proj_close)
+            pump(0.1)
+            out["projects_dialog_640"]["closed_by_footer"] = not bool(
+                proj_dlg.property("visible")
+            )
+            fake_subtitle._projects = saved_projects
+            fake_subtitle.projectsChanged.emit()
+            window.setWidth(old_size[0])
+            window.setHeight(old_size[1])
+            pump(0.1)
+
             out["action_calls"] = dict(fake_subtitle.action_calls)
             out["opened_project"] = getattr(fake_subtitle, "opened_project", "")
             out["removed_project"] = getattr(fake_subtitle, "removed_project", "")
@@ -5366,17 +5476,37 @@ DRIVER = textwrap.dedent(
             gating["clone_enabled"] = clone_btn.property("enabled")
             flow["clone_enabled"] = gating["clone_enabled"]
 
-            # Busy locks every action (shared busy/progress contract).
+            # Busy locks every action (shared busy/progress contract) and
+            # CloningTab's AppProgressBar gates indeterminateRunning on
+            # visible && indeterminate (Task 6.1).
+            progress = cfind("progressBar")
+            gating["progress_is_app_progress_bar"] = (
+                progress.property("indeterminateRunning") is not None
+            )
+            gating["progress_indet_running_hidden"] = bool(
+                progress.property("indeterminateRunning")
+            )
             controller.busy = True
             app.processEvents()
             gating["clone_disabled_busy"] = not clone_btn.property("enabled")
             gating["denoise_disabled_busy"] = not denoise_btn.property("enabled")
             gating["busy_label_visible"] = cfind("cloneBusyLabel").property("visible")
-            progress = cfind("progressBar")
             gating["progress_visible_busy"] = progress.property("visible")
             gating["progress_indeterminate_busy"] = progress.property("indeterminate")
+            gating["progress_indet_running_busy"] = bool(
+                progress.property("indeterminateRunning")
+            )
+            controller.progress = 0.5
+            app.processEvents()
+            gating["progress_indet_running_determinate"] = bool(
+                progress.property("indeterminateRunning")
+            )
+            controller.progress = 0.0
             controller.busy = False
             app.processEvents()
+            gating["progress_indet_running_after_idle"] = bool(
+                progress.property("indeterminateRunning")
+            )
 
             # ── denoise preview ──
             denoise_btn.click()
@@ -5585,6 +5715,29 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             lib["cleared"] = [search.property("text"), sum(len(v) for v in groups().values())]
             lib["no_results_hidden"] = not bool(vfind("voicesNoResults").property("visible"))
+
+            # Task 6.3: focused typing debounces via voicesSearchDebounce
+            # (150 ms) while clearing ("") updates searchText immediately.
+            debounce = vfind("voicesSearchDebounce")
+            lib["debounce_found"] = debounce is not None
+            lib["debounce_interval"] = int(debounce.property("interval"))
+            window.show()
+            window.requestActivate()
+            app.processEvents()
+            search.forceActiveFocus()
+            app.processEvents()
+            lib["debounce_search_focused"] = bool(search.property("activeFocus"))
+            search.setProperty("text", "Ngọc")
+            app.processEvents()
+            lib["debounce_running_on_type"] = bool(debounce.property("running"))
+            lib["debounce_text_immediate"] = str(voices_tab.property("searchText"))
+            wait_for(lambda: str(voices_tab.property("searchText")) == "Ngọc", 1500)
+            lib["debounce_text_after_timer"] = str(voices_tab.property("searchText"))
+            lib["debounce_stopped_after_timer"] = not bool(debounce.property("running"))
+            search.setProperty("text", "")
+            app.processEvents()
+            lib["debounce_text_immediate_clear"] = str(voices_tab.property("searchText"))
+            lib["debounce_stopped_on_clear"] = not bool(debounce.property("running"))
 
             # Audition per row (toggle semantics live in the controller).
             click_item(in_row("Mai Anh", "voicesRowAudition"))
@@ -7355,22 +7508,45 @@ DRIVER = textwrap.dedent(
 
             # One row downloading: only that row shows progress + cancel, and
             # every row's actions are disabled while the shared lane is busy.
+            # Task 6.3: QwenInstallCards binds controller.qwenModelsModel so
+            # progress/installedBytes ticks update in place without rebuilding
+            # delegates or tearing down the Cancel button mid-click.
+            from shiboken6 import Shiboken
+
             for row in controller._qwen_models:
                 if row["key"] == "base":
                     row["state"] = "downloading"
                     row["progress"] = 0.5
+                    row["installedBytes"] = 1_250_000_000
                     row["busy"] = True
             controller.qwenModelsChanged.emit()
             app.processEvents()
+            cancel_btn = row_item("qwenModelCancelButton", "base")
+            cancel_ptr_before = Shiboken.getCppPointer(cancel_btn)[0]
+            progress_before = float(row_item("qwenModelProgress", "base").property("value"))
+            for frac, done_bytes in ((0.65, 1_600_000_000), (0.85, 2_100_000_000)):
+                for row in controller._qwen_models:
+                    if row["key"] == "base":
+                        row["progress"] = frac
+                        row["installedBytes"] = done_bytes
+                controller.qwenModelsChanged.emit()
+                app.processEvents()
+            cancel_btn_after = row_item("qwenModelCancelButton", "base")
+            cancel_ptr_after = Shiboken.getCppPointer(cancel_btn_after)[0]
+            progress_after = float(row_item("qwenModelProgress", "base").property("value"))
             out["models_downloading"] = {
                 "state_text": row_item("qwenModelStateLabel", "base").property("text"),
-                "cancel_visible": row_item("qwenModelCancelButton", "base").property("visible"),
+                "cancel_visible": cancel_btn_after.property("visible"),
                 "progress_visible": row_item("qwenModelProgress", "base").property("visible"),
+                "progress_before": progress_before,
+                "progress_after": progress_after,
+                "cancel_ptr_stable": cancel_ptr_before == cancel_ptr_after,
                 "other_install_disabled": not row_item(
                     "qwenModelInstallButton", "customvoice"
                 ).property("enabled"),
             }
-            click_item(row_item("qwenModelCancelButton", "base"))
+            # Click the ORIGINAL cancel_btn reference from before the ticks.
+            click_item(cancel_btn)
             app.processEvents()
             out["models_downloading"]["cancel_calls"] = list(controller.qwen_model_calls)
 
@@ -9050,8 +9226,13 @@ class TestTextParagraphTabSmoke:
             "— Eva — Nữ · Bắc · Rõ ràng",
         }
         assert len(result["filtered_visible_rows"]) == 2
+        assert result["filtered_total_rows"] == 2
+        assert result["filtered_zero_height_rows"] == 0
+        # 32 (group) + 4 (spacing) + 56 (row) = 92 px; no hidden-row gaps.
+        assert result["filtered_content_height"] == pytest.approx(92.0, abs=4.0)
         assert result["selected_unchanged_after_filter"] is True
         assert result["rows_contained"] is True
+        assert result["closed_before_reopen"] is True
         assert result["closed"] is True
         assert result["audition_button_count"] >= 1
         assert result["audition_button_for_first_row"] is True
@@ -9308,6 +9489,16 @@ class TestTextParagraphTabSmoke:
         assert insp["pause_written"] == pytest.approx(1.0)
         assert insp["speed_value_text"] == "1.25×"
         assert insp["pause_value_text"] == "1.00 s"
+        # Task 6.1 slider debounce: no writes while pressed=True during drag,
+        # single commit on release, and debounced commit on non-drag moves.
+        assert insp["speed_writes_during_drag"] == []
+        assert insp["speed_writes_after_release"] == [pytest.approx(1.8)]
+        assert insp["speed_writes_before_debounce"] == []
+        assert insp["speed_writes_after_debounce"] == [pytest.approx(1.35)]
+        assert insp["pause_writes_during_drag"] == []
+        assert insp["pause_writes_after_release"] == [pytest.approx(1.25)]
+        assert insp["pause_writes_before_debounce"] == []
+        assert insp["pause_writes_after_debounce"] == [pytest.approx(0.65)]
         assert insp["speed_follows"] == pytest.approx(1.0)
         assert insp["pause_follows"] == pytest.approx(0.15)
         # ≥1000 px window: a right column; below it, stacked under the editor.
@@ -9623,6 +9814,12 @@ class TestTextParagraphTabSmoke:
         assert result["project_rows_visible"] == 2
         assert result["opened_project"] == "proj_a"
         assert result["removed_project"] in {"proj_a", "proj_b"}
+        proj_dlg = result["projects_dialog_640"]
+        assert 0 < proj_dlg["dialog_height"] <= proj_dlg["viewport_height"]
+        assert proj_dlg["scroll_content_height"] > proj_dlg["scroll_height"]
+        assert proj_dlg["scrollbar_visible"] is True
+        assert proj_dlg["close_in_viewport"] is True
+        assert proj_dlg["closed_by_footer"] is True
         assert result["action_calls"] == {
             "updateCue": 1,
             "cancelAiTask": 1,
@@ -9749,6 +9946,12 @@ class TestCloningStudioTabSmoke:
         assert result["busy_label_visible"] is True
         assert result["progress_visible_busy"] is True
         assert result["progress_indeterminate_busy"] is True
+        # Task 6.1: CloningTab progressBar is AppProgressBar with gated indeterminateRunning.
+        assert result["progress_is_app_progress_bar"] is True
+        assert result["progress_indet_running_hidden"] is False
+        assert result["progress_indet_running_busy"] is True
+        assert result["progress_indet_running_determinate"] is False
+        assert result["progress_indet_running_after_idle"] is False
 
         result = results["clone_denoise"]
         assert result["denoise_disabled_no_clip"] is True
@@ -9871,6 +10074,17 @@ class TestCloningStudioTabSmoke:
         assert lib["no_results_visible"] is True
         assert lib["cleared"] == ["", 20]
         assert lib["no_results_hidden"] is True
+        # Task 6.3: focused typing debounces via voicesSearchDebounce (150 ms)
+        # while clearing ("") updates searchText immediately.
+        assert lib["debounce_found"] is True
+        assert lib["debounce_interval"] == 150
+        assert lib["debounce_search_focused"] is True
+        assert lib["debounce_running_on_type"] is True
+        assert lib["debounce_text_immediate"] == ""
+        assert lib["debounce_text_after_timer"] == "Ngọc"
+        assert lib["debounce_stopped_after_timer"] is True
+        assert lib["debounce_text_immediate_clear"] == ""
+        assert lib["debounce_stopped_on_clear"] is True
         # Audition per row, presets and clones alike.
         assert lib["audition_calls"] == ["Mai Anh"]
         assert lib["clone_audition_calls"] == ["my_clone"]
@@ -10138,6 +10352,9 @@ class TestSettingsTabSmoke:
         assert result["state_text"] == "Đang tải"
         assert result["cancel_visible"] is True
         assert result["progress_visible"] is True
+        assert result["progress_before"] == pytest.approx(0.5)
+        assert result["progress_after"] == pytest.approx(0.85)
+        assert result["cancel_ptr_stable"] is True
         # One shared install lane: the other row cannot start a download.
         assert result["other_install_disabled"] is True
         assert result["cancel_calls"] == [["install", "base"], ["cancel", "base"]]
@@ -12428,11 +12645,35 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                 len(gbar) == 1 and scene_y(gbar[0]) < scene_y(afind("chapterList")[0])
             )
             out["global_bar_value"] = round(float(gbar[0].property("value")), 2)
+            # Task 6.1: AudiobookTab migrated renderProgressBar &
+            # chapterProgressBar to AppProgressBar with gated indeterminateRunning.
+            out["global_bar_is_app_progress_bar"] = (
+                len(gbar) == 1 and gbar[0].property("indeterminateRunning") is not None
+            )
+            out["inline_bar_is_app_progress_bar"] = (
+                bool(bars) and bars[0].property("indeterminateRunning") is not None
+            )
+            out["global_indet_running_determinate"] = bool(
+                gbar[0].property("indeterminateRunning")
+            )
+            out["inline_indet_running_determinate"] = bool(
+                bars[0].property("indeterminateRunning")
+            )
+            fake_ab._render_progress = 0.0
+            fake_ab.renderProgressChanged.emit()
+            app.processEvents()
+            out["global_indet_running_indeterminate"] = bool(
+                gbar[0].property("indeterminateRunning")
+            )
+            out["inline_indet_running_indeterminate"] = bool(
+                bars[0].property("indeterminateRunning")
+            )
             # Rendering row's render button must be hidden (replaced by stop);
             # other pending rows keep theirs (but disabled while busy).
             render_btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
             out["render_buttons_visible"] = len(render_btns)
-            # Cancelled/idle reset: everything retreats.
+            # Cancelled/idle reset: everything retreats and hidden indeterminate
+            # bars stop animating.
             fake_ab._rendering_index = -1
             fake_ab._render_progress = 0.0
             fake_ab._chapters[9]["status"] = "pending"
@@ -12447,6 +12688,12 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                                             if s.property("visible")])
             out["idle_global_visible"] = len([b for b in ifind("renderProgressBar")
                                               if b.property("visible")])
+            out["idle_global_indet_running"] = any(
+                bool(b.property("indeterminateRunning")) for b in ifind("renderProgressBar")
+            )
+            out["idle_inline_indet_running"] = any(
+                bool(b.property("indeterminateRunning")) for b in ifind("chapterProgressBar")
+            )
             out["hits"] = fake_ab.hits
 
             # Row-level model (perf 6.4): a status update elsewhere in the
@@ -12603,6 +12850,12 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["row_visible"] = len(rows) == 1 and bool(rows[0].property("visible"))
             bars = ifind("renderAllProgressBar")
             out["bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
+            out["bar_is_app_progress_bar"] = (
+                bool(bars) and bars[0].property("indeterminateRunning") is not None
+            )
+            out["bar_indet_running"] = (
+                bool(bars[0].property("indeterminateRunning")) if bars else None
+            )
             out["label_text"] = str(ifind("renderAllProgressLabel")[0].property("text"))
             out["eta_visible"] = bool(afind("renderEtaLabel")[0].property("visible"))
             out["eta_text"] = str(afind("renderEtaLabel")[0].property("text"))
@@ -12852,6 +13105,16 @@ class TestAudiobookTabSmoke:
         assert result["idle_inline_bars"] == 0
         assert result["idle_stop_buttons"] == 0
         assert result["idle_global_visible"] == 0
+        # Task 6.1: AudiobookTab progress bars are AppProgressBar instances
+        # with visibility- and indeterminate-gated animations.
+        assert result["global_bar_is_app_progress_bar"] is True
+        assert result["inline_bar_is_app_progress_bar"] is True
+        assert result["global_indet_running_determinate"] is False
+        assert result["inline_indet_running_determinate"] is False
+        assert result["global_indet_running_indeterminate"] is True
+        assert result["inline_indet_running_indeterminate"] is True
+        assert result["idle_global_indet_running"] is False
+        assert result["idle_inline_indet_running"] is False
 
         result = results["ab_interact"]
         assert result["target_found"] is True
@@ -12865,6 +13128,8 @@ class TestAudiobookTabSmoke:
         assert result["row_found"] == 1
         assert result["row_visible"] is True
         assert result["bar_value"] == pytest.approx(0.4, abs=0.01)
+        assert result["bar_is_app_progress_bar"] is True
+        assert result["bar_indet_running"] is False
         assert result["label_text"] == "Tổng: 2/5 chương"
         assert result["eta_visible"] is True
         assert result["eta_text"] == "còn ~1:20"

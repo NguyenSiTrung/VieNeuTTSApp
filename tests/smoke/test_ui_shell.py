@@ -294,7 +294,7 @@ DRIVER = textwrap.dedent(
         # The timeline is Studio's working surface; preview and apply are
         # its actions (the clip table and the effects panel follow below).
         "studio:project": (
-            "studioTimeline", ("studioPreviewButton", "studioApplyButton"), "studioTimelineClip",
+            "studioTimeline", ("studioPreviewButton", "studioApplyButton"), "studioTimelineCanvas",
         ),
     }
     for _section in ("general", "voice", "export", "engine", "models", "updates"):
@@ -1106,6 +1106,58 @@ DRIVER = textwrap.dedent(
                 out[theme] = shadows()
             results["card_shadows"] = out
 
+            # Lazy AppButton icon/spinner Loaders + AppIcon hidden-paint gating
+            # (Task 6.1): plain text buttons mount zero Canvas items; icon
+            # buttons mount one Canvas and switch Loaders when busy; hidden
+            # AppIcons defer repaints until visible again.
+            out = {"scenario": "lazy_buttons"}
+            sh_bridge.setCurrentTab("create")
+            app.processEvents()
+
+            def is_canvas(it):
+                meta = it.metaObject()
+                while meta is not None:
+                    if meta.className() == "QQuickCanvasItem":
+                        return True
+                    meta = meta.superClass()
+                return False
+
+            def button_state(btn):
+                norm = btn.findChildren(QObject, "normalIconLoader")[0]
+                spin = btn.findChildren(QObject, "busySpinnerLoader")[0]
+                canvases = [it for it in item_walk(btn) if is_canvas(it)]
+                return {
+                    "icon_kind": str(btn.property("iconKind")),
+                    "busy": bool(btn.property("busy")),
+                    "normal_active": bool(norm.property("active")),
+                    "spinner_active": bool(spin.property("active")),
+                    "canvas_count": len(canvases),
+                }
+
+            plain_btn = window.findChildren(QQuickItem, "inspectorChangeVoiceButton")[0]
+            icon_btn = window.findChildren(QQuickItem, "inspectorAuditionButton")[0]
+            out["plain"] = button_state(plain_btn)
+            out["icon_idle"] = button_state(icon_btn)
+
+            # AppIcon hidden-paint gating: mutating kind while hidden marks
+            # _dirty without painting; showing flushes _dirty back to False.
+            norm_loader = icon_btn.findChildren(QObject, "normalIconLoader")[0]
+            icon_item = norm_loader.property("item")
+            icon_item.setProperty("visible", False)
+            icon_item.setProperty("kind", "check")
+            app.processEvents()
+            out["icon_dirty_hidden"] = bool(icon_item.property("_dirty"))
+            icon_item.setProperty("visible", True)
+            app.processEvents()
+            out["icon_dirty_after_show"] = bool(icon_item.property("_dirty"))
+
+            icon_btn.setProperty("busy", True)
+            app.processEvents()
+            out["icon_busy"] = button_state(icon_btn)
+            icon_btn.setProperty("busy", False)
+            app.processEvents()
+            results["lazy_buttons"] = out
+
         elif scenario == "restart":
             bridge = engine.rootContext().contextProperty("bridge")
             out["initial_pref"] = bridge.themePreference
@@ -1848,6 +1900,7 @@ class TestShellSmoke:
         self._check_statusbar(shell_nav_results)
         self._check_consent_copy(shell_nav_results)
         self._check_card_shadows(shell_nav_results)
+        self._check_lazy_buttons(shell_nav_results)
         self._check_lazy_tabs(shell_nav_results)
 
     @pytest.mark.slow
@@ -2030,6 +2083,29 @@ class TestShellSmoke:
             assert set(visible) <= allowed, (theme, set(visible), allowed)
         # The two themes really resolve to different shadow colours.
         assert {s["color"] for s in result["dark"]} != {s["color"] for s in result["light"]}
+
+    def _check_lazy_buttons(self, results: dict[str, dict]) -> None:
+        # Task 6.1: AppButton mounts icon/spinner Canvases lazily; AppIcon
+        # defers repaints while hidden until visible again.
+        result = results["lazy_buttons"]
+        assert result["plain"] == {
+            "icon_kind": "",
+            "busy": False,
+            "normal_active": False,
+            "spinner_active": False,
+            "canvas_count": 0,
+        }
+        assert result["icon_idle"]["icon_kind"] != ""
+        assert result["icon_idle"]["busy"] is False
+        assert result["icon_idle"]["normal_active"] is True
+        assert result["icon_idle"]["spinner_active"] is False
+        assert result["icon_idle"]["canvas_count"] == 1
+        assert result["icon_dirty_hidden"] is True
+        assert result["icon_dirty_after_show"] is False
+        assert result["icon_busy"]["busy"] is True
+        assert result["icon_busy"]["normal_active"] is False
+        assert result["icon_busy"]["spinner_active"] is True
+        assert result["icon_busy"]["canvas_count"] == 1
 
     def _check_lazy_tabs(self, results: dict[str, dict]) -> None:
         # Only the landing tab is built before the first frame (perf track 6.1).

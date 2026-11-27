@@ -11,10 +11,11 @@ chapters cached before timelines existed).
 Segment text is NOT a verbatim substring of the chapter text — the splitter
 collapses whitespace, so ``"\\n\\n"`` between paragraphs becomes ``" "`` when
 two units pack into one segment, and a unit longer than the cap is hard-split
-mid-token. Offsets are therefore recovered by a lock-step word scan
-(:func:`map_segment_offsets`): the splitter never reorders or rewrites words,
-only the whitespace between them, so consuming chapter tokens in order against
-each segment's tokens yields exact spans.
+mid-token. Offsets are therefore recovered by a whitespace-insensitive
+character lock-step scan (:func:`map_segment_offsets`): the splitter never
+reorders or rewrites non-whitespace characters, only the whitespace between
+them, so consuming chapter characters in order against each segment yields
+exact spans even for hard-splits and spaceless CJK paragraphs.
 
 Karaoke lookup at playback time: :func:`locate_segment` finds the active
 segment for a playback position; the caller interpolates a char offset inside
@@ -24,7 +25,7 @@ that segment and :func:`active_word` expands it to the containing word.
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from vienetts_app.core.engine import split_text_for_streaming
@@ -49,6 +50,25 @@ class Timeline:
 
     segments: tuple[SegmentSpan, ...]
     approximate: bool = False
+    _non_empty_indices: tuple[int, ...] = field(init=False, repr=False, compare=False)
+    _non_empty_starts: tuple[int, ...] = field(init=False, repr=False, compare=False)
+    _ends_monotone: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        indices: list[int] = []
+        starts: list[int] = []
+        ends_monotone = True
+        prev_end: int | None = None
+        for i, span in enumerate(self.segments):
+            if span.end_ms > span.start_ms:
+                indices.append(i)
+                starts.append(span.start_ms)
+                if prev_end is not None and prev_end > span.end_ms:
+                    ends_monotone = False
+                prev_end = span.end_ms
+        object.__setattr__(self, "_non_empty_indices", tuple(indices))
+        object.__setattr__(self, "_non_empty_starts", tuple(starts))
+        object.__setattr__(self, "_ends_monotone", ends_monotone)
 
 
 # ── word / paragraph spans ────────────────────────────────────────────────────
@@ -125,31 +145,72 @@ def split_paragraphs(text: str) -> list[dict[str, Any]]:
 def map_segment_offsets(text: str, segments: list[str]) -> list[tuple[int, int]]:
     """``[char_start, char_end)`` of each segment inside ``text``.
 
-    Lock-step scan: chapter tokens (``word_spans``) are consumed in order
-    against each segment's whitespace-split tokens, one token per match —
-    the splitter never reorders or rewrites words, so this recovers exact
-    offsets even though the segment string itself is not a substring.
-    A ``(-1, -1)`` placeholder marks empty/unmappable segments (callers
-    treat those as "no highlight", never as an error).
+    Whitespace-insensitive character lock-step scan: non-whitespace characters
+    in ``text`` are consumed in order against each segment's non-whitespace
+    characters, recovering exact spans across normalized whitespace
+    (``"\\n\\n"`` collapsed to ``" "``), mid-token hard-splits (>512 chars),
+    and spaceless CJK paragraphs. A ``(-1, -1)`` placeholder marks empty or
+    genuinely unmappable segments (callers treat those as "no highlight",
+    never as an error).
     """
-    tokens = word_spans(text)
-    offsets: list[tuple[int, int]] = []
+    n = len(text)
     ti = 0
+    offsets: list[tuple[int, int]] = []
+    compact_text: str | None = None
+    compact_pos: list[int] | None = None
+
     for segment in segments:
-        seg_tokens = segment.split()
-        if not seg_tokens:
+        scan = ti
+        first = -1
+        last = -1
+        has_non_ws = False
+        matched = True
+        for ch in segment:
+            if ch.isspace():
+                continue
+            has_non_ws = True
+            while scan < n and text[scan].isspace():
+                scan += 1
+            if scan < n and text[scan] == ch:
+                if first == -1:
+                    first = scan
+                last = scan + 1
+                scan += 1
+            else:
+                matched = False
+                break
+
+        if not has_non_ws:
             offsets.append((-1, -1))
             continue
-        first = last = -1
-        for _token in seg_tokens:
-            if ti >= len(tokens):
-                break
-            start, end = tokens[ti]
-            ti += 1
-            if first == -1:
-                first = start
-            last = end
-        offsets.append((first, last) if first != -1 else (-1, -1))
+
+        if matched:
+            offsets.append((first, last))
+            ti = scan
+            continue
+
+        # Fallback resync: search forward in the non-whitespace projection of text.
+        if compact_text is None or compact_pos is None:
+            compact_chars: list[str] = []
+            compact_pos = []
+            for idx, ch in enumerate(text):
+                if not ch.isspace():
+                    compact_chars.append(ch)
+                    compact_pos.append(idx)
+            compact_text = "".join(compact_chars)
+
+        compact_seg = "".join(segment.split())
+        start_idx = bisect.bisect_left(compact_pos, ti)
+        found = compact_text.find(compact_seg, start_idx)
+        if found == -1:
+            offsets.append((-1, -1))
+            continue
+
+        start_char = compact_pos[found]
+        end_char = compact_pos[found + len(compact_seg) - 1] + 1
+        offsets.append((start_char, end_char))
+        ti = end_char
+
     return offsets
 
 
@@ -217,26 +278,29 @@ def estimate_timeline(text: str, duration_ms: int, segments: list[str] | None = 
 def locate_segment(timeline: Timeline, position_ms: int) -> int:
     """Index of the segment playing at ``position_ms``; -1 when none exists.
 
-    Zero-duration segments (a silent engine pass) never match. Positions
-    before the first / past the last segment clamp to the nearest non-empty
-    one — a karaoke cursor should sit on SOME word whenever audio exists.
+    O(log N) via ``bisect`` over pre-indexed non-empty segment starts (zero
+    per-tick list allocation). Zero-duration segments (a silent engine pass)
+    never match. Positions before the first / past the last segment clamp to
+    the nearest non-empty one — a karaoke cursor should sit on SOME word
+    whenever audio exists.
     """
-    non_empty = [
-        (i, span) for i, span in enumerate(timeline.segments) if span.end_ms > span.start_ms
-    ]
-    if not non_empty:
+    starts = timeline._non_empty_starts
+    if not starts:
         return -1
-    active = -1
-    for i, span in non_empty:
-        if span.start_ms <= position_ms < span.end_ms:
-            active = i
-        elif span.start_ms > position_ms:
-            break
-    if active != -1:
-        return active
-    if position_ms < non_empty[0][1].start_ms:
-        return non_empty[0][0]
-    return non_empty[-1][0]
+    indices = timeline._non_empty_indices
+    pos = bisect.bisect_right(starts, position_ms) - 1
+    if pos < 0:
+        return indices[0]
+    segments = timeline.segments
+    cand = indices[pos]
+    if position_ms < segments[cand].end_ms:
+        return cand
+    if not timeline._ends_monotone:
+        for j in range(pos - 1, -1, -1):
+            earlier = indices[j]
+            if position_ms < segments[earlier].end_ms:
+                return earlier
+    return indices[-1]
 
 
 def paragraph_start_ms(timeline: Timeline, paragraph_char_start: int) -> int:

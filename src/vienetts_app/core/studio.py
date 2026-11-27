@@ -8,6 +8,7 @@ import hashlib
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -268,6 +269,76 @@ def effective_controls(project: StudioProject) -> dict[str, float | int]:
     }
 
 
+_SILENCE_SCAN_BLOCK_FRAMES = 65_536
+
+
+def _finite_peak(arr: np.ndarray) -> float:
+    """Return finite ``max(abs(arr))`` via min/max without allocating ``np.abs(arr)``.
+
+    Falls back to a bounded block scan only when ``arr`` contains ``NaN``/``Inf``
+    so corrupt samples never poison peaks or waveform envelopes.
+    """
+    if arr.size == 0:
+        return 0.0
+    lo = float(arr.min())
+    hi = float(arr.max())
+    if np.isfinite(lo) and np.isfinite(hi):
+        return max(abs(lo), abs(hi))
+    peak = 0.0
+    for start in range(0, arr.size, _SILENCE_SCAN_BLOCK_FRAMES):
+        block = arr[start : start + _SILENCE_SCAN_BLOCK_FRAMES]
+        finite = block[np.isfinite(block)]
+        if finite.size:
+            b_peak = max(abs(float(finite.min())), abs(float(finite.max())))
+            if b_peak > peak:
+                peak = b_peak
+    return peak
+
+
+def _find_non_silent_bounds(
+    mix: np.ndarray,
+    amp: float,
+    *,
+    block_frames: int = _SILENCE_SCAN_BLOCK_FRAMES,
+) -> tuple[int, int] | None:
+    """Return ``(first, last_exclusive)`` where ``abs(mix) > amp``, else ``None``.
+
+    Scans inward from both ends in fixed-size blocks so hour-long mixes never
+    allocate full-length ``np.abs`` or ``np.nonzero`` temporaries.
+    """
+    n = mix.size
+    if n == 0:
+        return None
+    step = max(1, int(block_frames))
+
+    first = -1
+    for start in range(0, n, step):
+        block = mix[start : min(start + step, n)]
+        if float(block.max()) <= amp and float(block.min()) >= -amp:
+            continue
+        mask = block > amp
+        mask |= block < -amp
+        if mask.any():
+            first = start + int(np.argmax(mask))
+            break
+    if first == -1:
+        return None
+
+    last_exclusive = first + 1
+    for end in range(n, first, -step):
+        start = max(first, end - step)
+        block = mix[start:end]
+        if float(block.max()) <= amp and float(block.min()) >= -amp:
+            continue
+        mask = block > amp
+        mask |= block < -amp
+        if mask.any():
+            last_in_block = block.size - 1 - int(np.argmax(mask[::-1]))
+            last_exclusive = start + last_in_block + 1
+            break
+    return first, last_exclusive
+
+
 def envelope_for(
     audio: np.ndarray, buckets: int = ENVELOPE_BUCKETS, reference_peak: float | None = None
 ) -> list[float]:
@@ -276,17 +347,28 @@ def envelope_for(
     With no ``reference_peak`` the envelope is normalised against its own peak,
     so the loudest bucket reads 1.0. Callers comparing renders pass a shared
     reference instead (render_overview passes the dry project peak) so that pure
-    level ops visibly grow/shrink the picture. A degenerate 0 reference (silent
-    project) falls back to the buckets' own peak, matching the old inline code.
+    level ops visibly grow/shrink the picture. A degenerate 0 (or non-finite)
+    reference falls back to the buckets' own peak, and non-finite samples are
+    ignored per bucket so one corrupt sample cannot poison the overview.
     """
+    if buckets <= 0:
+        return []
     n = len(audio)
     if n == 0:
         return [0.0] * buckets
     peaks: list[float] = []
     for i in range(buckets):
         seg = audio[i * n // buckets : (i + 1) * n // buckets]
-        peaks.append(float(np.max(np.abs(seg))) if seg.size else 0.0)
-    ref = reference_peak or max(peaks) or 1.0
+        peaks.append(_finite_peak(seg) if seg.size else 0.0)
+    ref = (
+        float(reference_peak)
+        if reference_peak is not None and np.isfinite(reference_peak) and reference_peak > 0.0
+        else 0.0
+    )
+    if ref <= 0.0:
+        ref = max(peaks, default=0.0)
+    if ref <= 0.0 or not np.isfinite(ref):
+        return [0.0] * buckets
     return [min(p / ref, 1.0) for p in peaks]
 
 
@@ -313,16 +395,16 @@ def _concat(
             joined_srt.append(np.ascontiguousarray(clip.audio, dtype=np.float32))
         if not joined_srt:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(joined_srt).astype(np.float32)
+        return np.concatenate(joined_srt).astype(np.float32, copy=False)
     parts = [np.ascontiguousarray(c.audio, dtype=np.float32) for c in project.clips]
     if gap_frames <= 0 or len(parts) == 1:
-        return np.concatenate(parts).astype(np.float32)
+        return np.concatenate(parts).astype(np.float32, copy=False)
     gap = np.zeros(gap_frames, dtype=np.float32)
     joined: list[np.ndarray] = [parts[0]]
     for part in parts[1:]:
         joined.append(gap)
         joined.append(part)
-    return np.concatenate(joined).astype(np.float32)
+    return np.concatenate(joined).astype(np.float32, copy=False)
 
 
 # The last time-stretched mix, keyed on (input mix digest, factor) — Task 5.2.
@@ -363,6 +445,8 @@ def _stretched(mix: np.ndarray, factor: float) -> np.ndarray:
     from vienetts_app.core.audio import time_stretch_audio
 
     mix = np.ascontiguousarray(mix, dtype=np.float32)
+    if mix.size == 0:
+        return mix
     key = (_mix_identity(mix), float(factor))
     with _stretch_lock:
         cached = _stretch_cache
@@ -396,10 +480,12 @@ def _render_project_impl(project: StudioProject, *, include_first_lead: bool = F
             if op.start_frame < end:  # an empty/clamped-away range is a no-op
                 mix = np.concatenate([mix[: op.start_frame], mix[end:]])
         elif isinstance(op, GainOp):
-            mix = (mix * (10.0 ** (op.db / 20.0))).astype(np.float32)
+            if mix.size:
+                mix = (mix * np.float32(10.0 ** (op.db / 20.0))).astype(np.float32, copy=False)
         elif isinstance(op, NormalizeOp):
-            peak = float(np.max(np.abs(mix))) if mix.size else 0.0
-            mix = mix if peak <= 1e-9 else (mix * (op.peak / peak)).astype(np.float32)
+            peak = _finite_peak(mix)
+            if peak > 1e-9:
+                mix = (mix * np.float32(op.peak / peak)).astype(np.float32, copy=False)
         elif isinstance(op, FadeOp):
             n = min(int(SAMPLE_RATE * op.ms / 1000), len(mix))
             if n > 0:
@@ -410,15 +496,16 @@ def _render_project_impl(project: StudioProject, *, include_first_lead: bool = F
                 else:
                     mix[-n:] *= ramp[::-1]
         elif isinstance(op, SpeedOp):
-            mix = _stretched(mix, op.factor)
+            if mix.size:
+                mix = _stretched(mix, op.factor)
         elif isinstance(op, SilenceTrimOp):
             if mix.size == 0:
                 raise ValueError("silence trim left nothing")
             amp = 10.0 ** (op.threshold_db / 20.0)
-            loud = np.nonzero(np.abs(mix) > amp)[0]
-            if loud.size == 0:
+            bounds = _find_non_silent_bounds(mix, amp)
+            if bounds is None:
                 raise ValueError("silence trim left nothing")
-            mix = mix[int(loud[0]) : int(loud[-1]) + 1]
+            mix = mix[bounds[0] : bounds[1]]
         elif isinstance(op, GapOp):
             pass
     return np.ascontiguousarray(mix, dtype=np.float32)
@@ -673,7 +760,7 @@ def render_overview(project: StudioProject) -> tuple[np.ndarray, int, list[float
     dry_peak = 0.0
     for clip in project.clips:
         if clip.audio.size:
-            peak = float(np.max(np.abs(clip.audio)))
+            peak = _finite_peak(clip.audio)
             if peak > dry_peak:
                 dry_peak = peak
     return mix, duration_ms, envelope_for(mix, reference_peak=dry_peak)
@@ -738,6 +825,10 @@ def load_project_from_chapters(
 ) -> StudioProject:
     """One clip per rendered chapter, each carrying the chapter's provenance.
 
+    Supports both legacy single-WAV chapters (``ch_XXXX.wav``) and oversize
+    multi-part chapters (``ch_XXXX_sYY.wav`` via ``store.chapter_audio_paths``),
+    concatenating ordered parts into one clip when every part is present.
+
     ``contexts`` is the book's recorded render provenance keyed by chapter
     index (``audiobook.BookState.contexts``): a chapter rendered before engine
     provenance existed has no entry, and its clip stays "unknown engine" so a
@@ -746,20 +837,28 @@ def load_project_from_chapters(
     from vienetts_app.core.audio import read_wav
 
     recorded = contexts or {}
+    chapter_audio_paths = getattr(store, "chapter_audio_paths", None)
     clips: list[StudioClip] = []
     for i, text in zip(indices, texts, strict=False):
-        wav = store.chapter_wav_path(book_id, i)  # AudiobookStore.chapter_wav_path
-        if not wav.is_file():
+        if callable(chapter_audio_paths):
+            paths = [Path(p) for p in chapter_audio_paths(book_id, i)]
+        else:
+            paths = [Path(store.chapter_wav_path(book_id, i))]  # AudiobookStore.chapter_wav_path
+        if not paths or not all(p.is_file() for p in paths):
             continue
-        audio, sr = read_wav(wav)
-        if sr != SAMPLE_RATE:
-            raise ValueError(f"studio needs 48 kHz, got {sr}")
+        parts: list[np.ndarray] = []
+        for wav in paths:
+            part_audio, sr = read_wav(wav)
+            if sr != SAMPLE_RATE:
+                raise ValueError(f"studio needs 48 kHz, got {sr}")
+            parts.append(np.ascontiguousarray(part_audio, dtype=np.float32))
+        audio = parts[0] if len(parts) == 1 else np.concatenate(parts)
         clips.append(
             StudioClip(
                 id=f"ch{i}",
                 label=f"Ch {i + 1}",
                 text=text,
-                audio=np.ascontiguousarray(audio, dtype=np.float32),
+                audio=audio,
                 context=recorded.get(int(i)),
             )
         )
@@ -1011,7 +1110,7 @@ def refit_subtitle_clips(
             overflow_ms=max(0, end_ms - target.srt_end_ms),
         )
         target_frames = frames_for_ms(duration_ms, SAMPLE_RATE)
-        if target_frames <= 0:
+        if target_frames <= 0 or raw.size == 0:
             fitted_audio = np.zeros(0, dtype=np.float32)
         else:
             from vienetts_app.core.audio import time_stretch_audio
@@ -1088,6 +1187,8 @@ def set_subtitle_clip_speed(
     clip = clips[0]
     if clip.raw_audio is not None:
         base = clip.raw_audio
+    elif clip.audio.size == 0:
+        base = clip.audio
     elif abs(clip.fit_rate - 1.0) > 1e-3 and clip.fit_rate > 0:
         inv_rate = max(MIN_SPEED, min(MAX_SPEED, 1.0 / float(clip.fit_rate)))
         base = np.ascontiguousarray(

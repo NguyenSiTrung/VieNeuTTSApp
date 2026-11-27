@@ -101,12 +101,70 @@ def test_segment_offset_mapping() -> None:
         assert 0 <= start < end <= len(text)
         assert not text[start].isspace() and not text[end - 1].isspace()
 
-    # A >cap unit is hard-split mid-token: the segment token is a PREFIX of
-    # the chapter token, and lock-step consumption maps it to the WHOLE
-    # chapter token; the remainder segment then runs out of tokens and gets
-    # the "no highlight" placeholder. Exact spans for every normal word,
-    # graceful degradation for a >512-char token.
-    assert map_segment_offsets("aaaa bbbb", ["aaaa bbb", "b"]) == [(0, 9), (-1, -1)]
+    # A >cap unit is hard-split mid-token: character lock-step scanning aligns
+    # both the prefix and the remainder to their exact character spans without
+    # dropping or drifting subsequent words.
+    assert map_segment_offsets("aaaa bbbb", ["aaaa bbb", "b"]) == [(0, 8), (8, 9)]
+    assert map_segment_offsets("aaaa bbbb cccc", ["aaaa bbb", "b", "cccc"]) == [
+        (0, 8),
+        (8, 9),
+        (10, 14),
+    ]
+
+
+def test_map_segment_offsets_hard_split_long_paragraph_no_drift() -> None:
+    long_token = "a" * 600 + "b" * 600
+    text = f"Đầu đoạn. {long_token} Cuối đoạn thật sự."
+    segments = split_text_for_streaming(text, max_chars=512)
+    assert len(segments) >= 3
+    offsets = map_segment_offsets(text, segments)
+
+    assert len(offsets) == len(segments)
+    assert all(start >= 0 and end > start for start, end in offsets)
+    assert offsets == sorted(offsets)
+    assert offsets[0][0] == 0
+    assert offsets[-1][1] == len(text)
+    for seg, (start, end) in zip(segments, offsets, strict=True):
+        assert "".join(text[start:end].split()) == "".join(seg.split())
+        assert not text[start].isspace() and not text[end - 1].isspace()
+
+
+def test_map_segment_offsets_spaceless_cjk_and_whitespace_variants() -> None:
+    from vienetts_app.core.text_segmentation import split_text_for_profile
+
+    # Spaceless Chinese paragraph split at CJK full stops.
+    zh_text = "第一句话很长。第二句话也不短！第三句话在这里？第四句话结束。"
+    zh_segments = split_text_for_profile(zh_text, language="zh", max_chars=14)
+    assert len(zh_segments) >= 3
+    zh_offsets = map_segment_offsets(zh_text, zh_segments)
+    assert zh_offsets == sorted(zh_offsets)
+    assert zh_offsets[0][0] == 0
+    assert zh_offsets[-1][1] == len(zh_text)
+    for seg, (start, end) in zip(zh_segments, zh_offsets, strict=True):
+        assert zh_text[start:end] == seg
+
+    # Spaceless Japanese paragraph hard-split mid-sentence without punctuation.
+    ja_text = "あいうえおかきくけこ" * 60
+    ja_segments = split_text_for_profile(ja_text, language="ja", max_chars=256)
+    assert len(ja_segments) == 3
+    ja_offsets = map_segment_offsets(ja_text, ja_segments)
+    assert ja_offsets == [(0, 256), (256, 512), (512, 600)]
+    for seg, (start, end) in zip(ja_segments, ja_offsets, strict=True):
+        assert ja_text[start:end] == seg
+
+    # Normalized whitespace variants (tabs, CRLF, multiple spaces, fullwidth space).
+    ws_text = "  Xin\t\tchào\r\n\r\nthế\u3000giới!  "
+    assert map_segment_offsets(ws_text, ["Xin chào", "thế giới!"]) == [(2, 11), (15, 24)]
+    assert map_segment_offsets(ws_text, ["Xin chào thế giới!"]) == [(2, 24)]
+
+    # Unmappable segment returns (-1, -1) without poisoning subsequent segments.
+    assert map_segment_offsets("alpha beta gamma", ["alpha", "MISSING", "gamma"]) == [
+        (0, 5),
+        (-1, -1),
+        (11, 16),
+    ]
+    assert map_segment_offsets("", ["anything"]) == [(-1, -1)]
+    assert map_segment_offsets("alpha", ["   \n\t "]) == [(-1, -1)]
 
 
 # ── measured timeline ─────────────────────────────────────────────────────────
@@ -181,3 +239,63 @@ def test_timeline_lookup_and_json() -> None:
     assert timeline_from_json({"version": TIMELINE_VERSION, "segments": "x"}) is None
     assert timeline_from_json({"version": 99, "segments": []}) is None
     assert timeline_from_json({"version": TIMELINE_VERSION, "segments": [{"charStart": 0}]}) is None
+
+
+def test_locate_segment_bisect_edge_cases_and_scaling(monkeypatch: pytest.MonkeyPatch) -> None:
+    import bisect
+
+    # All-empty / zero-duration segments yield -1.
+    all_zero = Timeline((SegmentSpan(0, 3, 0, 0), SegmentSpan(4, 7, 100, 100)))
+    assert locate_segment(all_zero, 0) == -1
+    assert locate_segment(all_zero, 100) == -1
+
+    # Interspersed leading, middle, and trailing zero-duration segments.
+    interspersed = Timeline(
+        (
+            SegmentSpan(0, 1, 0, 0),
+            SegmentSpan(1, 2, 0, 1000),
+            SegmentSpan(2, 3, 1000, 1000),
+            SegmentSpan(3, 4, 1000, 2000),
+            SegmentSpan(4, 5, 2000, 2000),
+        )
+    )
+    assert locate_segment(interspersed, -10) == 1
+    assert locate_segment(interspersed, 0) == 1
+    assert locate_segment(interspersed, 999) == 1
+    assert locate_segment(interspersed, 1000) == 3
+    assert locate_segment(interspersed, 1999) == 3
+    assert locate_segment(interspersed, 2000) == 3
+    assert locate_segment(interspersed, 9999) == 3
+
+    # Silence gap between cues clamps to last non-empty (matches existing contract).
+    gapped = Timeline((SegmentSpan(0, 1, 100, 1000), SegmentSpan(2, 3, 2000, 3000)))
+    assert locate_segment(gapped, 50) == 0
+    assert locate_segment(gapped, 500) == 0
+    assert locate_segment(gapped, 1500) == 1
+    assert locate_segment(gapped, 2500) == 1
+    assert locate_segment(gapped, 5000) == 1
+
+    # Nested overlapping spans still find the containing earlier span when past the inner one.
+    nested = Timeline((SegmentSpan(0, 5, 0, 2000), SegmentSpan(5, 8, 500, 1000)))
+    assert locate_segment(nested, 250) == 0
+    assert locate_segment(nested, 750) == 1
+    assert locate_segment(nested, 1500) == 0
+    assert locate_segment(nested, 2500) == 1
+
+    # Large timeline uses bisect.bisect_right (O(log N), no per-tick list allocation).
+    spans = tuple(SegmentSpan(i * 2, i * 2 + 1, i * 100, (i + 1) * 100) for i in range(10_000))
+    big = Timeline(spans)
+    bisect_calls = 0
+    real_bisect_right = bisect.bisect_right
+
+    def spy_bisect_right(*args, **kwargs):
+        nonlocal bisect_calls
+        bisect_calls += 1
+        return real_bisect_right(*args, **kwargs)
+
+    monkeypatch.setattr(bisect, "bisect_right", spy_bisect_right)
+    assert locate_segment(big, 0) == 0
+    assert locate_segment(big, 543_250) == 5432
+    assert locate_segment(big, 999_999) == 9999
+    assert locate_segment(big, 2_000_000) == 9999
+    assert bisect_calls == 4

@@ -1020,3 +1020,269 @@ class TestSubtitleStudio:
             renderer.finish()
         stale_studio = load_project_from_subtitle(store, stale_spk_sub.id, start_cue=0)
         assert stale_studio.clips[0].context == qwen_custom_ctx
+
+
+class TestAuditHardeningPerf:
+    """Task 3.2: multi-part chapters, block SilenceTrimOp, no-abs DSP, and empty/NaN guards."""
+
+    def test_chapter_loader_reads_multipart_oversize_chapters_in_order(self, tmp_path):
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.audiobook import AudiobookLibrary
+        from vienetts_app.core.chapter_split import ChapterPart
+        from vienetts_app.core.epub import EpubBook, EpubChapter
+        from vienetts_app.core.studio import load_project_from_chapters
+
+        library = AudiobookLibrary(tmp_path / "audiobooks")
+        book = EpubBook(
+            title="Long Book",
+            author="Author",
+            chapters=[
+                EpubChapter(index=0, title="Ch 1", text="Oversize chapter text"),
+                EpubChapter(index=1, title="Ch 2", text="Single part chapter"),
+                EpubChapter(index=2, title="Ch 3", text="Partially rendered chapter"),
+            ],
+            source_path=str(tmp_path / "long.epub"),
+            content_hash="a" * 64,
+        )
+        record = library.add_book(book)
+        ctx0 = _context()
+        ctx1 = _context("qwen_custom_0_6b", voice_id="Vivian")
+
+        # Chapter 0: 3-part oversize chapter (ch_0000_s00..s02.wav, no ch_0000.wav).
+        library.save_segment_plan(
+            record.id,
+            0,
+            [ChapterPart(0, 7), ChapterPart(7, 14), ChapterPart(14, 21)],
+        )
+        part0 = _tone(1200, freq=220.0)
+        part1 = _tone(1500, freq=440.0)
+        part2 = _tone(900, freq=660.0)
+        for seg_idx, part_audio in enumerate((part0, part1, part2)):
+            tmp_part = write_wav_file(part_audio, tmp_path / f"tmp_s{seg_idx}.wav")
+            library.promote_chapter_part(record.id, 0, tmp_part, context=ctx0, segment=seg_idx)
+        assert not library.chapter_wav_path(record.id, 0).is_file()
+
+        # Chapter 1: normal single-WAV chapter.
+        ch1_audio = _tone(1000, freq=330.0)
+        library.save_chapter_audio(record.id, 1, ch1_audio, context=ctx1)
+
+        # Chapter 2: planned 2-part chapter with only s00 rendered (incomplete -> skipped).
+        library.save_segment_plan(record.id, 2, [ChapterPart(0, 10), ChapterPart(10, 20)])
+        tmp_partial = write_wav_file(_tone(800, freq=550.0), tmp_path / "tmp_partial.wav")
+        library.promote_chapter_part(record.id, 2, tmp_partial, segment=0)
+
+        state = library.load_book(record.id)
+        project = load_project_from_chapters(
+            library,
+            record.id,
+            [0, 1, 2],
+            [c.text for c in state.chapters],
+            contexts=state.contexts,
+        )
+        assert [c.id for c in project.clips] == ["ch0", "ch1"]
+        assert [c.context for c in project.clips] == [ctx0, ctx1]
+        assert np.allclose(project.clips[0].audio, np.concatenate([part0, part1, part2]), atol=1e-6)
+        assert np.allclose(project.clips[1].audio, ch1_audio, atol=1e-6)
+
+        # Rate mismatch on a later part raises ValueError.
+        import soundfile as sf
+
+        bad_part = library.segment_wav_path(record.id, 0, 1)
+        sf.write(str(bad_part), _tone(500), 24_000)
+        with pytest.raises(ValueError, match="48 kHz"):
+            load_project_from_chapters(library, record.id, [0], ["text"])
+
+    def test_silence_trim_block_scan_matches_exact_bounds_without_full_temporaries(
+        self, monkeypatch
+    ):
+        # Span well over multiple 65_536-sample blocks with leading/middle/trailing silence.
+        n = 210_000
+        mix = np.zeros(n, dtype=np.float32)
+        mix[70_005] = 0.02  # > -50 dB (~0.00316), inside block 1
+        mix[100_000] = -0.25
+        mix[140_123] = -0.01  # negative peak on the trailing edge, inside block 2
+        amp = 10.0 ** (-50.0 / 20.0)
+        expected_loud = np.nonzero(np.abs(mix) > amp)[0]
+        expected = mix[int(expected_loud[0]) : int(expected_loud[-1]) + 1].copy()
+
+        def forbid(*_args, **_kwargs):
+            raise AssertionError("full-array np.nonzero/np.abs must not be called")
+
+        monkeypatch.setattr(np, "nonzero", forbid)
+        monkeypatch.setattr(np, "abs", forbid)
+
+        trimmed = render_project(push_op(_project(mix), SilenceTrimOp(threshold_db=-50.0)))
+        assert np.array_equal(trimmed, expected)
+        assert len(trimmed) == 140_123 - 70_005 + 1
+
+        # Edge indices: first sample, exact block boundary, last sample.
+        for edge_idx in (0, 65_535, 65_536, n - 1):
+            single = np.zeros(n, dtype=np.float32)
+            single[edge_idx] = -0.5
+            out = render_project(push_op(_project(single), SilenceTrimOp()))
+            assert len(out) == 1 and out[0] == np.float32(-0.5)
+
+        # Silent or empty mix still raises ValueError.
+        with pytest.raises(ValueError, match="silence trim left nothing"):
+            render_project(push_op(_project(np.zeros(10_000, dtype=np.float32)), SilenceTrimOp()))
+        with pytest.raises(ValueError, match="silence trim left nothing"):
+            render_project(push_op(_project(np.zeros(0, dtype=np.float32)), SilenceTrimOp()))
+
+    def test_dsp_and_overview_avoid_full_np_abs_and_redundant_float32_copies(self, monkeypatch):
+        audio = _tone(16_000) * 0.4
+        original = audio.copy()
+        proj = StudioProject(
+            clips=(
+                StudioClip(id="c0", label="1", text="a", audio=audio),
+                StudioClip(id="c1", label="2", text="b", audio=audio.copy()),
+            ),
+            ops=(GapOp(ms=50), GainOp(db=3.0), NormalizeOp(peak=0.8), FadeOp(edge="in", ms=20)),
+        )
+
+        # Verify no full-array np.abs is invoked across render_project, render_overview,
+        # and envelope_for.
+        def forbid_abs(*_args, **_kwargs):
+            raise AssertionError("np.abs must not be called in studio DSP or envelope paths")
+
+        monkeypatch.setattr(np, "abs", forbid_abs)
+
+        mix, duration_ms, env = render_overview(proj)
+        assert mix.dtype == np.float32
+        assert duration_ms > 0
+        assert len(env) == ENVELOPE_BUCKETS
+        assert max(abs(float(mix.min())), abs(float(mix.max()))) == pytest.approx(0.8, abs=1e-4)
+        # Dry clip audio is never mutated in place.
+        assert np.array_equal(audio, original)
+
+    def test_empty_mix_before_speed_op_and_empty_srt_clip_speed_change_short_circuit(
+        self, monkeypatch
+    ):
+        from vienetts_app.core import audio as core_audio
+        from vienetts_app.core import studio
+        from vienetts_app.core.align import FitPolicy
+        from vienetts_app.core.studio import (
+            SubtitleStudioMeta,
+            refit_subtitle_clips,
+            set_subtitle_clip_speed,
+        )
+
+        studio.clear_stretch_cache()
+
+        def forbid_stretch(*_args, **_kwargs):
+            raise AssertionError("time_stretch_audio must not be called on empty audio")
+
+        monkeypatch.setattr(core_audio, "time_stretch_audio", forbid_stretch)
+
+        # Empty clip -> SpeedOp.
+        empty_proj = push_op(_project(np.zeros(0, dtype=np.float32)), SpeedOp(factor=1.25))
+        out = render_project(empty_proj)
+        assert out.size == 0 and out.dtype == np.float32
+        assert studio.stretch_cache_size() == 0
+
+        # Non-empty clip emptied by CutOp / out-of-bounds TrimOp before SpeedOp.
+        cut_empty = push_op(cut_range(_project(_tone(1000)), 0, -1), SpeedOp(factor=1.5))
+        assert render_project(cut_empty).size == 0
+        trim_empty = push_op(trim_range(_project(_tone(1000)), 2000, 3000), SpeedOp(factor=0.75))
+        assert render_project(trim_empty).size == 0
+        assert studio.stretch_cache_size() == 0
+
+        # Empty SRT clip speed change (both raw_audio=None with fit_rate!=1.0 and empty raw_audio).
+        meta = SubtitleStudioMeta(
+            project_id="sub1",
+            title="Empty cue",
+            total_cues=1,
+            window_start=0,
+            window_end=1,
+            policy=FitPolicy.dub(rate_cap=1.5),
+        )
+        empty_no_raw = StudioProject(
+            clips=(
+                StudioClip(
+                    id="cue0",
+                    label="1",
+                    text="...",
+                    audio=np.zeros(0, dtype=np.float32),
+                    cue_index=0,
+                    srt_start_ms=0,
+                    srt_end_ms=1000,
+                    placed_start_ms=0,
+                    placed_end_ms=0,
+                    fit_rate=1.4,
+                    raw_audio=None,
+                ),
+            ),
+            subtitle_meta=meta,
+        )
+        updated = set_subtitle_clip_speed(empty_no_raw, "cue0", custom_rate=1.2)
+        assert updated.clips[0].audio.size == 0
+        assert updated.clips[0].fit_rate == pytest.approx(1.2)
+
+        auto_updated = set_subtitle_clip_speed(empty_no_raw, "cue0", custom_rate=None)
+        assert auto_updated.clips[0].audio.size == 0
+
+        empty_with_raw = StudioProject(
+            clips=(
+                StudioClip(
+                    id="cue0",
+                    label="1",
+                    text="...",
+                    audio=np.zeros(0, dtype=np.float32),
+                    cue_index=0,
+                    srt_start_ms=0,
+                    srt_end_ms=1000,
+                    placed_start_ms=0,
+                    placed_end_ms=0,
+                    fit_rate=1.0,
+                    raw_audio=np.zeros(0, dtype=np.float32),
+                ),
+            ),
+            subtitle_meta=meta,
+        )
+        updated_raw = set_subtitle_clip_speed(empty_with_raw, "cue0", custom_rate=1.3)
+        assert updated_raw.clips[0].audio.size == 0
+
+        refitted = refit_subtitle_clips(
+            empty_with_raw, "cue0", np.zeros(0, dtype=np.float32), custom_rate=1.25
+        )
+        assert refitted.clips[0].audio.size == 0
+
+        # Invalid custom_rate is still rejected even for an empty clip.
+        with pytest.raises(ValueError, match="speed"):
+            set_subtitle_clip_speed(empty_no_raw, "cue0", custom_rate=3.0)
+
+    def test_envelope_for_and_render_overview_guard_non_finite_samples(self):
+        # Single NaN inside one bucket must not turn the envelope into NaNs.
+        samples = _tone(1600)
+        samples[10] = np.nan
+        env = envelope_for(samples, buckets=8)
+        assert len(env) == 8
+        assert all(np.isfinite(v) and 0.0 <= v <= 1.0 for v in env)
+        assert max(env) == pytest.approx(1.0)
+        assert env[0] > 0.0  # finite samples in bucket 0 still contribute
+
+        # +/-Inf must not squash other buckets to 0 or yield NaN.
+        inf_samples = _tone(1600)
+        inf_samples[5] = np.inf
+        inf_samples[205] = -np.inf
+        env_inf = envelope_for(inf_samples, buckets=8)
+        assert all(np.isfinite(v) and 0.0 <= v <= 1.0 for v in env_inf)
+        assert all(v > 0.5 for v in env_inf)
+
+        # Entirely non-finite buffer degrades cleanly to all zeros.
+        all_bad = np.array([np.nan, np.inf, -np.inf, np.nan], dtype=np.float32)
+        assert envelope_for(all_bad, buckets=4) == [0.0] * 4
+
+        # Non-finite reference_peak falls back cleanly to finite own peak.
+        clean = _tone(1600)
+        assert envelope_for(clean, buckets=8, reference_peak=float("nan")) == envelope_for(
+            clean, buckets=8
+        )
+        assert envelope_for(clean, buckets=8, reference_peak=float("inf")) == envelope_for(
+            clean, buckets=8
+        )
+
+        # render_overview stays finite when clip audio contains a NaN sample.
+        _, _, overview_env = render_overview(_project(samples))
+        assert len(overview_env) == ENVELOPE_BUCKETS
+        assert all(np.isfinite(v) and 0.0 <= v <= 1.0 for v in overview_env)
+        assert max(overview_env) == pytest.approx(1.0)

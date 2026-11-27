@@ -470,7 +470,8 @@ partitioned `QThreadPool` lanes + `AppController` offloads/shutdown cancellation
 and QML lazy Canvases / `StudioTab` `ListView` virtualization / Canvas timeline /
 `QwenInstallCards` `DictListModel` / lazy `SubtitleVideoPreview`), and bead-driven
 batches (incl. `VieNeuTTSApp-2ifr` diarization hardening and `VieNeuTTSApp-4mqj`
-test-runtime reduction). 18 archived tracks + 1 completed track (`audit_hardening_perf_20261127`). Current app version 0.4.0; curated notes in
+test-runtime reduction). All 19 conductor tracks are complete and archived under
+`conductor/archive/`. Current app version 0.4.0; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.4.0.md`. Test suite now stands at 1709
 items collected / 1690 selected (19 benchmarks deselected via
 `-m 'not benchmark'`; `-m "not slow"` → 1674, `-m "not slow and not benchmark"`

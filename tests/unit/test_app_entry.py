@@ -814,3 +814,92 @@ class TestStartupBlasCap:
         }
         seen = self.run_gui_with(monkeypatch, Settings(blas_threads=2))
         assert (seen["OPENBLAS_NUM_THREADS"], seen["OMP_NUM_THREADS"]) == ("2", None)
+
+
+class TestEarlyHostAndVersionDispatch:
+    """FR-1.5 / AC-3: --qwen-host, --qwen-gguf-host, and --version dispatch
+    BEFORE _apply_startup_thread_caps() and BEFORE importing qwen_engine or numpy."""
+
+    def test_host_and_version_flags_do_not_call_startup_thread_caps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.__main__ as main_mod
+        from vienetts_app.core.qwen_engine import HOST_FLAG
+        from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
+        from vienetts_app.workers import qwen_gguf_host, qwen_host
+
+        assert main_mod._QWEN_HOST_FLAG == HOST_FLAG
+        assert main_mod._QWEN_GGUF_HOST_FLAG == GGUF_HOST_FLAG
+
+        monkeypatch.setattr(
+            main_mod,
+            "_apply_startup_thread_caps",
+            lambda: (_ for _ in ()).throw(AssertionError("BLAS caps must not run")),
+        )
+        monkeypatch.setattr(qwen_host, "main", lambda *a, **kw: 11)
+        monkeypatch.setattr(qwen_gguf_host, "main", lambda *a, **kw: 12)
+
+        assert main(["--qwen-host"]) == 11
+        assert main(["--qwen-gguf-host"]) == 12
+        assert main(["--version"]) == 0
+
+    @pytest.mark.parametrize(
+        ("flag", "stub_module"),
+        [
+            pytest.param("--version", None, id="version"),
+            pytest.param("--qwen-host", "vienetts_app.workers.qwen_host", id="qwen-host"),
+            pytest.param(
+                "--qwen-gguf-host", "vienetts_app.workers.qwen_gguf_host", id="qwen-gguf-host"
+            ),
+        ],
+    )
+    def test_clean_subprocess_dispatch_avoids_blas_caps_qwen_engine_and_numpy(
+        self, flag: str, stub_module: str | None
+    ) -> None:
+        code = textwrap.dedent(
+            """\
+            import json
+            import os
+            import sys
+            import types
+
+            flag = sys.argv[1]
+            stub_module = sys.argv[2]
+
+            for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+                os.environ.pop(var, None)
+
+            if stub_module:
+                mod = types.ModuleType(stub_module)
+                mod.main = lambda: 0
+                sys.modules[stub_module] = mod
+
+            from vienetts_app.__main__ import main
+
+            rc = main([flag])
+            print("RESULT:" + json.dumps({
+                "rc": rc,
+                "openblas": os.environ.get("OPENBLAS_NUM_THREADS"),
+                "mkl": os.environ.get("MKL_NUM_THREADS"),
+                "numpy_loaded": "numpy" in sys.modules,
+                "qwen_engine_loaded": "vienetts_app.core.qwen_engine" in sys.modules,
+                "qwen_gguf_engine_loaded": "vienetts_app.core.qwen_gguf_engine" in sys.modules,
+            }))
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code, flag, stub_module or ""],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["rc"] == 0
+        assert result["openblas"] is None
+        assert result["mkl"] is None
+        assert result["numpy_loaded"] is False
+        assert result["qwen_engine_loaded"] is False
+        assert result["qwen_gguf_engine_loaded"] is False

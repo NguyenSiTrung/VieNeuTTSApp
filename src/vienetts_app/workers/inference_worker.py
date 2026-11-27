@@ -14,6 +14,7 @@ queued Qt signal.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -85,8 +86,6 @@ class InferenceWorker(QThread):
     chunk_ready = Signal(object)  # JobChunk metadata
     terminal = Signal(object)  # JobTerminal — exactly one per admitted job
 
-    _POLL_SECONDS = 0.05
-
     def __init__(
         self,
         engine: TTSEngine | Any | None,
@@ -107,10 +106,6 @@ class InferenceWorker(QThread):
         self._stop = threading.Event()
         self._active_lock = threading.Lock()
         self._active_job: SynthesisJob | None = None
-        # True from the moment a job leaves the queue until it is processed:
-        # the switch gate must see admitted work even in the window before
-        # _process() installs _active_job.
-        self._dequeued_job = False
         self._active_cancel = threading.Event()
         self._terminal_lock = threading.Lock()
         # Insertion-ordered set of settled job IDs (dict as ordered set):
@@ -118,6 +113,8 @@ class InferenceWorker(QThread):
         self._terminal_ids: dict[str, None] = {}
         self._cancel_lock = threading.Lock()
         self._cancel_requested_ids: set[str] = set()
+        self._provider_cancel_lock = threading.Lock()
+        self._provider_cancel_ids: dict[str, None] = {}
         self._chunk_metadata_lock = threading.Lock()
         self._last_chunk_emit_ns: dict[str, int] = {}
         self._pending_chunk_metadata: dict[str, tuple[int, float]] = {}
@@ -148,15 +145,16 @@ class InferenceWorker(QThread):
         """True while a job is running, being processed, or queued.
 
         The profile-switch gate asks this before tearing an engine down: a
-        switch must never race work that is already admitted. A job taken off
-        the queue counts even before ``_process`` marks it active (there is a
-        window between ``take`` and that mark), and a warmup does not count —
-        it is silent engine preparation the incoming profile redoes anyway.
+        switch must never race work that is already admitted. Checking the
+        queue before ``_active_job`` is linearizable across ``take()`` because
+        ``_install_active_job`` publishes ``_active_job`` before releasing the
+        queue lock; warmups do not count — they are silent engine preparation
+        the incoming profile redoes anyway.
         """
+        if self._jobs.pending_jobs():
+            return True
         with self._active_lock:
-            if self._active_job is not None or self._dequeued_job:
-                return True
-        return bool(self._jobs.pending_jobs())
+            return self._active_job is not None
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel one job: queued jobs terminalize now, the active job bails
@@ -177,11 +175,15 @@ class InferenceWorker(QThread):
         removed = self._jobs.cancel_owner(owner)  # type: ignore[arg-type]
         for job in removed:
             self._terminalize(job, "cancelled")
+        active_to_cancel: SynthesisJob | None = None
         with self._active_lock:
             active = self._active_job
             if active is not None and active.owner == owner:
                 self._remember_cancel_request(active.id)
-        self._signal_active_cancel(owner=owner)
+                self._active_cancel.set()
+                active_to_cancel = active
+        if active_to_cancel is not None:
+            self._dispatch_provider_cancel(active_to_cancel)
         return len(removed)
 
     def _remember_cancel_request(self, job_id: str) -> None:
@@ -205,49 +207,61 @@ class InferenceWorker(QThread):
         Every still-admitted pending job terminalizes ``cancelled`` exactly
         once; the active job bails at its next safe boundary (a plain
         ``infer`` call cannot be interrupted mid-call). Returns True when the
-        thread finished (within the wait budget). ``timeout_ms=0`` is a pure
-        poll — cancellation is re-asserted but the caller never blocks.
+        thread finished (within the wait budget). Provider cancellation runs
+        asynchronously (deduplicated per job ID) so ``timeout_ms`` is strictly
+        honored — ``timeout_ms=0`` is a pure poll that never blocks even when
+        provider cancel blocks.
         """
         with self._admit_lock:
             self._stop.set()
             pending = self._jobs.cancel_all()
+            self._jobs.wake()
         for job in pending:
             self._terminalize(job, "cancelled")
         with self._active_lock:
             self._active_cancel.set()
             active = self._active_job
         if active is not None:
-            self._cancel_provider_job(active)
-        self._jobs.wake()
-        if not self.wait(timeout_ms):
-            logger.warning("inference worker did not stop in time")
+            self._dispatch_provider_cancel(active)
+        wait_ms = max(0, int(timeout_ms))
+        if not self.wait(wait_ms):
+            if wait_ms > 0:
+                logger.warning("inference worker did not stop in time")
             return False
         return True
 
     # ── worker thread body ──────────────────────────────────────────────────
 
+    def _install_active_job(self, item: QueueItem) -> None:
+        """Publish a dequeued job as active while the queue lock is held."""
+        if not isinstance(item, SynthesisJob):
+            return
+        with self._active_lock:
+            self._active_job = item
+            self._active_cancel = threading.Event()
+            with self._cancel_lock:
+                if item.id in self._cancel_requested_ids:
+                    self._active_cancel.set()
+
     def run(self) -> None:  # noqa: D102 – QThread override
         self._lower_priority()
         while not self._stop.is_set():
-            item = self._jobs.take(self._POLL_SECONDS)
+            item = self._jobs.take(on_take=self._install_active_job)
             if item is None:
                 continue
-            if self._stop.is_set():
-                # Admitted but never started: still owed exactly one terminal.
-                if isinstance(item, SynthesisJob):
-                    self._terminalize(item, "cancelled")
-                break
-            if isinstance(item, SynthesisJob):
-                # Marked before _process() so the pending-work probe cannot
-                # miss a job that is out of the queue but not yet active.
-                with self._active_lock:
-                    self._dequeued_job = True
             try:
+                if self._stop.is_set():
+                    # Admitted but never started: still owed exactly one terminal.
+                    if isinstance(item, SynthesisJob):
+                        self._close_transport(item, discard=True)
+                        self._terminalize(item, "cancelled")
+                    break
                 self._process(item)
             finally:
                 if isinstance(item, SynthesisJob):
                     with self._active_lock:
-                        self._dequeued_job = False
+                        if self._active_job is item:
+                            self._active_job = None
         logger.debug("inference worker loop exited")
 
     def _lower_priority(self) -> None:
@@ -270,12 +284,14 @@ class InferenceWorker(QThread):
             self._process_warmup()
             return
         job = item
-        # Fresh per-job cancel event, installed in this thread: a cancel aimed
-        # at the previous job can never leak into this one, and submit() never
-        # clears anything (see the race note the old global flag carried).
+        # Fresh per-job cancel event (normally installed atomically on take;
+        # kept here for direct _process() calls). Never replace _active_cancel
+        # when _install_active_job already published this job — a cancel aimed
+        # at it may have arrived before _process() started.
         with self._active_lock:
-            self._active_job = job
-            self._active_cancel = threading.Event()
+            if self._active_job is not job:
+                self._active_job = job
+                self._active_cancel = threading.Event()
             with self._cancel_lock:
                 if job.id in self._cancel_requested_ids:
                     self._active_cancel.set()
@@ -284,6 +300,10 @@ class InferenceWorker(QThread):
             request = job.request
             if isinstance(request, VoiceOp):
                 self._process_voice_job(job, request)
+                return
+            if self._is_aborted():
+                self._close_transport(job, discard=True)
+                self._terminalize(job, "cancelled")
                 return
             self._emit_progress(job, 0, 0, "init")
             self._process_artifact_stream_job(job, request)
@@ -294,7 +314,8 @@ class InferenceWorker(QThread):
             self._terminalize(job, "failed", error=self._safe_error(exc))
         finally:
             with self._active_lock:
-                self._active_job = None
+                if self._active_job is job:
+                    self._active_job = None
 
     # ── terminal gate ───────────────────────────────────────────────────────
 
@@ -356,12 +377,29 @@ class InferenceWorker(QThread):
             if job is None or (job_id and job.id != job_id) or (owner and job.owner != owner):
                 return False
             self._active_cancel.set()
-        threading.Thread(
+        self._dispatch_provider_cancel(job)
+        return True
+
+    def _dispatch_provider_cancel(self, job: SynthesisJob) -> bool:
+        """Spawn at most one daemon thread per job ID to cancel on its provider."""
+        with self._provider_cancel_lock:
+            if job.id in self._provider_cancel_ids:
+                return False
+            while len(self._provider_cancel_ids) >= _RETIRED_ID_RETAIN:
+                self._provider_cancel_ids.pop(next(iter(self._provider_cancel_ids)))
+            self._provider_cancel_ids[job.id] = None
+        thread = threading.Thread(
             target=self._cancel_provider_job,
             args=(job,),
             name=f"engine-cancel-{job.id[:8]}",
             daemon=True,
-        ).start()
+        )
+        try:
+            thread.start()
+        except Exception:
+            with self._provider_cancel_lock:
+                self._provider_cancel_ids.pop(job.id, None)
+            raise
         return True
 
     def _cancel_provider_job(self, job: SynthesisJob) -> None:
@@ -446,8 +484,9 @@ class InferenceWorker(QThread):
                 )
                 return
             for index, text in enumerate(texts):
-                for chunk in self._provider_chunks(provider, job, text):
-                    yield index, chunk
+                with contextlib.closing(self._provider_chunks(provider, job, text)) as seg_stream:
+                    for chunk in seg_stream:
+                        yield index, chunk
         except _JobCancelled:
             raise
         except Exception:
@@ -586,8 +625,21 @@ class InferenceWorker(QThread):
         the payload at its native 44.1 kHz; the terminal value carries the
         operation result metadata.
         """
+        if self._is_aborted():
+            self._terminalize(job, "cancelled")
+            return
         provider = self._providers.provider_for_profile(op.profile)
-        self._terminalize(job, "completed", value=provider.voice_op(op))
+        if self._is_aborted():
+            self._terminalize(job, "cancelled")
+            return
+        try:
+            result = provider.voice_op(op)
+        except Exception:
+            if self._is_aborted():
+                self._terminalize(job, "cancelled")
+                return
+            raise
+        self._terminalize(job, "completed", value=result)
 
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
         assert job.artifact_path is not None
@@ -657,41 +709,43 @@ class InferenceWorker(QThread):
 
             # One ordered (segment index, chunk) stream per job; batches on
             # providers that know how, one segment at a time otherwise.
-            chunk_stream = iter(self._job_chunks(provider, job, texts))
-            boundary: deque[tuple[int, np.ndarray]] = deque()
-            for index, _segment in enumerate(texts):
-                if self._is_aborted():
-                    raise _JobCancelled
+            # Close the generator deterministically before leaving the block so
+            # provider finally: cleanup finishes before _terminalize() fires.
+            with contextlib.closing(self._job_chunks(provider, job, texts)) as chunk_stream:
+                boundary: deque[tuple[int, np.ndarray]] = deque()
+                for index, _segment in enumerate(texts):
+                    if self._is_aborted():
+                        raise _JobCancelled
 
-                if index > 0 and silence_samples > 0:
-                    silence_chunk = np.zeros(silence_samples, dtype=np.float32)
-                    _emit_audio_chunk(silence_chunk, is_silence=True)
+                    if index > 0 and silence_samples > 0:
+                        silence_chunk = np.zeros(silence_samples, dtype=np.float32)
+                        _emit_audio_chunk(silence_chunk, is_silence=True)
 
-                if apply_stretch:
-                    # Per-chunk WSOLA: stretching each SDK chunk as it arrives
-                    # keeps RAM bounded by one chunk plus the WSOLA frame
-                    # buffers. The old whole-segment path accumulated every
-                    # chunk, concatenated, then stretched — a long segment
-                    # held 2× its audio plus WSOLA's output/norm buffers and
-                    # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
-                    # stay click-free via time_stretch_audio's edge micro-fades.
-                    for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
-                        if self._is_aborted():
-                            raise _JobCancelled
-                        chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
-                        if chunk.size == 0:
-                            continue
-                        stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
-                        _emit_audio_chunk(stretched)
-                else:
-                    for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
-                        if self._is_aborted():
-                            raise _JobCancelled
-                        chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
-                        _emit_audio_chunk(chunk)
+                    if apply_stretch:
+                        # Per-chunk WSOLA: stretching each SDK chunk as it arrives
+                        # keeps RAM bounded by one chunk plus the WSOLA frame
+                        # buffers. The old whole-segment path accumulated every
+                        # chunk, concatenated, then stretched — a long segment
+                        # held 2× its audio plus WSOLA's output/norm buffers and
+                        # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
+                        # stay click-free via time_stretch_audio's edge micro-fades.
+                        for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
+                            if self._is_aborted():
+                                raise _JobCancelled
+                            chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
+                            if chunk.size == 0:
+                                continue
+                            stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
+                            _emit_audio_chunk(stretched)
+                    else:
+                        for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
+                            if self._is_aborted():
+                                raise _JobCancelled
+                            chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
+                            _emit_audio_chunk(chunk)
 
-                self._flush_chunk_metadata(job)
-                self._emit_progress(job, index + 1, total, "synthesizing")
+                    self._flush_chunk_metadata(job)
+                    self._emit_progress(job, index + 1, total, "synthesizing")
             artifact = writer.finalize()
             if job.live_transport is not None:
                 # The part file was just promoted: the backlog lives on in the
@@ -711,6 +765,9 @@ class InferenceWorker(QThread):
             if writer is not None:
                 writer.abort()
             self._close_transport(job, discard=True)
+            if self._is_aborted():
+                self._terminalize(job, "cancelled")
+                return
             raise
         self._close_transport(job, discard=False)
         self._performance.observe_max(job.id, "artifact_samples", artifact.samples)

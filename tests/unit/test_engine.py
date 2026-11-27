@@ -1784,3 +1784,197 @@ class TestBatchedExport:
         out = list(VieNeuProvider(Plain()).infer_stream_segments(["a", "b"]))
         assert [index for index, _wav in out] == [0, 1]
         assert calls == [("a", {"export": True}), ("b", {"export": True})]
+
+
+class TestSdkPatchLockAndVoiceIsolation:
+    """FR-1.5: serialize global SDK/ORT monkey-patches & isolate corrupt voices.json."""
+
+    def test_sdk_patch_lock_serializes_concurrent_patches_and_nests_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
+
+        import vieneu
+        import vieneu._v3_turbo_engine.onnx_runtime_lite as onnx_lite
+
+        ort = pytest.importorskip("onnxruntime")
+
+        assert hasattr(engine_module, "_SDK_PATCH_LOCK")
+
+        # 1. Concurrent _default_factory(codec_dir=...) calls must serialize
+        #    and restore OnnxV3LiteEngine.__init__ without race corruption.
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+        seen_codecs: list[str] = []
+
+        def orig_onnx_init(self: Any, *a: Any, **kw: Any) -> None:
+            seen_codecs.append(str(kw.get("codec_dir")))
+
+        monkeypatch.setattr(onnx_lite.OnnxV3LiteEngine, "__init__", orig_onnx_init)
+
+        def slow_vieneu(**kw: Any) -> str:
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                onnx_lite.OnnxV3LiteEngine(checkpoint_path="dummy")
+            finally:
+                with state_lock:
+                    active -= 1
+            return str(kw["codec_dir"])
+
+        monkeypatch.setattr(vieneu, "Vieneu", slow_vieneu)
+        barrier = threading.Barrier(3)
+        errors: list[BaseException] = []
+
+        def run_factory(idx: int) -> None:
+            try:
+                barrier.wait(timeout=5)
+                engine_module._default_factory(backend="onnx", codec_dir=f"/codec/{idx}")
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run_factory, args=(i,)) for i in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert errors == []
+        assert max_active == 1, "concurrent _default_factory patches overlapped"
+        assert sorted(seen_codecs) == ["/codec/0", "/codec/1", "/codec/2"]
+        assert onnx_lite.OnnxV3LiteEngine.__init__ is orig_onnx_init
+
+        # 2. Concurrent _ort_session_tuning blocks must serialize and restore
+        #    ort.InferenceSession cleanly.
+        orig_session = ort.InferenceSession
+        ort_active = 0
+        ort_max_active = 0
+        barrier2 = threading.Barrier(3)
+
+        def run_ort_patch() -> None:
+            nonlocal ort_active, ort_max_active
+            try:
+                barrier2.wait(timeout=5)
+                with engine_module._ort_session_tuning(
+                    engine_module.OrtTuning(spin_during_job=True)
+                ):
+                    with state_lock:
+                        ort_active += 1
+                        ort_max_active = max(ort_max_active, ort_active)
+                    try:
+                        time.sleep(0.03)
+                    finally:
+                        with state_lock:
+                            ort_active -= 1
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads2 = [threading.Thread(target=run_ort_patch) for _ in range(3)]
+        for t in threads2:
+            t.start()
+        for t in threads2:
+            t.join(timeout=10)
+        assert errors == []
+        assert ort_max_active == 1, "concurrent _ort_session_tuning patches overlapped"
+        assert ort.InferenceSession is orig_session
+
+        # 3. Nesting _ort_session_tuning around _default_factory(codec_dir=...)
+        #    on the SAME thread (managed ONNX model + ORT tuning) must not deadlock.
+        nested_done = threading.Event()
+        nested_errors: list[BaseException] = []
+
+        def run_nested() -> None:
+            try:
+                with engine_module._ort_session_tuning(
+                    engine_module.OrtTuning(step_session_single_thread=True)
+                ):
+                    engine_module._default_factory(backend="onnx", codec_dir="/codec/nested")
+                nested_done.set()
+            except BaseException as exc:  # noqa: BLE001
+                nested_errors.append(exc)
+
+        t_nested = threading.Thread(target=run_nested, daemon=True)
+        t_nested.start()
+        assert nested_done.wait(timeout=5.0), "nested ORT + codec_dir patch deadlocked"
+        assert nested_errors == []
+        assert ort.InferenceSession is orig_session
+        assert onnx_lite.OnnxV3LiteEngine.__init__ is orig_onnx_init
+
+    def test_corrupt_voices_json_entries_are_skipped_and_tts_published_after_merge(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        write_asset(
+            voices_dir / "voices.json",
+            {
+                "GoodBefore": {
+                    "description": "ok1",
+                    "speaker_emb": [0.25, -0.25],
+                    "codes": [1, 2],
+                },
+                "BadEmb": {
+                    "description": "corrupt emb",
+                    "speaker_emb": ["not-a-float"],
+                    "codes": [1],
+                },
+                "BadCodes": {
+                    "description": "corrupt codes",
+                    "speaker_emb": [0.1],
+                    "codes": "not-a-list",
+                },
+                "BadJagged": {
+                    "description": "jagged",
+                    "speaker_emb": [[1.0, 2.0], [3.0]],
+                    "codes": [3],
+                },
+                "GoodAfter": {
+                    "description": "ok2",
+                    "speaker_emb": [0.5, 0.5],
+                    "codes": [4, 5],
+                },
+            },
+        )
+        observed_initialized_during_merge: list[bool] = []
+        engine = make_engine(voices_dir=voices_dir)
+        orig_merge = engine._merge_persisted_voices  # noqa: SLF001
+
+        def spy_merge(tts: Any) -> None:
+            observed_initialized_during_merge.append(engine.is_initialized)
+            orig_merge(tts)
+
+        monkeypatch.setattr(engine, "_merge_persisted_voices", spy_merge)
+        with caplog.at_level("WARNING", logger=engine_module.__name__):
+            engine.initialize()
+
+        assert observed_initialized_during_merge == [False], (
+            "self._tts was published before persisted voices finished merging"
+        )
+        assert engine.is_initialized is True
+        tts = FakeVieneu.instances[-1]
+        assert "GoodBefore" in tts._preset_voices
+        assert "GoodAfter" in tts._preset_voices
+        assert "BadEmb" not in tts._preset_voices
+        assert "BadCodes" not in tts._preset_voices
+        assert "BadJagged" not in tts._preset_voices
+        assert any("BadEmb" in rec.message for rec in caplog.records)
+        assert any("BadCodes" in rec.message for rec in caplog.records)
+        assert any("BadJagged" in rec.message for rec in caplog.records)
+
+        # If _merge_persisted_voices fails unexpectedly, self._tts must NOT be
+        # left published in a half-initialized state, and the tts is closed.
+        FakeVieneu.instances.clear()
+        engine2 = make_engine(voices_dir=voices_dir)
+
+        def boom_merge(_tts: Any) -> None:
+            raise RuntimeError("merge exploded")
+
+        monkeypatch.setattr(engine2, "_merge_persisted_voices", boom_merge)
+        with pytest.raises(RuntimeError, match="merge exploded"):
+            engine2.initialize()
+        assert engine2.is_initialized is False
+        assert FakeVieneu.instances[-1].closed is True

@@ -1738,3 +1738,256 @@ def test_the_worker_thread_runs_below_normal_priority(qcoreapp) -> None:
     worker.setPriority = seen.append  # type: ignore[method-assign]
     worker._lower_priority()
     assert seen == [worker_module.QThread.Priority.LowPriority]
+
+
+# ── FR-1.5 / AC-3 hardening regressions ───────────────────────────────────
+
+
+def test_stop_timeout_zero_returns_immediately_and_deduplicates_provider_cancel(harness) -> None:
+    # 1. stop(timeout_ms=0) must dispatch provider cancel asynchronously and
+    #    return immediately even when provider.cancel() blocks; repeated polls
+    #    and concurrent cancel_job() must never spawn duplicate cancels.
+    provider = SlowCancelProvider()
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(provider.started.is_set), "the generation never started"
+
+    t0 = time.monotonic()
+    assert h.worker.stop(timeout_ms=0) is False
+    assert time.monotonic() - t0 < 0.5, "stop(timeout_ms=0) blocked on provider cancel"
+    assert wait_until(provider.cancel_entered.is_set), "async provider cancel never started"
+
+    # Repeated poll-style stop(0) + cancel_job for the same job ID stay deduplicated.
+    t1 = time.monotonic()
+    assert h.worker.stop(timeout_ms=0) is False
+    assert time.monotonic() - t1 < 0.5
+    h.worker.cancel_job(job.id)
+
+    provider.release_cancel()
+    assert h.worker.stop(timeout_ms=5000) is True
+    assert h.wait_terminal(job.id)
+    assert [t.state for t in h.terminals_for(job.id)] == ["cancelled"]
+    assert provider.cancels == [job.id]
+
+    # 2. cancel_job() followed by stop(timeout_ms=0) also deduplicates per job ID.
+    provider2 = SlowCancelProvider()
+    h2 = harness(None, providers=qwen_providers(provider2))
+    job2 = make_job("b" * 32, text="你好。", context=qwen_context())
+    assert h2.worker.submit(job2) is True
+    assert wait_until(provider2.started.is_set)
+    assert h2.worker.cancel_job(job2.id) is True
+    assert wait_until(provider2.cancel_entered.is_set)
+    t2 = time.monotonic()
+    assert h2.worker.stop(timeout_ms=0) is False
+    assert time.monotonic() - t2 < 0.5
+    provider2.release_cancel()
+    assert h2.worker.stop(timeout_ms=5000) is True
+    assert provider2.cancels == [job2.id]
+
+
+def test_cancel_owner_and_cancel_job_catch_dequeue_to_process_window(harness, monkeypatch) -> None:
+    # Sub-case A: cancel_owner() lands after take() popped the job, before
+    # _process() runs its body. The job must still abort without synthesizing.
+    h = harness(RecordingEngine(chunks_per_stream=2, chunk_delay=0.0))
+    job = make_job("c" * 32, text="dequeued-owner", owner="audiobook", mode="infer")
+    original = h.worker._process  # noqa: SLF001 - the race window under test
+    dequeued = threading.Event()
+    release = threading.Event()
+
+    def gated(item: Any) -> None:
+        dequeued.set()
+        assert release.wait(timeout=5), "gated _process was never released"
+        original(item)
+
+    monkeypatch.setattr(h.worker, "_process", gated)
+    try:
+        assert h.worker.submit(job) is True
+        assert dequeued.wait(timeout=5)
+        assert h.worker.cancel_owner("audiobook") == 0
+    finally:
+        release.set()
+    assert h.wait_terminal(job.id)
+    assert [t.state for t in h.terminals_for(job.id)] == ["cancelled"]
+    assert h.engine.requests == []
+
+    # Sub-case B: cancel_job() in the exact same dequeue-to-_process window
+    # recognizes the active job (returns True) and aborts it cleanly.
+    h2 = harness(RecordingEngine(chunks_per_stream=2, chunk_delay=0.0))
+    job2 = make_job("d" * 32, text="dequeued-id", owner="text", mode="infer")
+    original2 = h2.worker._process  # noqa: SLF001
+    dequeued2 = threading.Event()
+    release2 = threading.Event()
+
+    def gated2(item: Any) -> None:
+        dequeued2.set()
+        assert release2.wait(timeout=5)
+        original2(item)
+
+    monkeypatch.setattr(h2.worker, "_process", gated2)
+    try:
+        assert h2.worker.submit(job2) is True
+        assert dequeued2.wait(timeout=5)
+        assert h2.worker.cancel_job(job2.id) is True
+    finally:
+        release2.set()
+    assert h2.wait_terminal(job2.id)
+    assert [t.state for t in h2.terminals_for(job2.id)] == ["cancelled"]
+    assert h2.engine.requests == []
+
+
+def test_voice_job_aborts_cleanly_when_cancelled_or_stopped(harness, monkeypatch) -> None:
+    provider = QwenProviderDouble(profile=QWEN_BASE)
+    h = harness(None, providers=base_providers(provider))
+    vjob = voice_job(
+        "e" * 32,
+        VoiceOp(
+            op="add",
+            name="AbortedClone",
+            clip_path="/tmp/ref.wav",
+            transcript="hello",
+            consent=True,
+            profile=QWEN_BASE,
+        ),
+    )
+    original = h.worker._process  # noqa: SLF001
+    dequeued = threading.Event()
+    release = threading.Event()
+
+    def gated(item: Any) -> None:
+        dequeued.set()
+        assert release.wait(timeout=5)
+        original(item)
+
+    monkeypatch.setattr(h.worker, "_process", gated)
+    try:
+        assert h.worker.submit(vjob) is True
+        assert dequeued.wait(timeout=5)
+        assert h.worker.cancel_job(vjob.id) is True
+    finally:
+        release.set()
+    assert h.wait_terminal(vjob.id)
+    assert [t.state for t in h.terminals_for(vjob.id)] == ["cancelled"]
+    assert provider.voice_ops == []
+
+    # Direct _process_voice_job() abort check when _stop is set before enrollment.
+    vjob2 = voice_job(
+        "f" * 32,
+        VoiceOp(
+            op="add",
+            name="StoppedClone",
+            clip_path="/tmp/ref.wav",
+            transcript="hello",
+            consent=True,
+            profile=QWEN_BASE,
+        ),
+    )
+    h.worker._stop.set()  # noqa: SLF001
+    h.worker._process_voice_job(vjob2, vjob2.request)  # type: ignore[arg-type]  # noqa: SLF001
+    assert h.wait_terminal(vjob2.id)
+    assert [t.state for t in h.terminals_for(vjob2.id)] == ["cancelled"]
+    assert provider.voice_ops == []
+
+
+def test_chunk_stream_closes_provider_generator_before_terminalize(
+    harness, tmp_path: Path, monkeypatch
+) -> None:
+    events: list[str] = []
+
+    class CleanupTrackingProvider(QwenProviderDouble):
+        def infer_stream(self, text, *, context=None, voice=None, temperature=None, job_id=""):
+            self.started.set()
+            try:
+                yield np.full(1024, 0.2, dtype=np.float32)
+                yield np.full(1024, 0.3, dtype=np.float32)
+                yield np.full(1024, 0.4, dtype=np.float32)
+            finally:
+                events.append("provider_closed")
+
+    # 1. On cancellation: provider generator's finally: must run BEFORE _terminalize().
+    provider = CleanupTrackingProvider()
+    h = harness(None, providers=qwen_providers(provider))
+    orig_terminalize = h.worker._terminalize  # noqa: SLF001
+
+    def spy_terminalize(job, state, **kwargs):
+        events.append(f"terminal:{state}")
+        return orig_terminalize(job, state, **kwargs)
+
+    monkeypatch.setattr(h.worker, "_terminalize", spy_terminalize)
+    orig_emit_audio_chunk_marker = True
+    # Cancel as soon as chunk 1 is emitted so chunk_stream exits early mid-generator.
+    orig_emit_meta = h.worker._emit_chunk_metadata  # noqa: SLF001
+
+    def cancel_after_first(job, arr):
+        nonlocal orig_emit_audio_chunk_marker
+        orig_emit_meta(job, arr)
+        if orig_emit_audio_chunk_marker:
+            orig_emit_audio_chunk_marker = False
+            h.worker._active_cancel.set()  # noqa: SLF001
+
+    monkeypatch.setattr(h.worker, "_emit_chunk_metadata", cancel_after_first)
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+    assert events == ["provider_closed", "terminal:cancelled"]
+
+    # 2. On writer failure mid-stream: provider generator's finally: ALSO runs
+    #    BEFORE _terminalize("failed").
+    events.clear()
+    original_writer = worker_module.IncrementalArtifactWriter
+
+    class FailOnSecondWriter(original_writer):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._count = 0
+
+        def append(self, samples: object) -> int:
+            self._count += 1
+            if self._count == 2:
+                raise ArtifactWriteError("disk error")
+            return super().append(samples)
+
+    monkeypatch.setattr(worker_module, "IncrementalArtifactWriter", FailOnSecondWriter)
+    provider2 = CleanupTrackingProvider()
+    h2 = harness(None, providers=qwen_providers(provider2))
+    orig_term2 = h2.worker._terminalize  # noqa: SLF001
+
+    def spy_term2(job, state, **kwargs):
+        events.append(f"terminal:{state}")
+        return orig_term2(job, state, **kwargs)
+
+    monkeypatch.setattr(h2.worker, "_terminalize", spy_term2)
+    job2 = make_job(
+        "b" * 32,
+        text="你好。",
+        context=qwen_context(),
+        artifact_path=tmp_path / "fail_close.wav",
+    )
+    assert h2.worker.submit(job2) is True
+    assert h2.wait_terminal(job2.id)
+    assert events == ["provider_closed", "terminal:failed"]
+
+
+def test_idle_worker_does_not_poll_and_wakes_immediately_on_stop(qcoreapp) -> None:
+    worker = InferenceWorker(RecordingEngine())
+    take_calls = 0
+    orig_take = worker._jobs.take  # noqa: SLF001
+
+    def counting_take(*args, **kwargs):
+        nonlocal take_calls
+        take_calls += 1
+        return orig_take(*args, **kwargs)
+
+    worker._jobs.take = counting_take  # type: ignore[method-assign]  # noqa: SLF001
+    worker.start()
+    try:
+        assert wait_until(lambda: take_calls >= 1, timeout=2.0)
+        time.sleep(0.18)
+        # Previously 20 Hz polling made >=3 calls in 180 ms; event-driven wait makes 1.
+        assert take_calls == 1, f"idle worker polled {take_calls} times in 180 ms"
+        t0 = time.monotonic()
+        assert worker.stop(timeout_ms=2000) is True
+        assert time.monotonic() - t0 < 0.5
+    finally:
+        worker.stop(timeout_ms=2000)

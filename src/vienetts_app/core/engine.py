@@ -240,6 +240,12 @@ def resolve_model_source(
     return backend, managed
 
 
+# Serializes temporary process-global SDK/ORT monkey-patches (OnnxV3LiteEngine.__init__
+# and onnxruntime.InferenceSession) across threads. Re-entrant because _ensure() nests
+# _ort_session_tuning around _default_factory on the same thread.
+_SDK_PATCH_LOCK = threading.RLock()
+
+
 def _default_factory(**kwargs: Any) -> Any:
     from vieneu import Vieneu  # deferred: importing vieneu is not free
 
@@ -247,18 +253,19 @@ def _default_factory(**kwargs: Any) -> Any:
     if codec_dir:
         from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
 
-        orig_init = OnnxV3LiteEngine.__init__
+        with _SDK_PATCH_LOCK:
+            orig_init = OnnxV3LiteEngine.__init__
 
-        def _patched_init(self: Any, *a: Any, **kw: Any) -> Any:
-            if "codec_dir" not in kw or kw["codec_dir"] is None:
-                kw["codec_dir"] = codec_dir
-            return orig_init(self, *a, **kw)
+            def _patched_init(self: Any, *a: Any, **kw: Any) -> Any:
+                if "codec_dir" not in kw or kw["codec_dir"] is None:
+                    kw["codec_dir"] = codec_dir
+                return orig_init(self, *a, **kw)
 
-        OnnxV3LiteEngine.__init__ = _patched_init
-        try:
-            return Vieneu(**kwargs)
-        finally:
-            OnnxV3LiteEngine.__init__ = orig_init
+            OnnxV3LiteEngine.__init__ = _patched_init
+            try:
+                return Vieneu(**kwargs)
+            finally:
+                OnnxV3LiteEngine.__init__ = orig_init
 
     return Vieneu(**kwargs)
 
@@ -315,32 +322,33 @@ def _ort_session_tuning(tuning: OrtTuning | None) -> Iterator[None]:
         return
     import onnxruntime as ort
 
-    original = ort.InferenceSession
+    with _SDK_PATCH_LOCK:
+        original = ort.InferenceSession
 
-    def tuned_session(path: Any, sess_options: Any = None, *args: Any, **kwargs: Any) -> Any:
-        if sess_options is None:
-            return original(path, sess_options, *args, **kwargs)
-        saved_threads = sess_options.intra_op_num_threads
+        def tuned_session(path: Any, sess_options: Any = None, *args: Any, **kwargs: Any) -> Any:
+            if sess_options is None:
+                return original(path, sess_options, *args, **kwargs)
+            saved_threads = sess_options.intra_op_num_threads
+            try:
+                saved_spin: str | None = sess_options.get_session_config_entry(_SPIN_KEY)
+            except RuntimeError:  # unset: ORT's own default (spinning on) applies
+                saved_spin = None
+            if tuning.spin_during_job:
+                sess_options.add_session_config_entry(_SPIN_KEY, "1")
+            if tuning.step_session_single_thread and Path(str(path)).name in _STEP_SESSION_FILES:
+                sess_options.intra_op_num_threads = 1
+            try:
+                return original(path, sess_options, *args, **kwargs)
+            finally:
+                sess_options.intra_op_num_threads = saved_threads
+                # An unset key cannot be removed again; "1" is ORT's default for it.
+                sess_options.add_session_config_entry(_SPIN_KEY, saved_spin or "1")
+
+        ort.InferenceSession = tuned_session
         try:
-            saved_spin: str | None = sess_options.get_session_config_entry(_SPIN_KEY)
-        except RuntimeError:  # unset: ORT's own default (spinning on) applies
-            saved_spin = None
-        if tuning.spin_during_job:
-            sess_options.add_session_config_entry(_SPIN_KEY, "1")
-        if tuning.step_session_single_thread and Path(str(path)).name in _STEP_SESSION_FILES:
-            sess_options.intra_op_num_threads = 1
-        try:
-            return original(path, sess_options, *args, **kwargs)
+            yield
         finally:
-            sess_options.intra_op_num_threads = saved_threads
-            # An unset key cannot be removed again; "1" is ORT's default for it.
-            sess_options.add_session_config_entry(_SPIN_KEY, saved_spin or "1")
-
-    ort.InferenceSession = tuned_session
-    try:
-        yield
-    finally:
-        ort.InferenceSession = original
+            ort.InferenceSession = original
 
 
 @contextlib.contextmanager
@@ -641,7 +649,7 @@ class TTSEngine:
                     ) from exc
             try:
                 with _ort_session_tuning(self._ort_tuning):
-                    self._tts = self._factory(**self._init_kwargs)
+                    tts = self._factory(**self._init_kwargs)
             except ModuleNotFoundError as exc:
                 if "torch" in str(exc):
                     if getattr(sys, "frozen", False):
@@ -682,7 +690,15 @@ class TTSEngine:
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:
-                self._merge_persisted_voices(self._tts)
+                try:
+                    self._merge_persisted_voices(tts)
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        close = getattr(tts, "close", None)
+                        if callable(close):
+                            close()
+                    raise
+            self._tts = tts
             return self._tts
 
     def _resolve_auto_backend(self) -> None:
@@ -735,20 +751,41 @@ class TTSEngine:
         persisted = _read_voices_json(self._voices_dir / VOICES_FILENAME)
         if not persisted:
             return
-        registry: dict[str, Any] = tts._preset_voices  # noqa: SLF001 — see docstring
+        registry = getattr(tts, "_preset_voices", None)
+        if not isinstance(registry, dict):
+            logger.warning(
+                "Skipping persisted voices from %s (SDK registry unavailable)",
+                self._voices_dir,
+            )
+            return
         injected = 0
         for name, entry in persisted.items():
             if name in registry:
                 continue
-            emb = entry.get("speaker_emb")
-            codes = entry.get("codes")
-            registry[name] = {
-                "description": str(entry.get("description") or ""),
-                "gender": str(entry.get("gender") or ""),
-                "style": str(entry.get("style") or ""),
-                "speaker_emb": None if emb is None else np.asarray(emb, dtype=np.float32),
-                "codes": None if codes is None else np.asarray(codes, dtype=np.int64),
-            }
+            try:
+                emb = entry.get("speaker_emb")
+                codes = entry.get("codes")
+                if emb is not None and not isinstance(emb, list):
+                    raise TypeError(f"speaker_emb must be a list, got {type(emb).__name__}")
+                if codes is not None and not isinstance(codes, list):
+                    raise TypeError(f"codes must be a list, got {type(codes).__name__}")
+                speaker_emb = None if emb is None else np.asarray(emb, dtype=np.float32)
+                voice_codes = None if codes is None else np.asarray(codes, dtype=np.int64)
+                registry[name] = {
+                    "description": str(entry.get("description") or ""),
+                    "gender": str(entry.get("gender") or ""),
+                    "style": str(entry.get("style") or ""),
+                    "speaker_emb": speaker_emb,
+                    "codes": voice_codes,
+                }
+            except (TypeError, ValueError, OverflowError) as exc:
+                logger.warning(
+                    "Skipping corrupt persisted voice %r from %s (%s)",
+                    name,
+                    self._voices_dir,
+                    exc,
+                )
+                continue
             injected += 1
         if injected:
             logger.info("Restored %d persisted voice(s) from %s", injected, self._voices_dir)

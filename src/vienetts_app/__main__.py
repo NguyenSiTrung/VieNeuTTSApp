@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Any
 
 SMOKE_TIMEOUT_SECONDS = 600.0  # cold start + long text budget
+# Duplicated as string literals (verified against qwen_engine.HOST_FLAG and
+# qwen_gguf_engine.GGUF_HOST_FLAG in tests) so host re-dispatch and --version
+# never import qwen_engine or numpy before branching.
+_QWEN_HOST_FLAG = "--qwen-host"
+_QWEN_GGUF_HOST_FLAG = "--qwen-gguf-host"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -120,10 +125,11 @@ def run_smoke(
 def _apply_startup_thread_caps() -> None:
     """Settings.blas_threads → BLAS env caps (perf tracks 7.1/7.4).
 
-    Runs before anything imports numpy (the Qwen flag constants below already
-    do), because OpenBLAS sizes its pool when the library loads. Both modules
-    are numpy-free. The default caps at 1; ``None`` leaves the environment
-    untouched. Qwen hosts do not inherit the app's cap (``host_environment``).
+    Runs before GUI/smoke paths import numpy, because OpenBLAS sizes its pool
+    when the library loads. Both imported modules are numpy-free. The default
+    caps at 1; ``None`` leaves the environment untouched. Qwen host
+    re-dispatches and ``--version`` return before this runs so host
+    subprocesses keep their own thread pools.
     """
     from vienetts_app.core import settings as settings_module
     from vienetts_app.core.performance import apply_blas_thread_cap
@@ -141,21 +147,17 @@ def main(
 
     # See run_smoke: frozen Windows children must attach, not re-execute.
     multiprocessing.freeze_support()
-    _apply_startup_thread_caps()
-    from vienetts_app.core.qwen_engine import HOST_FLAG
-    from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
-
     args_in = sys.argv[1:] if argv is None else argv
-    if HOST_FLAG in args_in or GGUF_HOST_FLAG in args_in:
-        # Frozen-build re-dispatch (qwen_engine.host_command /
-        # qwen_gguf_engine.gguf_host_command): run the host half in this
-        # process. Before the GUI import and before ensure_windowed_stdio() —
-        # stdout carries protocol frames, so the windowed-exe stdio safety
-        # net must not touch it.
-        if GGUF_HOST_FLAG in args_in:
-            from vienetts_app.workers.qwen_gguf_host import main as gguf_host_main
+    if _QWEN_GGUF_HOST_FLAG in args_in:
+        # Frozen-build re-dispatch (qwen_gguf_engine.gguf_host_command): run
+        # the host half before BLAS caps, qwen_engine/numpy imports, GUI
+        # setup, or ensure_windowed_stdio() — stdout carries protocol frames.
+        from vienetts_app.workers.qwen_gguf_host import main as gguf_host_main
 
-            return gguf_host_main()
+        return gguf_host_main()
+    if _QWEN_HOST_FLAG in args_in:
+        # Frozen-build re-dispatch (qwen_engine.host_command): same early
+        # handoff before BLAS caps, qwen_engine/numpy, GUI, or stdio setup.
         from vienetts_app.workers.qwen_host import main as host_main
 
         return host_main()
@@ -170,6 +172,9 @@ def main(
 
         print(get_version(_pkg_version))
         return 0
+    if args.smoke is not None and not args.smoke.strip():
+        parser.error("--smoke text must not be blank")
+    _apply_startup_thread_caps()
     if args.smoke is None:
         # FR-2.1: no args → GUI. Injectable so tests never spin a real loop.
         if gui_runner is None:
@@ -177,8 +182,6 @@ def main(
 
             gui_runner = run_gui
         return gui_runner()
-    if not args.smoke.strip():
-        parser.error("--smoke text must not be blank")
     return run_smoke(
         text=args.smoke,
         voice=args.voice,

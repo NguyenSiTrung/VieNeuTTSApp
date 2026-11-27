@@ -1,5 +1,8 @@
 """FifoJobQueue: FIFO admission with targeted cancellation (Phase 2 Task 2)."""
 
+import threading
+import time
+
 import pytest
 
 from vienetts_app.core.jobs import SynthesisJob
@@ -106,3 +109,55 @@ def test_warmup_and_pending() -> None:
     queue.put(make_job(hex_id(3)))
     queue.cancel_all()
     assert queue.pending_jobs() == ()
+
+
+def test_wake_interrupts_take_immediately_and_supports_indefinite_wait() -> None:
+    # 1. wake() unblocks a timed take() immediately instead of waiting out the timeout.
+    queue = FifoJobQueue()
+    result: list[object] = []
+    entered = threading.Event()
+
+    def waiter(timeout: float | None) -> None:
+        entered.set()
+        result.append(queue.take(timeout))
+
+    t = threading.Thread(target=waiter, args=(5.0,))
+    started = time.monotonic()
+    t.start()
+    assert entered.wait(timeout=1.0)
+    time.sleep(0.02)
+    queue.wake()
+    t.join(timeout=2.0)
+    assert not t.is_alive(), "wake() failed to unblock timed take()"
+    assert time.monotonic() - started < 1.0
+    assert result == [None]
+
+    # 2. wake() also unblocks an indefinite take(None) immediately.
+    result.clear()
+    entered.clear()
+    t = threading.Thread(target=waiter, args=(None,))
+    t.start()
+    assert entered.wait(timeout=1.0)
+    time.sleep(0.02)
+    queue.wake()
+    t.join(timeout=2.0)
+    assert not t.is_alive(), "wake() failed to unblock indefinite take(None)"
+    assert result == [None]
+
+    # 3. A wake() called BEFORE take() is not lost, and is consumed once so a
+    #    subsequent take() waits normally instead of spinning.
+    queue.wake()
+    t0 = time.monotonic()
+    assert queue.take(5.0) is None
+    assert time.monotonic() - t0 < 0.5
+    t1 = time.monotonic()
+    assert queue.take(0.05) is None
+    assert time.monotonic() - t1 >= 0.03
+
+    # 4. on_take runs atomically as the item leaves the queue.
+    job = make_job(hex_id(7))
+    queue.put(job)
+    seen: list[tuple[object, tuple[SynthesisJob, ...]]] = []
+    taken = queue.take(0, on_take=lambda item: seen.append((item, queue.pending_jobs())))
+    assert taken == job
+    assert seen == [(job, ())]

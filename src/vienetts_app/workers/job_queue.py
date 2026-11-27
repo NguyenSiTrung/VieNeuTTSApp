@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 
 from vienetts_app.core.jobs import JobOwner, SynthesisJob
 from vienetts_app.core.models import WarmupOp
@@ -32,6 +33,8 @@ class FifoJobQueue:
         self._items: OrderedDict[str, QueueItem] = OrderedDict()
         self._condition = threading.Condition()
         self._warmup_seq = 0
+        self._woken = False
+        self._wake_gen = 0
 
     def put(self, item: QueueItem) -> None:
         """Enqueue a job or warmup; duplicate job IDs raise ``ValueError``."""
@@ -42,16 +45,39 @@ class FifoJobQueue:
             self._items[key] = item
             self._condition.notify()
 
-    def take(self, timeout_seconds: float) -> QueueItem | None:
-        """Remove and return the oldest item, or ``None`` on timeout/wake."""
-        deadline = time.monotonic() + max(0.0, timeout_seconds)
+    def take(
+        self,
+        timeout_seconds: float | None = None,
+        *,
+        on_take: Callable[[QueueItem], None] | None = None,
+    ) -> QueueItem | None:
+        """Remove and return the oldest item, or ``None`` on timeout/wake.
+
+        ``timeout_seconds=None`` waits indefinitely until an item arrives or
+        :meth:`wake` is called. When supplied, ``on_take`` runs while the
+        queue condition lock is still held so callers can publish the dequeued
+        item atomically with respect to queue inspection and cancellation.
+        """
+        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
         with self._condition:
+            if not self._items and self._woken:
+                self._woken = False
+                return None
+            wake_gen = self._wake_gen
             while not self._items:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                if self._woken or self._wake_gen != wake_gen:
+                    self._woken = False
                     return None
-                self._condition.wait(timeout=remaining)
+                if deadline is None:
+                    self._condition.wait()
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self._condition.wait(timeout=remaining)
             _, item = self._items.popitem(last=False)
+            if on_take is not None:
+                on_take(item)
             return item
 
     def cancel(self, job_id: str) -> SynthesisJob | None:
@@ -85,6 +111,8 @@ class FifoJobQueue:
     def wake(self) -> None:
         """Unblock a thread waiting in :meth:`take` so it can observe stop."""
         with self._condition:
+            self._woken = True
+            self._wake_gen += 1
             self._condition.notify_all()
 
     def pending_jobs(self) -> tuple[SynthesisJob, ...]:

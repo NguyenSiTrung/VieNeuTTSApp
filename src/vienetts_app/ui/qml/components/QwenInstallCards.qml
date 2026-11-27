@@ -71,25 +71,56 @@ ColumnLayout {
         function onQwenVerifyFinished(ok, message) { root.qwenVerifyOk = ok; }
     }
     readonly property bool qwenModelBusy: controller ? controller.qwenModelBusy : false
-    readonly property var qwenModels: controller ? controller.qwenModels : []
-    readonly property var visibleQwenModels: {
-        if (!selectedOnly)
-            return qwenModels;
-        const rows = [];
-        for (let i = 0; i < qwenModels.length; i++) {
-            if (qwenModels[i].isActive && qwenModels[i].isSelected)
-                rows.push(qwenModels[i]);
+    // Prefer the row-level DictListModel (Task 5.3) so 250 ms download
+    // progress ticks update progress/installedBytes roles in place without
+    // rebuilding delegates or tearing down the Cancel button mid-click.
+    // Fall back to controller.qwenModels only when a test fake omits it.
+    readonly property bool _hasModelsModel: Boolean(
+        controller
+        && typeof controller.qwenModelsModel !== "undefined"
+        && controller.qwenModelsModel !== null
+    )
+    property int _modelsModelRev: 0
+
+    Connections {
+        target: root._hasModelsModel ? controller.qwenModelsModel : null
+        function onRowsInserted() { root._modelsModelRev += 1; }
+        function onRowsRemoved() { root._modelsModelRev += 1; }
+        function onModelReset() { root._modelsModelRev += 1; }
+        function onDataChanged() { root._modelsModelRev += 1; }
+    }
+
+    readonly property var _modelCounts: {
+        let total = 0;
+        let ready = 0;
+        if (root._hasModelsModel) {
+            void root._modelsModelRev;
+            const m = controller.qwenModelsModel;
+            const n = m ? m.count : 0;
+            for (let i = 0; i < n; i++) {
+                const row = m.get(i);
+                if (root.selectedOnly && !(row.isActive && row.isSelected))
+                    continue;
+                total++;
+                if (row.ready)
+                    ready++;
+            }
+        } else {
+            const rows = controller ? (controller.qwenModels || []) : [];
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (root.selectedOnly && !(row.isActive && row.isSelected))
+                    continue;
+                total++;
+                if (row.ready)
+                    ready++;
+            }
         }
-        return rows;
+        return { total: total, ready: ready };
     }
     readonly property string qwenCpuGuidance: controller ? controller.qwenCpuGuidance : ""
-    readonly property int qwenReadyModelCount: {
-        let count = 0;
-        for (let i = 0; i < visibleQwenModels.length; i++)
-            if (visibleQwenModels[i].ready)
-                count++;
-        return count;
-    }
+    readonly property int qwenVisibleModelCount: _modelCounts.total
+    readonly property int qwenReadyModelCount: _modelCounts.ready
 
     // The selected weight format decides which managed installs — and which
     // words — this surface shows. A GGUF pack is native libraries for
@@ -526,11 +557,11 @@ ColumnLayout {
             : (root.ggufSelected
                 ? qsTr("Bốn gói GGUF 0.6B (hai hồ sơ × hai lượng tử hóa): mỗi lượng tử hóa dùng chung một codec.")
                 : qsTr("Hai checkpoint 0.6B dùng chung bộ tokenizer: cài một lần, cả hai dùng lại."))
-        badgeText: qsTr("%1/%2 đã cài").arg(root.qwenReadyModelCount).arg(root.visibleQwenModels.length)
-        badgeColor: root.qwenReadyModelCount === root.visibleQwenModels.length
-            && root.visibleQwenModels.length > 0 ? Theme.successSubtle : Theme.warningSubtle
-        badgeTextColor: root.qwenReadyModelCount === root.visibleQwenModels.length
-            && root.visibleQwenModels.length > 0 ? Theme.successText : Theme.warningText
+        badgeText: qsTr("%1/%2 đã cài").arg(root.qwenReadyModelCount).arg(root.qwenVisibleModelCount)
+        badgeColor: root.qwenReadyModelCount === root.qwenVisibleModelCount
+            && root.qwenVisibleModelCount > 0 ? Theme.successSubtle : Theme.warningSubtle
+        badgeTextColor: root.qwenReadyModelCount === root.qwenVisibleModelCount
+            && root.qwenVisibleModelCount > 0 ? Theme.successText : Theme.warningText
 
         ColumnLayout {
             Layout.fillWidth: true
@@ -549,16 +580,30 @@ ColumnLayout {
             }
 
             Repeater {
-                model: root.visibleQwenModels
+                id: qwenModelRepeater
+
+                model: root._hasModelsModel
+                    ? controller.qwenModelsModel
+                    : (controller ? controller.qwenModels : [])
 
                 Rectangle {
                     id: qwenModelRow
 
                     required property var modelData
 
-                    objectName: root.named("ModelRow_") + modelData.key
+                    // Gate visibility in place instead of filtering into a
+                    // fresh JS array, so 250 ms download progress ticks update
+                    // roles without rebuilding delegates or tearing down the
+                    // Cancel button mid-click.
+                    readonly property bool rowShown: Boolean(modelData)
+                        && (!root.selectedOnly
+                            || (Boolean(modelData.isActive) && Boolean(modelData.isSelected)))
+                    readonly property string rowKey: modelData ? String(modelData.key || "") : ""
+
+                    objectName: rowShown ? (root.named("ModelRow_") + rowKey) : ""
+                    visible: rowShown
                     Layout.fillWidth: true
-                    implicitHeight: rowLayout.implicitHeight + Theme.spacingMd * 2
+                    implicitHeight: visible ? (rowLayout.implicitHeight + Theme.spacingMd * 2) : 0
                     radius: Theme.radiusMd
                     color: Theme.surfaceAlt
                     border.color: Theme.borderSubtle
@@ -567,7 +612,9 @@ ColumnLayout {
                     ColumnLayout {
                         id: rowLayout
 
-                        anchors.fill: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
                         anchors.margins: Theme.spacingMd
                         spacing: Theme.spacingSm
 
@@ -578,9 +625,10 @@ ColumnLayout {
                             Label {
                                 id: qwenModelLabel
 
-                                objectName: root.named("ModelLabel_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelLabel_") + qwenModelRow.rowKey) : ""
                                 Layout.fillWidth: true
-                                text: qwenModelRow.modelData.label
+                                text: qwenModelRow.modelData ? qwenModelRow.modelData.label : ""
                                 color: Theme.text
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeBase
@@ -594,8 +642,10 @@ ColumnLayout {
                                 // The armed variant — under GGUF several rows
                                 // can be installed while exactly one pair is
                                 // what the next job will use.
-                                objectName: root.named("ModelSelectedBadge_") + qwenModelRow.modelData.key
-                                visible: root.ggufSelected && qwenModelRow.modelData.isSelected
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelSelectedBadge_") + qwenModelRow.rowKey) : ""
+                                visible: root.ggufSelected
+                                    && Boolean(qwenModelRow.modelData && qwenModelRow.modelData.isSelected)
                                 implicitWidth: selectedLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: selectedLabel.implicitHeight + Theme.spacingXxs * 2
                                 radius: Theme.radiusPill
@@ -615,8 +665,9 @@ ColumnLayout {
                             Rectangle {
                                 id: qwenModelActiveBadge
 
-                                objectName: root.named("ModelActiveBadge_") + qwenModelRow.modelData.key
-                                visible: qwenModelRow.modelData.isActive
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelActiveBadge_") + qwenModelRow.rowKey) : ""
+                                visible: Boolean(qwenModelRow.modelData && qwenModelRow.modelData.isActive)
                                 implicitWidth: activeLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: activeLabel.implicitHeight + Theme.spacingXxs * 2
                                 radius: Theme.radiusPill
@@ -636,12 +687,13 @@ ColumnLayout {
                             Rectangle {
                                 id: qwenModelStateBadge
 
-                                objectName: root.named("ModelStateBadge_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelStateBadge_") + qwenModelRow.rowKey) : ""
                                 implicitWidth: stateLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: stateLabel.implicitHeight + Theme.spacingXxs * 2
                                 radius: Theme.radiusPill
                                 color: {
-                                    switch (qwenModelRow.modelData.state) {
+                                    switch (qwenModelRow.modelData ? qwenModelRow.modelData.state : "") {
                                     case "ready":
                                         return Theme.successSubtle;
                                     case "failed":
@@ -657,10 +709,11 @@ ColumnLayout {
                                 Label {
                                     id: stateLabel
 
-                                    objectName: root.named("ModelStateLabel_") + qwenModelRow.modelData.key
+                                    objectName: qwenModelRow.rowShown
+                                        ? (root.named("ModelStateLabel_") + qwenModelRow.rowKey) : ""
                                     anchors.centerIn: parent
                                     text: {
-                                        switch (qwenModelRow.modelData.state) {
+                                        switch (qwenModelRow.modelData ? qwenModelRow.modelData.state : "") {
                                         case "ready":
                                             return qsTr("Sẵn sàng");
                                         case "failed":
@@ -676,7 +729,7 @@ ColumnLayout {
                                         }
                                     }
                                     color: {
-                                        switch (qwenModelRow.modelData.state) {
+                                        switch (qwenModelRow.modelData ? qwenModelRow.modelData.state : "") {
                                         case "ready":
                                             return Theme.successText;
                                         case "failed":
@@ -698,14 +751,15 @@ ColumnLayout {
                         Label {
                             id: qwenModelStorageLabel
 
-                            objectName: root.named("ModelStorageLabel_") + qwenModelRow.modelData.key
+                            objectName: qwenModelRow.rowShown
+                                ? (root.named("ModelStorageLabel_") + qwenModelRow.rowKey) : ""
                             Layout.fillWidth: true
-                            text: qwenModelRow.modelData.ready
+                            text: qwenModelRow.modelData && qwenModelRow.modelData.ready
                                 ? qsTr("Đã cài %1 · tải về %2").arg(
                                     root.formatBytes(qwenModelRow.modelData.installedBytes)).arg(
                                     root.formatBytes(qwenModelRow.modelData.requiredBytes))
                                 : qsTr("Cần tải %1").arg(
-                                    root.formatBytes(qwenModelRow.modelData.requiredBytes))
+                                    root.formatBytes(qwenModelRow.modelData ? qwenModelRow.modelData.requiredBytes : 0))
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
@@ -715,23 +769,26 @@ ColumnLayout {
                         ProgressBar {
                             id: qwenModelProgress
 
-                            objectName: root.named("ModelProgress_") + qwenModelRow.modelData.key
+                            objectName: qwenModelRow.rowShown
+                                ? (root.named("ModelProgress_") + qwenModelRow.rowKey) : ""
                             Layout.fillWidth: true
                             from: 0
                             to: 1
-                            value: qwenModelRow.modelData.progress
-                            visible: qwenModelRow.modelData.state === "downloading"
-                                || qwenModelRow.modelData.state === "validating"
+                            value: qwenModelRow.modelData ? qwenModelRow.modelData.progress : 0
+                            visible: Boolean(qwenModelRow.modelData)
+                                && (qwenModelRow.modelData.state === "downloading"
+                                    || qwenModelRow.modelData.state === "validating")
                             Accessible.name: qsTr("Tiến trình tải mô hình Qwen")
                         }
 
                         Label {
                             id: qwenModelErrorLabel
 
-                            objectName: root.named("ModelErrorLabel_") + qwenModelRow.modelData.key
+                            objectName: qwenModelRow.rowShown
+                                ? (root.named("ModelErrorLabel_") + qwenModelRow.rowKey) : ""
                             Layout.fillWidth: true
-                            text: qwenModelRow.modelData.error
-                            visible: qwenModelRow.modelData.error !== ""
+                            text: qwenModelRow.modelData ? qwenModelRow.modelData.error : ""
+                            visible: Boolean(qwenModelRow.modelData && qwenModelRow.modelData.error !== "")
                             color: Theme.errorText
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
@@ -746,7 +803,8 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelInstallButton
 
-                                objectName: root.named("ModelInstallButton_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelInstallButton_") + qwenModelRow.rowKey) : ""
                                 variant: "secondary"  // per-row action; runtime install is primary
                                 size: "sm"
                                 iconKind: "download"
@@ -754,9 +812,11 @@ ColumnLayout {
                                 // Vietnamese; the bare source translated to
                                 // "Settings" on this button.
                                 text: qsTr("Cài đặt mô hình")
-                                accessibleLabel: qsTr("Cài đặt %1").arg(qwenModelRow.modelData.label)
-                                visible: qwenModelRow.modelData.state === "unavailable"
-                                    || qwenModelRow.modelData.state === "checking"
+                                accessibleLabel: qsTr("Cài đặt %1").arg(
+                                    qwenModelRow.modelData ? qwenModelRow.modelData.label : "")
+                                visible: Boolean(qwenModelRow.modelData)
+                                    && (qwenModelRow.modelData.state === "unavailable"
+                                        || qwenModelRow.modelData.state === "checking")
                                 // Platform truth: a model download is
                                 // GB-scale and pointless without a runnable
                                 // runtime — same gate the runtime card's
@@ -765,62 +825,72 @@ ColumnLayout {
                                 disabledReason: !root.qwenRuntimeSupported
                                     ? qsTr("Máy này không có runtime Qwen — xem thẻ Runtime ở trên.")
                                     : ""
-                                onClicked: controller.installQwenModel(qwenModelRow.modelData.key)
+                                onClicked: controller.installQwenModel(qwenModelRow.rowKey)
                             }
 
                             AppButton {
                                 id: qwenModelCancelButton
 
-                                objectName: root.named("ModelCancelButton_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelCancelButton_") + qwenModelRow.rowKey) : ""
                                 variant: "secondary"
                                 size: "sm"
                                 iconKind: "close"
                                 text: qsTr("Hủy tải")
-                                accessibleLabel: qsTr("Hủy tải %1").arg(qwenModelRow.modelData.label)
-                                visible: qwenModelRow.modelData.busy
-                                onClicked: controller.cancelQwenModelDownload(qwenModelRow.modelData.key)
+                                accessibleLabel: qsTr("Hủy tải %1").arg(
+                                    qwenModelRow.modelData ? qwenModelRow.modelData.label : "")
+                                visible: Boolean(qwenModelRow.modelData && qwenModelRow.modelData.busy)
+                                onClicked: controller.cancelQwenModelDownload(qwenModelRow.rowKey)
                             }
 
                             AppButton {
                                 id: qwenModelRepairButton
 
-                                objectName: root.named("ModelRepairButton_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelRepairButton_") + qwenModelRow.rowKey) : ""
                                 variant: "secondary"
                                 size: "sm"
                                 iconKind: "refresh"
                                 text: qsTr("Sửa chữa")
-                                accessibleLabel: qsTr("Sửa chữa %1").arg(qwenModelRow.modelData.label)
-                                visible: qwenModelRow.modelData.state === "failed"
+                                accessibleLabel: qsTr("Sửa chữa %1").arg(
+                                    qwenModelRow.modelData ? qwenModelRow.modelData.label : "")
+                                visible: Boolean(qwenModelRow.modelData
+                                    && qwenModelRow.modelData.state === "failed")
                                 enabled: !root.qwenModelBusy
-                                onClicked: controller.repairQwenModel(qwenModelRow.modelData.key)
+                                onClicked: controller.repairQwenModel(qwenModelRow.rowKey)
                             }
 
                             AppButton {
                                 id: qwenModelRemoveButton
 
-                                objectName: root.named("ModelRemoveButton_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelRemoveButton_") + qwenModelRow.rowKey) : ""
                                 variant: "danger"
                                 size: "sm"
                                 iconKind: "close"
                                 text: qsTr("Gỡ mô hình")
-                                accessibleLabel: qsTr("Gỡ %1").arg(qwenModelRow.modelData.label)
-                                visible: root.allowRemoval && qwenModelRow.modelData.state === "ready"
+                                accessibleLabel: qsTr("Gỡ %1").arg(
+                                    qwenModelRow.modelData ? qwenModelRow.modelData.label : "")
+                                visible: root.allowRemoval
+                                    && Boolean(qwenModelRow.modelData
+                                        && qwenModelRow.modelData.state === "ready")
                                 enabled: !root.qwenModelBusy
-                                onClicked: root.confirmQwenModelRemove(qwenModelRow.modelData.key)
+                                onClicked: root.confirmQwenModelRemove(qwenModelRow.rowKey)
                             }
 
                             AppButton {
                                 id: qwenModelImportButton
 
-                                objectName: root.named("ModelImportButton_") + qwenModelRow.modelData.key
+                                objectName: qwenModelRow.rowShown
+                                    ? (root.named("ModelImportButton_") + qwenModelRow.rowKey) : ""
                                 variant: "secondary"
                                 size: "sm"
                                 iconKind: "folder"
                                 text: qsTr("Nhập gói ngoại tuyến")
                                 accessibleLabel: qsTr("Nhập gói ngoại tuyến cho %1").arg(
-                                    qwenModelRow.modelData.label)
+                                    qwenModelRow.modelData ? qwenModelRow.modelData.label : "")
                                 enabled: !root.qwenModelBusy
-                                onClicked: root.openQwenModelPackDialog(qwenModelRow.modelData.key)
+                                onClicked: root.openQwenModelPackDialog(qwenModelRow.rowKey)
                             }
                         }
                     }

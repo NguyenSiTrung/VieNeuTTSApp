@@ -57,12 +57,16 @@ Pane {
     readonly property bool dockPinned: root.height >= 520
 
     // ── Model shortcuts: one binding each, read by many children ───────────
-    readonly property var clips: controller.studioClips || []
-    // Scalars + row-level models (perf 6.4): the clip/op Repeaters bind
-    // studioClipModel/studioOpModel, so an op push adds one chip instead of
-    // rebuilding every clip row and chip.
-    readonly property int clipCount: controller.studioClipCount
-    readonly property int opCount: controller.studioOpCount
+    // Scalars + row-level models: the clip ListView and op Repeater bind
+    // studioClipModel/studioOpModel directly (never marshaling a QVariantList
+    // mirror), so an op push or clip edit updates in place.
+    readonly property int clipCount: controller.studioClipModel
+        ? controller.studioClipModel.count : controller.studioClipCount
+    readonly property int opCount: controller.studioOpModel
+        ? controller.studioOpModel.count : controller.studioOpCount
+    // Reactive revision bumped on studioClipModel mutations so scalar helpers
+    // reading studioClipModel.get(i) re-evaluate without a list mirror.
+    property int _clipModelRev: 0
 
     // ── Waveform range selection ──────────────────────────────────────────
     // Fractions 0..1 of the audio the dock is showing. PlaybackWaveform never
@@ -89,9 +93,16 @@ Pane {
             return controller.studioClipDurationMs;
         if (controller.studioDurationMs > 0)
             return controller.studioDurationMs;
+        void root._clipModelRev;
+        const m = controller.studioClipModel;
+        const n = root.clipCount;
         let sumMs = 0;
-        for (let i = 0; i < root.clips.length; i++)
-            sumMs += Math.round((root.clips[i].duration || 0) * 1000);
+        if (m && typeof m.get === "function") {
+            for (let i = 0; i < n; i++) {
+                const row = m.get(i);
+                sumMs += Math.round((Number(row.duration) || 0) * 1000);
+            }
+        }
         return sumMs;
     }
 
@@ -107,9 +118,12 @@ Pane {
     readonly property string dockStateText: !controller.replayActive
         ? qsTr("Sẵn sàng")
         : (controller.replayPaused ? qsTr("Tạm dừng") : qsTr("Đang phát"))
-    readonly property string dockTargetText: root.auditioningClip
-        ? qsTr("Đoạn #%1").arg(root.clipLabelFor(root.auditionClipId))
-        : qsTr("Toàn bộ dự án")
+    readonly property string dockTargetText: {
+        void root._clipModelRev;
+        return root.auditioningClip
+            ? qsTr("Đoạn #%1").arg(root.clipLabelFor(root.auditionClipId))
+            : qsTr("Toàn bộ dự án");
+    }
     // Which A/B render is sounding ("" while idle or auditioning a clip).
     readonly property string playingModeText: controller.studioPlayingMode === "base"
         ? qsTr("Gốc")
@@ -182,9 +196,14 @@ Pane {
 
     // A clip row's display label ("1", "2", "Ch 3"), from its stable id.
     function clipLabelFor(clipId) {
-        for (let i = 0; i < root.clips.length; i++) {
-            if (root.clips[i].id === clipId)
-                return String(root.clips[i].label || (i + 1));
+        const m = controller.studioClipModel;
+        const n = root.clipCount;
+        if (m && typeof m.get === "function") {
+            for (let i = 0; i < n; i++) {
+                const row = m.get(i);
+                if (row.id === clipId)
+                    return String(row.label || (i + 1));
+            }
         }
         return "";
     }
@@ -235,6 +254,14 @@ Pane {
         function onStudioProjectChanged() { root.clearSelection(); }
         // The dock's waveform switched between mix and clip — same reasoning.
         function onStudioAuditionChanged() { root.clearSelection(); }
+    }
+
+    Connections {
+        target: controller && controller.studioClipModel ? controller.studioClipModel : null
+        function onRowsInserted() { root._clipModelRev += 1; }
+        function onRowsRemoved() { root._clipModelRev += 1; }
+        function onDataChanged() { root._clipModelRev += 1; }
+        function onModelReset() { root._clipModelRev += 1; }
     }
 
     FileDialog {
@@ -1258,54 +1285,93 @@ Pane {
                         }
 
                         // ── Clip table ─────────────────────────────────────
-                        // Plain rows, no inner ScrollView (a nested flickable
-                        // swallows the page's wheel events).
+                        // Virtualized ListView bounded to the viewport so long
+                        // projects only instantiate visible rows + cacheBuffer.
                         AppCard {
                             Layout.fillWidth: true
                             title: qsTr("Các đoạn")
                             badgeText: qsTr("%1 đoạn").arg(root.clipCount)
                             cardPadding: Theme.spacingMd
 
-                            ColumnLayout {
+                            ListView {
+                                id: clipList
+
                                 objectName: "studioClipList"
                                 Layout.fillWidth: true
+                                readonly property real maxViewportHeight: Math.max(
+                                    220,
+                                    Math.min(480, Math.round(root.height * 0.5))
+                                )
+                                implicitHeight: count > 0
+                                    ? Math.min(Math.max(contentHeight, 64), maxViewportHeight)
+                                    : 0
+                                Layout.preferredHeight: implicitHeight
+                                Layout.minimumHeight: implicitHeight
+                                Layout.maximumHeight: maxViewportHeight
+                                model: controller.studioClipModel
+                                clip: true
                                 spacing: Theme.spacingXxs
+                                boundsBehavior: Flickable.StopAtBounds
+                                flickableDirection: Flickable.VerticalFlick
+                                interactive: contentHeight > height + 1
+                                cacheBuffer: 160
+                                Accessible.role: Accessible.List
+                                Accessible.name: qsTr("Các đoạn")
 
-                                Repeater {
-                                    model: controller.studioClipModel
+                                ScrollBar.vertical: ScrollBar {
+                                    id: clipListScrollBar
 
-                                    StudioClipRow {
-                                        Layout.fillWidth: true
-                                        clipsCount: root.clipCount
-                                        auditionClipId: root.auditionClipId
-                                        showDuration: bodyScroll.availableWidth >= 560
-                                        onRegenRequested: (clipData, clipIndex) => {
-                                            regenDialog.clipId = clipData.id;
-                                            regenDialog.clipLabel = String(
-                                                clipData.isSrtCue
-                                                    ? (clipData.cueNumber || (clipIndex + 1))
-                                                    : (clipIndex + 1)
-                                            );
-                                            regenDialog.clipText = clipData.text || clipData.label || "";
-                                            regenDialog.clipDuration = clipData.duration_str || "";
-                                            regenDialog.isSrtCue = Boolean(clipData.isSrtCue);
-                                            regenDialog.cueNumber = clipData.cueNumber || (clipIndex + 1);
-                                            regenDialog.clipVoice = clipData.voice || "";
-                                            regenDialog.clipSpeaker = clipData.speaker || "";
-                                            if (regenDialog.clipVoice !== ""
-                                                    && regenVoicePicker.rowIn(
-                                                        regenVoicePicker.flatModel,
-                                                        regenDialog.clipVoice
-                                                    ) !== null) {
-                                                regenVoicePicker.selectedVoice = regenDialog.clipVoice;
-                                            }
-                                            regenDialog.srtWindowLabel = clipData.srtWindowLabel || "";
-                                            regenDialog.srtDurationStr = clipData.srtDurationStr || "";
-                                            regenDialog.fitRate = clipData.fitRate || 1.0;
-                                            regenDialog.useCustomSpeed = false;
-                                            regenDialog.customSpeedValue = clipData.fitRate || 1.0;
-                                            regenDialog.open();
+                                    objectName: "studioClipScrollBar"
+                                    policy: ScrollBar.AsNeeded
+                                    opacity: size < 1.0 ? 1.0 : 0.0
+                                    implicitWidth: 8
+                                    contentItem: Rectangle {
+                                        radius: 4
+                                        color: Theme.border
+                                        opacity: 0.7
+                                    }
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: "transparent"
+                                    }
+                                }
+
+                                delegate: StudioClipRow {
+                                    width: Math.max(
+                                        0,
+                                        clipList.width - (clipList.contentHeight > clipList.height + 1
+                                            ? clipListScrollBar.implicitWidth + Theme.spacingXxs
+                                            : 0)
+                                    )
+                                    clipsCount: root.clipCount
+                                    auditionClipId: root.auditionClipId
+                                    showDuration: bodyScroll.availableWidth >= 560
+                                    onRegenRequested: (clipData, clipIndex) => {
+                                        regenDialog.clipId = clipData.id;
+                                        regenDialog.clipLabel = String(
+                                            clipData.isSrtCue
+                                                ? (clipData.cueNumber || (clipIndex + 1))
+                                                : (clipIndex + 1)
+                                        );
+                                        regenDialog.clipText = clipData.text || clipData.label || "";
+                                        regenDialog.clipDuration = clipData.duration_str || "";
+                                        regenDialog.isSrtCue = Boolean(clipData.isSrtCue);
+                                        regenDialog.cueNumber = clipData.cueNumber || (clipIndex + 1);
+                                        regenDialog.clipVoice = clipData.voice || "";
+                                        regenDialog.clipSpeaker = clipData.speaker || "";
+                                        if (regenDialog.clipVoice !== ""
+                                                && regenVoicePicker.rowIn(
+                                                    regenVoicePicker.flatModel,
+                                                    regenDialog.clipVoice
+                                                ) !== null) {
+                                            regenVoicePicker.selectedVoice = regenDialog.clipVoice;
                                         }
+                                        regenDialog.srtWindowLabel = clipData.srtWindowLabel || "";
+                                        regenDialog.srtDurationStr = clipData.srtDurationStr || "";
+                                        regenDialog.fitRate = clipData.fitRate || 1.0;
+                                        regenDialog.useCustomSpeed = false;
+                                        regenDialog.customSpeedValue = clipData.fitRate || 1.0;
+                                        regenDialog.open();
                                     }
                                 }
                             }
@@ -1419,7 +1485,6 @@ Pane {
         StudioTimeline {
             Layout.fillWidth: true
             clipModel: controller.studioClipModel
-            clips: root.clips
             auditionClipId: root.auditionClipId
             totalMs: root.dockTotalMs
             envelope: root.auditioningClip ? controller.studioClipEnvelope : controller.studioEnvelope

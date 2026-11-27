@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import hashlib
 import io
 import json
 import os
@@ -47,6 +48,7 @@ import queue
 import shutil
 import sys
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +106,10 @@ RELEASE_EVERY_JOBS = 8
 #: under the parent's recycle threshold (``RSS_RECYCLE_GROWTH_BYTES``), so the
 #: host gives its caches back before the parent has to restart it.
 RELEASE_GROWTH_BYTES = 512 * 1024 * 1024
+
+#: Bounded LRU cap for cached voice-clone prompts (content-hashed by reference
+#: audio bytes + transcript) so repeated enrollments cannot grow RAM unboundedly.
+MAX_CLONE_PROMPTS = 8
 
 SUPPORTED_DTYPES = ("float32", "float16", "bfloat16")
 SUPPORTED_ATTENTION = ("eager", "sdpa", "flash_attention_2")
@@ -513,12 +519,17 @@ def lower_process_priority() -> bool:
     try:
         if os.name == "nt":
             import ctypes  # noqa: PLC0415 — Windows only, never at module load
+            from ctypes import wintypes  # noqa: PLC0415
 
             below_normal_priority_class = 0x00004000
-            kernel32 = ctypes.windll.kernel32
-            return bool(
-                kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class)
-            )
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_current_process = kernel32.GetCurrentProcess
+            get_current_process.argtypes = []
+            get_current_process.restype = wintypes.HANDLE
+            set_priority_class = kernel32.SetPriorityClass
+            set_priority_class.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            set_priority_class.restype = wintypes.BOOL
+            return bool(set_priority_class(get_current_process(), below_normal_priority_class))
         os.nice(5)
         return True
     except Exception:  # noqa: BLE001 — a refused priority change must not stop synthesis
@@ -589,9 +600,14 @@ def _heartbeats(job: str, emit: Callable[[Frame], None]) -> Iterator[None]:
     drained = threading.Event()
 
     def beat() -> None:
-        while not stop.wait(HEARTBEAT_SECONDS):
-            emit(Frame(type="progress", job=job, fields={"stage": "generating"}))
-        drained.set()
+        try:
+            while not stop.wait(HEARTBEAT_SECONDS):
+                try:
+                    emit(Frame(type="progress", job=job, fields={"stage": "generating"}))
+                except Exception:  # noqa: BLE001 — pipe/emit error exits beater cleanly
+                    return
+        finally:
+            drained.set()
 
     thread = threading.Thread(target=beat, name="qwen-host-liveness", daemon=True)
     thread.start()
@@ -620,7 +636,7 @@ class QwenModelHost:
         self._engine_id = ""
         self._capabilities: HostCapabilities | None = None
         self._load_view: Path | None = None
-        self._prompts: dict[tuple[str, str], object] = {}
+        self._prompts: OrderedDict[tuple[str, str, str], object] = OrderedDict()
         self._fatal = False
 
     @property
@@ -692,7 +708,7 @@ class QwenModelHost:
         self._profile = profile
         self._engine_id = engine_id
         self._load_view = view
-        self._prompts = {}
+        self._prompts.clear()
         self._capabilities = describe_capabilities(profile, model, log=self._log)
         self._log(
             "loaded",
@@ -713,7 +729,7 @@ class QwenModelHost:
         self._profile = ""
         self._engine_id = ""
         self._capabilities = None
-        self._prompts = {}
+        self._prompts.clear()
         if self._load_view is not None:
             remove_load_view(self._load_view)
             self._load_view = None
@@ -928,9 +944,17 @@ class QwenModelHost:
     def _clone_prompt(self, path: str, ref_text: str) -> object:
         """Build (once) and reuse the reusable clone prompt for one reference clip."""
         resolved = str(Path(path).resolve())
-        key = (resolved, ref_text)
+        try:
+            with Path(resolved).open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        except OSError as exc:
+            raise QwenHostError(
+                f"reference clip cannot be read: {exc}", code="unsupported_selection"
+            ) from exc
+        key = (resolved, digest, ref_text)
         cached = self._prompts.get(key)
         if cached is not None:
+            self._prompts.move_to_end(key)
             return cached
         builder = getattr(self._model, "create_voice_clone_prompt", None)
         if not callable(builder):
@@ -938,8 +962,16 @@ class QwenModelHost:
                 "the loaded Qwen runtime cannot build clone prompts",
                 code="clone_prompt_unsupported",
             )
+        # Drop any stale entries for the same path whose bytes changed in place.
+        stale = [k for k in self._prompts if k[0] == resolved and k[1] != digest]
+        for old_key in stale:
+            self._prompts.pop(old_key, None)
         prompt = builder(ref_audio=resolved, ref_text=ref_text)
         self._prompts[key] = prompt
+        self._prompts.move_to_end(key)
+        while len(self._prompts) > MAX_CLONE_PROMPTS:
+            evicted, _ = self._prompts.popitem(last=False)
+            self._log("clone_prompt_evicted", reference=evicted[0])
         self._log("clone_prompt_built", reference=resolved)
         return prompt
 
@@ -1230,6 +1262,9 @@ def serve(
                 return
             except ProtocolError as exc:
                 inbox.put(exc)
+                return
+            except (OSError, ValueError):
+                inbox.put(None)
                 return
             try:
                 with state_lock:

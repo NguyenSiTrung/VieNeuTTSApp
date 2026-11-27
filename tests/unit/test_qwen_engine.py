@@ -1581,3 +1581,413 @@ class TestLivePrefetch:
         assert [str(entry["job"]) for entry in received(tmp_path, "cancel")] == [second]
         with pytest.raises(QwenEngineCancelled):
             list(stream)
+
+
+# --------------------------------------------------------------------------- #
+# hardening: isolation, teardown settle/drain, cancel generation, macOS/Windows
+# --------------------------------------------------------------------------- #
+
+
+class TestEngineHardening:
+    def test_stream_job_discards_mismatched_job_frames(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        from vienetts_app.core.qwen_protocol import Frame, pcm_to_bytes
+
+        engine = start_engine(engines, tmp_path, "ok")
+        engine.initialize()
+        generation = engine._generation
+        foreign_pcm = pcm_to_bytes(np.full(8, 0.9, dtype=np.float32))
+        target_pcm = pcm_to_bytes(np.full(8, 0.25, dtype=np.float32))
+
+        engine._inbox.put(
+            Frame(
+                type="pcm",
+                job="foreign-job",
+                payload=foreign_pcm,
+                fields={"sampleRate": 48000, "seq": 0, "final": False},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="progress",
+                job="foreign-job",
+                fields={"fraction": 0.99, "stage": "wrong"},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="terminal",
+                job="foreign-job",
+                fields={"status": "failed", "error": "cross-job failure"},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="pcm",
+                job="target-job",
+                payload=target_pcm,
+                fields={"sampleRate": 48000, "seq": 0, "final": True},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="progress",
+                job="target-job",
+                fields={"fraction": 0.5, "stage": "resampling"},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="terminal",
+                job="target-job",
+                fields={"status": "ok", "frames": 1, "audioSeconds": 0.0},
+            )
+        )
+
+        progress: list[tuple[float, str]] = []
+        got = list(
+            engine._stream_job(
+                "target-job",
+                lambda fraction, stage: progress.append((fraction, stage)),
+                generation,
+            )
+        )
+        assert len(got) == 1
+        np.testing.assert_allclose(got[0][1], np.full(8, 0.25, dtype=np.float32))
+        assert progress == [(0.5, "resampling")]
+
+    def test_pre_send_and_teardown_settle_and_drain_inbox(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        from vienetts_app.core.qwen_protocol import Frame, pcm_to_bytes
+
+        # Pre-send drains stale frames sitting in _inbox before starting a new job.
+        engine = start_engine(engines, tmp_path / "case-a", "ok")
+        engine.initialize()
+        engine._inbox.put(
+            Frame(
+                type="pcm",
+                job="stale-job",
+                payload=pcm_to_bytes(np.full(8, 0.8, dtype=np.float32)),
+                fields={"sampleRate": 48000, "seq": 0, "final": True},
+            )
+        )
+        engine._inbox.put(
+            Frame(
+                type="terminal",
+                job="stale-job",
+                fields={"status": "failed", "error": "stale error"},
+            )
+        )
+        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="fresh-1"))
+        assert len(chunks) == 2
+        assert all(chunk.size == 12000 for chunk in chunks)
+        assert engine._inbox.empty()
+
+        # Abandoned single job settles/aborts on close() so the next job succeeds immediately.
+        case_b = tmp_path / "case-b"
+        engine = start_engine(engines, case_b, "slow_pcm", cancel_timeout=0.2)
+        stream = engine.infer_stream("hello", language="en", speaker="Ryan", job_id="abandoned-1")
+        next(stream)
+        stream.close()
+        assert engine.is_initialized is False  # unresponsive host was aborted during teardown
+        assert engine._inbox.empty()
+        # Swapping to a responsive host mode verifies immediate follow-up works cleanly.
+        engine._command = fake_host(case_b, "ok")
+        follow_up = list(engine.infer_stream("next", language="en", speaker="Ryan", job_id="ok-2"))
+        assert len(follow_up) == 2
+
+        # Abandoned prefetched sequence settles the prefetched job and drains _inbox on close().
+        case_c = tmp_path / "case-c"
+        engine = start_engine(engines, case_c, "cancel_second", cancel_timeout=0.4)
+        seq = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", speaker="Ryan", job_ids=["s:1", "s:2", "s:3"]
+        )
+        assert next(seq)[0] == 0
+        wait_for(lambda: len(_synthesized(case_c)) == 2, what="the prefetched segment")
+        seq.close()
+        assert "s:2" not in engine._session.active
+        assert engine._inbox.empty()
+        assert engine.is_initialized is True
+
+        # Cancelled prefetched sequence also drains its prefetched terminal from _inbox.
+        case_d = tmp_path / "case-d"
+        engine = start_engine(engines, case_d, "cancel_second", cancel_timeout=0.4)
+        seq = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", speaker="Ryan", job_ids=["c:1", "c:2", "c:3"]
+        )
+        assert next(seq)[0] == 0
+        wait_for(lambda: len(_synthesized(case_d)) == 2, what="the prefetched segment")
+        assert engine.cancel("c:1") is True
+        with pytest.raises(QwenEngineCancelled):
+            list(seq)
+        assert engine._inbox.empty()
+        assert engine.is_initialized is True
+
+        # Pre-send settles an orphaned active job (e.g. left active on the host) before sending.
+        case_e = tmp_path / "case-e"
+        engine = start_engine(engines, case_e, "graceful_cancel", cancel_timeout=0.4)
+        engine.initialize()
+        engine._send(
+            Frame(
+                type="synthesize",
+                job="orphan-1",
+                fields={"text": "orphan", "language": "en", "speaker": "Ryan"},
+            )
+        )
+        wait_for(lambda: bool(received(case_e, "synthesize")), what="orphan job to reach host")
+        # Next job settles the orphaned active job instead of crashing with "one job at a time".
+        engine._command = fake_host(case_e, "ok")
+        assert engine.cancel("next-after-orphan") is False
+        with pytest.raises(QwenEngineCancelled):
+            list(
+                engine.infer_stream(
+                    "next", language="en", speaker="Ryan", job_id="next-after-orphan"
+                )
+            )
+        assert "orphan-1" in engine._session.active  # pre-start cancel refused before pre-send
+        # Now send a real job that must settle orphan-1 first.
+        run = StreamRun(engine, "after-orphan", text="next")
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+        assert any(entry["job"] == "orphan-1" for entry in received(case_e, "cancel"))
+        assert any(entry["job"] == "after-orphan" for entry in received(case_e, "synthesize"))
+
+    def test_cancel_snapshots_generation_and_cannot_abort_respawned_host(
+        self, tmp_path: Path, engines: list[QwenEngine], monkeypatch
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "slow_cancel", cancel_timeout=0.2)
+        run = StreamRun(engine, "job-gen1")
+        wait_for(lambda: bool(received(tmp_path, "synthesize")), what="job-gen1 to reach host")
+        gen1 = engine._generation
+        wait_calls: list[tuple[str, int]] = []
+        abort_calls: list[int] = []
+        real_abort = engine._abort_host
+
+        def fake_wait_cancelled(job: str, generation: int) -> bool:
+            wait_calls.append((job, generation))
+            # Simulate host death & immediate respawn onto a fresh generation
+            # while cancel() was waiting on generation 1.
+            engine.close()
+            engine._command = fake_host(tmp_path, "ok")
+            engine.initialize()
+            return False
+
+        def spy_abort(generation: int, reason: str) -> None:
+            abort_calls.append(generation)
+            real_abort(generation, reason)
+
+        monkeypatch.setattr(engine, "_wait_cancelled", fake_wait_cancelled)
+        monkeypatch.setattr(engine, "_abort_host", spy_abort)
+
+        assert engine.cancel("job-gen1") is True
+        run.assert_finished()
+        assert wait_calls == [("job-gen1", gen1)]
+        assert all(gen == gen1 for gen in abort_calls)
+        assert engine._generation > gen1
+        assert engine.is_initialized is True
+        assert pid_alive(host_pid(tmp_path)) is True
+
+    def test_darwin_physical_ram_bytes_uses_sysctlbyname_with_cli_fallback(
+        self, monkeypatch
+    ) -> None:
+        import ctypes
+        import subprocess
+        import types
+
+        import vienetts_app.core.qwen_engine as qwen_engine
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(os, "name", "posix")
+
+        # Primary path: ctypes sysctlbyname("hw.memsize", ...)
+        recorded: dict[str, Any] = {}
+
+        class FakeSysctlByName:
+            argtypes: Any = None
+            restype: Any = None
+
+            def __call__(self, name, oldp, oldlenp, newp, newlen) -> int:
+                recorded["name"] = name
+                recorded["argtypes"] = self.argtypes
+                recorded["restype"] = self.restype
+                assert name == b"hw.memsize"
+                ctypes.memmove(oldp, ctypes.byref(ctypes.c_uint64(8 * 1024**3)), 8)
+                return 0
+
+        fake_fn = FakeSysctlByName()
+        monkeypatch.setattr(
+            ctypes, "CDLL", lambda _name: types.SimpleNamespace(sysctlbyname=fake_fn)
+        )
+        ram = qwen_engine.physical_ram_bytes()
+        assert ram == 8 * 1024**3
+        assert batch_bounds_for_ram(ram) == (2, 1024)
+        assert recorded["argtypes"] is not None
+        assert recorded["restype"] is ctypes.c_int
+
+        # Fallback path: sysctlbyname fails -> subprocess `sysctl -n hw.memsize`
+        def failing_sysctl(*_args: Any) -> int:
+            return -1
+
+        fake_failing = FakeSysctlByName()
+        fake_failing.__call__ = failing_sysctl  # type: ignore[method-assign]
+        monkeypatch.setattr(ctypes, "CDLL", lambda _name: types.SimpleNamespace())
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda cmd, **_kw: (
+                types.SimpleNamespace(stdout="8589934592\n")
+                if cmd == ("sysctl", "-n", "hw.memsize")
+                else types.SimpleNamespace(stdout="")
+            ),
+        )
+        assert qwen_engine.physical_ram_bytes() == 8 * 1024**3
+
+    def test_drain_stderr_buffers_raw_stream_and_handles_fakes(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        import io
+        import types
+
+        engine = start_engine(engines, tmp_path, "ok")
+
+        class CountingRawStream(io.RawIOBase):
+            def __init__(self, payload: bytes) -> None:
+                self._data = payload
+                self._pos = 0
+                self.read_calls = 0
+
+            def readable(self) -> bool:
+                return True
+
+            def readinto(self, b: Any) -> int:
+                self.read_calls += 1
+                remaining = len(self._data) - self._pos
+                if remaining <= 0:
+                    return 0
+                n = min(len(b), remaining)
+                b[:n] = self._data[self._pos : self._pos + n]
+                self._pos += n
+                return n
+
+        raw = CountingRawStream(b"first line of host log\nsecond line of host log\n")
+        engine._drain_stderr(types.SimpleNamespace(stderr=raw))  # type: ignore[arg-type]
+        assert "first line of host log" in engine.stderr_tail()
+        assert "second line of host log" in engine.stderr_tail()
+        # BufferedReader reads in chunks rather than 1-byte syscalls (which would be 47+ calls).
+        assert raw.read_calls <= 3
+
+        # Minimal fake stream without RawIOBase / BufferedIOBase continues working cleanly.
+        lines = iter([b"fake line\n", b""])
+        engine._drain_stderr(
+            types.SimpleNamespace(stderr=types.SimpleNamespace(readline=lambda: next(lines)))
+        )  # type: ignore[arg-type]
+        assert "fake line" in engine.stderr_tail()
+
+    def test_rss_sampling_runs_outside_settled_lock(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        lock_observations: list[bool] = []
+        engine: QwenEngine
+
+        def checking_footprint(_pid: int) -> int:
+            # Verify from another thread that engine._lock (backing _settled) is NOT held.
+            acquired = [False]
+
+            def probe() -> None:
+                got = engine._lock.acquire(blocking=False)
+                if got:
+                    acquired[0] = True
+                    engine._lock.release()
+
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join(timeout=2.0)
+            lock_observations.append(acquired[0])
+            return 100 * 1024 * 1024
+
+        engine = start_engine(engines, tmp_path, "ok", footprint=checking_footprint)
+        got = list(
+            engine.infer_stream_prefetched(
+                ["one", "two", "three"],
+                language="en",
+                speaker="Ryan",
+                job_ids=["r:1", "r:2", "r:3"],
+            )
+        )
+        assert [idx for idx, _chunk in got] == [0, 0, 1, 1, 2, 2]
+        assert len(lock_observations) >= 3  # baseline + pre-start + prefetch checks
+        assert all(lock_observations), f"RSS sampled while _settled held: {lock_observations}"
+
+    def test_windows_ctypes_uses_typed_local_windll(self, monkeypatch) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        import vienetts_app.core.qwen_engine as qwen_engine
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os, "name", "nt")
+
+        dlls: dict[str, Any] = {}
+        high_handle = (1 << 40) + 0x1234
+
+        class SpyFn:
+            def __init__(self, impl: Any) -> None:
+                self._impl = impl
+                self.argtypes: Any = None
+                self.restype: Any = None
+                self.calls: list[tuple[Any, ...]] = []
+
+            def __call__(self, *args: Any) -> Any:
+                self.calls.append(args)
+                return self._impl(*args)
+
+        def fake_windll(name: str, **_kwargs: Any) -> Any:
+            if name == "kernel32":
+                obj = type("FakeKernel32", (), {})()
+                obj.OpenProcess = SpyFn(lambda _a, _i, _p: high_handle)
+                obj.CloseHandle = SpyFn(lambda _h: 1)
+
+                def fake_mem_status(ptr: Any) -> int:
+                    ptr._obj.ullTotalPhys = 16 * 1024**3
+                    return 1
+
+                obj.GlobalMemoryStatusEx = SpyFn(fake_mem_status)
+                dlls["kernel32"] = obj
+                return obj
+            if name == "psapi":
+                obj = type("FakePsapi", (), {})()
+
+                def fake_get_mem(handle: Any, ptr: Any, _cb: Any) -> int:
+                    assert handle == high_handle
+                    ptr._obj.WorkingSetSize = 512 * 1024 * 1024
+                    return 1
+
+                obj.GetProcessMemoryInfo = SpyFn(fake_get_mem)
+                dlls["psapi"] = obj
+                return obj
+            raise AssertionError(f"unexpected WinDLL({name!r})")
+
+        monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+        # Ensure global ctypes.windll is not touched (absent on Linux anyway).
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+
+        assert qwen_engine.host_footprint(4242) == 512 * 1024 * 1024
+        k32 = dlls["kernel32"]
+        psapi = dlls["psapi"]
+        assert k32.OpenProcess.argtypes == [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        assert k32.OpenProcess.restype is wintypes.HANDLE
+        assert k32.CloseHandle.argtypes == [wintypes.HANDLE]
+        assert k32.CloseHandle.restype is wintypes.BOOL
+        assert k32.CloseHandle.calls == [(high_handle,)]
+        assert psapi.GetProcessMemoryInfo.argtypes == [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        assert psapi.GetProcessMemoryInfo.restype is wintypes.BOOL
+
+        assert qwen_engine.physical_ram_bytes() == 16 * 1024**3
+        assert dlls["kernel32"].GlobalMemoryStatusEx.argtypes == [ctypes.c_void_p]
+        assert dlls["kernel32"].GlobalMemoryStatusEx.restype is wintypes.BOOL

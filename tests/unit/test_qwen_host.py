@@ -1852,3 +1852,178 @@ class TestFrameLoop:
         harness.wait_for(has("hello"))
         harness.send_raw(b"\x00\x01\x00\x01")  # a header length past the protocol bound
         assert harness.finish() == 2
+
+
+class TestHostHardening:
+    def test_reader_thread_handles_oserror_and_valueerror_cleanly(self) -> None:
+        import io
+
+        class FailingReader:
+            def __init__(self, err: Exception) -> None:
+                self._err = err
+
+            def read(self, _count: int = -1) -> bytes:
+                raise self._err
+
+        def run_case(err: Exception) -> tuple[int, list[str]]:
+            events: list[str] = []
+            writer = io.BytesIO()
+            result: dict[str, Any] = {}
+            done = threading.Event()
+            reader = FailingReader(err)
+
+            def run() -> None:
+                try:
+                    result["code"] = serve(
+                        reader,
+                        writer,
+                        loader=lambda *_a, **_k: FakeQwenModel(),
+                        log=lambda event, **_f: events.append(event),
+                    )
+                finally:
+                    done.set()
+
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            assert done.wait(timeout=3.0), f"serve() hung when reader raised {type(err).__name__}"
+            return result["code"], events
+
+        for exc in (OSError("pipe closed"), ValueError("read of closed file")):
+            code, events = run_case(exc)
+            assert code == 0
+            assert "peer_closed" in events
+
+    def test_clone_prompt_cache_is_content_hashed_bounded_lru(self, tmp_path: Path) -> None:
+        from collections import OrderedDict
+
+        host, model = loaded_host(tmp_path, profile="base")
+        try:
+            assert isinstance(host._prompts, OrderedDict)
+            clip = tmp_path / "ref.wav"
+            clip.write_bytes(b"RIFF-version-1")
+            req = {
+                "language": "en",
+                "speaker": "",
+                "voicePrompt": str(clip),
+                "refText": "hello there",
+            }
+            assert run_synth(host, req, job="j1").terminal.get("status") == "ok"
+            assert run_synth(host, req, job="j2").terminal.get("status") == "ok"
+            assert len(model.prompt_calls) == 1
+
+            # In-place rewrite invalidates cached prompt via content digest.
+            clip.write_bytes(b"RIFF-version-2-edited")
+            assert run_synth(host, req, job="j3").terminal.get("status") == "ok"
+            assert len(model.prompt_calls) == 2
+
+            # Bounded LRU (max 8 entries): fill 8 distinct clips, touch clip 0 to make it MRU,
+            # then add a 9th clip and verify clip 1 (LRU) was evicted while clip 0 stayed.
+            host._prompts.clear()
+            model.prompt_calls.clear()
+            clips: list[Path] = []
+            for idx in range(9):
+                p = tmp_path / f"clip_{idx}.wav"
+                p.write_bytes(f"RIFF-clip-{idx}".encode())
+                clips.append(p)
+
+            for idx in range(8):
+                r = {
+                    "language": "en",
+                    "speaker": "",
+                    "voicePrompt": str(clips[idx]),
+                    "refText": f"text {idx}",
+                }
+                assert run_synth(host, r, job=f"fill-{idx}").terminal.get("status") == "ok"
+            assert len(host._prompts) == 8
+            assert len(model.prompt_calls) == 8
+
+            # Touch clip 0 (MRU) so clip 1 becomes LRU.
+            r0 = {
+                "language": "en",
+                "speaker": "",
+                "voicePrompt": str(clips[0]),
+                "refText": "text 0",
+            }
+            assert run_synth(host, r0, job="touch-0").terminal.get("status") == "ok"
+            assert len(model.prompt_calls) == 8  # cache hit
+
+            # Insert clip 8 -> evicts clip 1; cache size stays bounded at 8.
+            r8 = {
+                "language": "en",
+                "speaker": "",
+                "voicePrompt": str(clips[8]),
+                "refText": "text 8",
+            }
+            assert run_synth(host, r8, job="insert-8").terminal.get("status") == "ok"
+            assert len(host._prompts) == 8
+            assert len(model.prompt_calls) == 9
+
+            # Clip 0 is still cached; clip 1 was evicted and rebuilds.
+            assert run_synth(host, r0, job="check-0").terminal.get("status") == "ok"
+            assert len(model.prompt_calls) == 9
+            r1 = {
+                "language": "en",
+                "speaker": "",
+                "voicePrompt": str(clips[1]),
+                "refText": "text 1",
+            }
+            assert run_synth(host, r1, job="check-1").terminal.get("status") == "ok"
+            assert len(model.prompt_calls) == 10
+            assert len(host._prompts) == 8
+        finally:
+            host.close()
+
+    def test_heartbeats_sets_drained_in_finally_on_emit_error(self, monkeypatch) -> None:
+        import vienetts_app.workers.qwen_host as host_module
+
+        monkeypatch.setattr(host_module, "HEARTBEAT_SECONDS", 0.02)
+        errored = threading.Event()
+
+        def broken_emit(_frame: Frame) -> None:
+            errored.set()
+            raise BrokenPipeError("peer gone")
+
+        with host_module._heartbeats("job-1", broken_emit):
+            assert errored.wait(timeout=1.0), "heartbeat never fired"
+            exit_start = time.monotonic()
+        elapsed = time.monotonic() - exit_start
+        # Without drained.set() in finally, teardown blocks for HEARTBEAT_SECONDS + 1.0 (~1.02s).
+        assert elapsed < 0.4, f"_heartbeats teardown blocked for {elapsed:.2f}s"
+
+    def test_lower_process_priority_uses_typed_local_windll_on_windows(self, monkeypatch) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        monkeypatch.setattr(os, "name", "nt")
+        high_handle = (1 << 40) + 0x5678
+        recorded: dict[str, Any] = {}
+
+        class SpyFn:
+            def __init__(self, impl: Any) -> None:
+                self._impl = impl
+                self.argtypes: Any = None
+                self.restype: Any = None
+                self.calls: list[tuple[Any, ...]] = []
+
+            def __call__(self, *args: Any) -> Any:
+                self.calls.append(args)
+                return self._impl(*args)
+
+        def fake_windll(name: str, **_kwargs: Any) -> Any:
+            assert name == "kernel32"
+            obj = type("FakeKernel32", (), {})()
+            obj.GetCurrentProcess = SpyFn(lambda: high_handle)
+            obj.SetPriorityClass = SpyFn(lambda _h, _cls: 1)
+            recorded["kernel32"] = obj
+            return obj
+
+        monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+
+        assert lower_process_priority() is True
+        k32 = recorded["kernel32"]
+        assert k32.GetCurrentProcess.argtypes == []
+        assert k32.GetCurrentProcess.restype is wintypes.HANDLE
+        assert k32.SetPriorityClass.argtypes == [wintypes.HANDLE, wintypes.DWORD]
+        assert k32.SetPriorityClass.restype is wintypes.BOOL
+        assert k32.SetPriorityClass.calls == [(high_handle, 0x00004000)]

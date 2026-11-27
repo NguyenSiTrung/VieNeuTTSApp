@@ -189,10 +189,15 @@ def claim_frame_stdout() -> tuple[IO[bytes], Callable[[], None]]:
             # pipe. Point the process's real stdout handle at stderr too so
             # native logging lands there whichever route it takes.
             with contextlib.suppress(Exception):
-                import ctypes
-                import msvcrt
+                import ctypes  # noqa: PLC0415
+                import msvcrt  # noqa: PLC0415
+                from ctypes import wintypes  # noqa: PLC0415
 
-                ctypes.windll.kernel32.SetStdHandle(_STD_OUTPUT_HANDLE, msvcrt.get_osfhandle(2))
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                set_std_handle = kernel32.SetStdHandle
+                set_std_handle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+                set_std_handle.restype = wintypes.BOOL
+                set_std_handle(_STD_OUTPUT_HANDLE, msvcrt.get_osfhandle(2))
         with contextlib.suppress(Exception):
             sys.stdout = sys.stderr
 
@@ -509,11 +514,30 @@ class QwenGgufHost:
             raise QwenGgufHostError(
                 f"reference clip cannot be decoded: {exc}", code="unsupported_selection"
             ) from exc
-        if data.ndim != 1:
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0:
+            raise QwenGgufHostError(
+                f"reference clip has an invalid sample rate: {rate}",
+                code="unsupported_selection",
+            )
+        if data.ndim == 2:
             data = np.asarray(data.mean(axis=1), dtype=np.float32)
+        elif data.ndim != 1:
+            raise QwenGgufHostError(
+                "reference clip decoded to no usable audio", code="unsupported_selection"
+            )
+        if data.size == 0 or not np.all(np.isfinite(data)):
+            raise QwenGgufHostError(
+                "reference clip decoded to no usable audio", code="unsupported_selection"
+            )
         if rate != NATIVE_SAMPLE_RATE:
-            resampler = self._resampler_factory(rate, NATIVE_SAMPLE_RATE)
-            data = np.concatenate([resampler.push(data), resampler.flush()])
+            try:
+                resampler = self._resampler_factory(rate, NATIVE_SAMPLE_RATE)
+                data = np.concatenate([resampler.push(data), resampler.flush()])
+            except ValueError as exc:
+                raise QwenGgufHostError(
+                    f"reference clip cannot be resampled: {exc}",
+                    code="unsupported_selection",
+                ) from exc
         if data.size == 0 or not np.all(np.isfinite(data)):
             raise QwenGgufHostError(
                 "reference clip decoded to no usable audio", code="unsupported_selection"
@@ -859,6 +883,9 @@ def serve(
                 return
             except ProtocolError as exc:
                 inbox.put(exc)
+                return
+            except (OSError, ValueError):
+                inbox.put(None)
                 return
             # The reader validates but does NOT accept: SessionState ordering is
             # applied at dispatch so a pipelined load→synthesize can't mark the

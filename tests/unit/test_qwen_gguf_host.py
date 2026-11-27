@@ -1150,3 +1150,146 @@ def test_serve_round_trips_load_synthesize_and_shutdown(tmp_path: Path) -> None:
     assert "pcm" in writer_types
     terminal = next(f for f in replies if f.type == "terminal")
     assert terminal.fields["status"] == "ok"
+
+
+# --- hardening: source_clip validation, reader resilience, Windows ctypes -----
+
+
+def test_source_clip_validates_rate_size_and_finiteness_before_resampling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import vienetts_app.workers.qwen_gguf_host as gguf_host
+    from vienetts_app.workers.qwen_gguf_host import QwenGgufHostError
+
+    resampler_calls: list[tuple[int, int]] = []
+
+    def spy_resampler(src: int, dst: int) -> Any:
+        resampler_calls.append((src, dst))
+        raise ValueError(f"unsupported rate pair {src}->{dst}")
+
+    lib = FakeQwenLib(model_type="base", speakers=())
+    host = QwenGgufHost(
+        session_factory=lambda runtime_dir: NativeQwenSession(
+            str(Path(runtime_dir) / "libqwen.so"), lib=lib
+        ),
+        log=lambda *_a, **_k: None,
+        isolate_stdout=lambda: None,
+        resampler_factory=spy_resampler,
+    )
+    host.load(_load_fields(tmp_path, profile="base"))
+
+    bad_cases = [
+        ("zero_rate", (tone(128), 0)),
+        ("neg_rate", (tone(128), -24_000)),
+        ("empty_48k", (np.zeros(0, dtype=np.float32), 48_000)),
+        ("nan_48k", (np.array([0.1, np.nan, 0.2], dtype=np.float32), 48_000)),
+        ("inf_48k", (np.array([0.1, np.inf, 0.2], dtype=np.float32), 48_000)),
+    ]
+    for name, decoded in bad_cases:
+        resampler_calls.clear()
+        clip = tmp_path / f"{name}.wav"
+        clip.write_bytes(f"RIFF-{name}".encode())
+        monkeypatch.setattr(gguf_host, "_read_reference_clip", lambda _raw, d=decoded: d)
+        with pytest.raises(QwenGgufHostError) as failure:
+            host._source_clip(str(clip))
+        assert failure.value.code == "unsupported_selection", name
+        assert resampler_calls == [], f"resampler called on invalid input {name}"
+
+    # A ValueError from resampling itself is also mapped cleanly to QwenGgufHostError.
+    clip = tmp_path / "bad_resample.wav"
+    clip.write_bytes(b"RIFF-bad-resample")
+    monkeypatch.setattr(gguf_host, "_read_reference_clip", lambda _raw: (tone(128), 48_000))
+    with pytest.raises(QwenGgufHostError) as failure:
+        host._source_clip(str(clip))
+    assert failure.value.code == "unsupported_selection"
+    assert resampler_calls == [(48_000, 24_000)]
+
+
+def test_gguf_serve_reader_handles_oserror_and_valueerror_cleanly() -> None:
+    import io
+
+    class FailingReader:
+        def __init__(self, err: Exception) -> None:
+            self._err = err
+
+        def read(self, _count: int = -1) -> bytes:
+            raise self._err
+
+    def run_case(err: Exception) -> tuple[int, list[str]]:
+        events: list[str] = []
+        writer = io.BytesIO()
+        result: dict[str, Any] = {}
+        done = threading.Event()
+        reader = FailingReader(err)
+
+        def run() -> None:
+            try:
+                result["code"] = serve(
+                    reader,
+                    writer,
+                    session_factory=lambda runtime_dir: NativeQwenSession(
+                        str(Path(runtime_dir) / "libqwen.so"), lib=FakeQwenLib()
+                    ),
+                    log=lambda event, **_f: events.append(event),
+                    isolate_stdout=lambda: None,
+                )
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        assert done.wait(timeout=3.0), f"serve() hung when reader raised {type(err).__name__}"
+        return result["code"], events
+
+    for exc in (OSError("broken pipe"), ValueError("read of closed file")):
+        code, events = run_case(exc)
+        assert code == 0
+        assert "peer_closed" in events
+
+
+def test_claim_frame_stdout_uses_typed_local_windll_on_windows(monkeypatch) -> None:
+    import io
+    import sys
+    import types
+    from ctypes import wintypes
+
+    from vienetts_app.workers.qwen_gguf_host import _STD_OUTPUT_HANDLE, claim_frame_stdout
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(os, "dup", lambda fd: fd)
+    monkeypatch.setattr(os, "fdopen", lambda _fd, *_a, **_k: io.BytesIO())
+    monkeypatch.setattr(os, "dup2", lambda _src, _dst: None)
+    high_handle = (1 << 40) + 0x9999
+    monkeypatch.setitem(
+        sys.modules, "msvcrt", types.SimpleNamespace(get_osfhandle=lambda _fd: high_handle)
+    )
+
+    recorded: dict[str, Any] = {}
+
+    class SpyFn:
+        def __init__(self) -> None:
+            self.argtypes: Any = None
+            self.restype: Any = None
+            self.calls: list[tuple[Any, ...]] = []
+
+        def __call__(self, *args: Any) -> int:
+            self.calls.append(args)
+            return 1
+
+    def fake_windll(name: str, **_kwargs: Any) -> Any:
+        assert name == "kernel32"
+        obj = type("FakeKernel32", (), {})()
+        obj.SetStdHandle = SpyFn()
+        recorded["kernel32"] = obj
+        return obj
+
+    monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+    monkeypatch.delattr(ctypes, "windll", raising=False)
+
+    _writer, isolate = claim_frame_stdout()
+    isolate()
+    k32 = recorded["kernel32"]
+    assert k32.SetStdHandle.argtypes == [wintypes.DWORD, wintypes.HANDLE]
+    assert k32.SetStdHandle.restype is wintypes.BOOL
+    assert k32.SetStdHandle.calls == [(_STD_OUTPUT_HANDLE, high_handle)]

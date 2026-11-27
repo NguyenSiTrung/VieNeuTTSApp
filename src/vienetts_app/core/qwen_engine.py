@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import io
 import itertools
 import logging
 import os
@@ -89,17 +90,64 @@ _BATCH_TIER_FULL_BYTES = 16 * _GIB
 _BATCH_TIER_REDUCED_BYTES = 8 * _GIB
 
 
+def _darwin_physical_ram_bytes() -> int | None:
+    """Total physical RAM on macOS via ``sysctlbyname("hw.memsize")``."""
+    try:
+        libc = ctypes.CDLL(None)
+        sysctlbyname = libc.sysctlbyname
+        sysctlbyname.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        sysctlbyname.restype = ctypes.c_int
+        memsize = ctypes.c_uint64(0)
+        size = ctypes.c_size_t(ctypes.sizeof(memsize))
+        if (
+            sysctlbyname(
+                b"hw.memsize",
+                ctypes.byref(memsize),
+                ctypes.byref(size),
+                None,
+                0,
+            )
+            == 0
+            and memsize.value > 0
+        ):
+            return int(memsize.value)
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        output = subprocess.run(
+            ("sysctl", "-n", "hw.memsize"),
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        ).stdout.strip()
+        if output:
+            value = int(output.split()[0])
+            if value > 0:
+                return value
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def physical_ram_bytes() -> int | None:
     """Total physical RAM in bytes, best effort — ``None`` when undetectable."""
     try:
         if sys.platform == "darwin":
-            return int(os.sysconf("HW_MEMSIZE"))
+            return _darwin_physical_ram_bytes()
         if sys.platform.startswith("linux"):
             for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
                 if line.startswith("MemTotal:"):
                     return int(line.split()[1]) * 1024
             return None
         if os.name == "nt":
+            from ctypes import wintypes  # noqa: PLC0415
 
             class _MemoryStatusEx(ctypes.Structure):
                 _fields_ = [
@@ -114,9 +162,13 @@ def physical_ram_bytes() -> int | None:
                     ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
                 ]
 
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            global_memory_status_ex = kernel32.GlobalMemoryStatusEx
+            global_memory_status_ex.argtypes = [ctypes.c_void_p]
+            global_memory_status_ex.restype = wintypes.BOOL
             status = _MemoryStatusEx()
             status.dwLength = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            if global_memory_status_ex(ctypes.byref(status)):
                 return int(status.ullTotalPhys)
             return None
     except (OSError, ValueError, AttributeError):
@@ -149,6 +201,7 @@ def host_footprint(pid: int) -> int | None:
         return _procfs_footprint(pid)
     try:
         if os.name == "nt":
+            from ctypes import wintypes  # noqa: PLC0415
 
             class _ProcessMemoryCounters(ctypes.Structure):
                 _fields_ = [
@@ -164,20 +217,34 @@ def host_footprint(pid: int) -> int | None:
                     ("PeakPagefileUsage", ctypes.c_size_t),
                 ]
 
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x0400, False, int(pid))  # PROCESS_QUERY_INFORMATION
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            open_process = kernel32.OpenProcess
+            open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            open_process.restype = wintypes.HANDLE
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            get_process_memory_info = psapi.GetProcessMemoryInfo
+            get_process_memory_info.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            get_process_memory_info.restype = wintypes.BOOL
+
+            handle = open_process(0x0400, False, int(pid))  # PROCESS_QUERY_INFORMATION
             if not handle:
                 return None
             counters = _ProcessMemoryCounters()
             counters.cb = ctypes.sizeof(counters)
             try:
-                if not ctypes.windll.psapi.GetProcessMemoryInfo(
-                    handle, ctypes.byref(counters), counters.cb
-                ):
+                if not get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
                     return None
                 return int(counters.WorkingSetSize)
             finally:
-                kernel32.CloseHandle(handle)
+                close_handle(handle)
         output = subprocess.run(
             ("ps", "-o", "rss=", "-p", str(int(pid))),
             capture_output=True,
@@ -603,6 +670,8 @@ class QwenEngine:
         self._last_frame_ns = 0.0
         self._cancel_requests: dict[str, bool] = {}
         self._force_cancelled: set[str] = set()
+        self._live_jobs: set[str] = set()
+        self._cancelling: set[str] = set()
         self._footprint = footprint if footprint is not None else host_footprint
         self._rss_growth_recycle_bytes = int(rss_growth_recycle_bytes)
         self._rss_baseline: int | None = None
@@ -775,62 +844,106 @@ class QwenEngine:
                 with self._settled:
                     sequence.current = index
                     started = index in sequence.sent
-                    if started:
-                        self._prefetch_next(sequence)
+                    generation = self._generation
+                    can_prefetch = started and self._can_prefetch(sequence)
+                if can_prefetch:
+                    self._try_prefetch_next(sequence, generation)
                 if not started:
-                    self._start_sequence_job(sequence, index)
+                    generation = self._start_sequence_job(sequence, index)
                 elif sequence.stopped:
                     raise QwenEngineCancelled(f"the Qwen job {frame.job} was cancelled")
-                for _segment, chunk in self._stream_job(frame.job, on_progress, self._generation):
+                for _segment, chunk in self._stream_job(frame.job, on_progress, generation):
                     yield index, chunk
         finally:
             with self._settled:
+                generation = self._generation
                 sequence.stopped = True
                 if self._sequence is sequence:
                     self._sequence = None
                 running = [job for job in sequence.index_of if job in self._session.active]
                 for job in sequence.index_of:
+                    self._live_jobs.discard(job)
                     self._cancel_requests.pop(job, None)
                     self._force_cancelled.discard(job)
             for job in running:
                 # Abandoned mid-job, or a prefetched job the caller never
-                # reached: stop the host's work as well.
-                with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
-                    self._send(Frame(type="cancel", job=job))
+                # reached: cancel and settle (or abort on timeout).
+                self._settle_active_job(
+                    job, generation, reason=f"abandoned job {job} would not stop"
+                )
+            with self._settled:
+                for job in sequence.index_of:
+                    self._force_cancelled.discard(job)
+                    self._cancelling.discard(job)
+                if generation == self._generation and (not self._session.active or not self._ready):
+                    self._drain_inbox()
 
-    def _start_sequence_job(self, sequence: _LiveSequence, index: int) -> None:
+    def _start_sequence_job(self, sequence: _LiveSequence, index: int) -> int:
         """Start a segment nobody prefetched — :meth:`_run_job`'s start path."""
         job = sequence.frames[index].job
         self._refuse_cancelled_job(job)
         self._ensure_ready()
+        self._settle_stale_active_jobs()
         self._recycle_if_bloated()
         self._refuse_cancelled_job(job)
         with self._settled:
             if sequence.stopped:
                 raise QwenEngineCancelled(f"the Qwen job {job} was cancelled before it started")
+            if not self._session.active:
+                self._drain_inbox()
             try:
                 self._send(sequence.frames[index])
             except ProtocolError as exc:
                 raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
             sequence.sent.add(index)
+            self._live_jobs.add(job)
+            return self._generation
 
-    def _prefetch_next(self, sequence: _LiveSequence) -> None:
-        """Send the segment after ``current`` when it is due. Caller holds the lock."""
+    def _can_prefetch(self, sequence: _LiveSequence) -> bool:
+        """Whether the segment after ``current`` is eligible for prefetch. Caller holds lock."""
         index = sequence.current + 1
-        if (
+        return not (
             sequence.stopped
+            or self._sequence is not sequence
             or index >= len(sequence.frames)
             or index in sequence.sent
             or sequence.current not in sequence.done
             or not self._ready
-            or self._bloat() is not None
-        ):
-            return
-        try:
-            self._send(sequence.frames[index])
-        except (QwenEngineError, ProtocolError):
-            return  # the consumer starts it itself and surfaces the failure
-        sequence.sent.add(index)
+        )
+
+    def _try_prefetch_next(self, sequence: _LiveSequence, generation: int) -> None:
+        """Sample RSS outside ``self._settled``, then send the next segment if healthy."""
+        with self._settled:
+            if generation != self._generation or not self._can_prefetch(sequence):
+                return
+            process = self._process
+            check_bloat = (
+                self._rss_growth_recycle_bytes > 0
+                and self._rss_baseline is not None
+                and process is not None
+            )
+            pid = process.pid if check_bloat and process is not None else None
+        current = self._sample_footprint_for(pid) if pid is not None else None
+        with self._settled:
+            if generation != self._generation or not self._can_prefetch(sequence):
+                return
+            if (
+                current is not None
+                and self._rss_growth_recycle_bytes > 0
+                and self._rss_baseline is not None
+                and current - self._rss_baseline >= self._rss_growth_recycle_bytes
+            ):
+                return
+            if self._session.active:
+                return
+            index = sequence.current + 1
+            frame = sequence.frames[index]
+            try:
+                self._send(frame)
+            except (QwenEngineError, ProtocolError):
+                return  # the consumer starts it itself and surfaces the failure
+            sequence.sent.add(index)
+            self._live_jobs.add(frame.job)
 
     @staticmethod
     def _add_voice_fields(
@@ -852,26 +965,83 @@ class QwenEngine:
         """Send one synthesize frame and stream its job; shared lifecycle."""
         self._refuse_cancelled_job(job)
         self._ensure_ready()
+        self._settle_stale_active_jobs()
         self._recycle_if_bloated()
         # Re-checked after the (possibly minutes-long) lazy load: a cancel
         # that landed while the model loaded must not start a generation.
         self._refuse_cancelled_job(job)
-        generation = self._generation
-        try:
-            self._send(frame)
-        except ProtocolError as exc:
-            raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
+        with self._settled:
+            generation = self._generation
+            if not self._session.active:
+                self._drain_inbox()
+            try:
+                self._send(frame)
+            except ProtocolError as exc:
+                raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
+            self._live_jobs.add(job)
         try:
             yield from self._stream_job(job, on_progress, generation)
         finally:
             with self._settled:
                 self._cancel_requests.pop(job, None)
-                abandoned = job in self._session.active
+                self._live_jobs.discard(job)
+                abandoned = generation == self._generation and job in self._session.active
                 self._force_cancelled.discard(job)
             if abandoned:
-                # The caller stopped iterating: stop the host's work as well.
-                with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
-                    self._send(Frame(type="cancel", job=job))
+                # The caller stopped iterating: cancel and settle (or abort on timeout).
+                self._settle_active_job(
+                    job, generation, reason=f"abandoned job {job} would not stop"
+                )
+            with self._settled:
+                self._force_cancelled.discard(job)
+                self._cancelling.discard(job)
+                if generation == self._generation and (not self._session.active or not self._ready):
+                    self._drain_inbox()
+
+    def _settle_active_job(self, job: str, generation: int, *, reason: str) -> None:
+        """Cancel one active job and wait for settlement, aborting the host on timeout."""
+        with self._settled:
+            if generation != self._generation or not self._ready or job not in self._session.active:
+                return
+            need_send = job not in self._cancelling
+            self._cancelling.add(job)
+        if need_send:
+            with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
+                self._send_for_generation(generation, Frame(type="cancel", job=job))
+        if self._wait_cancelled(job, generation):
+            return
+        with self._settled:
+            if generation != self._generation or not self.is_initialized:
+                return
+            self._force_cancelled.add(job)
+        self._abort_host(generation, reason)
+
+    def _settle_stale_active_jobs(self) -> None:
+        """Cancel and settle orphaned or cancelled active jobs before a new send."""
+        with self._settled:
+            generation = self._generation
+            stale = [
+                active_job
+                for active_job in self._session.active
+                if active_job not in self._live_jobs
+                or active_job in self._cancelling
+                or active_job in self._cancel_requests
+            ]
+        if not stale:
+            return
+        for active_job in stale:
+            self._settle_active_job(
+                active_job,
+                generation,
+                reason=f"previous job {active_job} did not settle before next job",
+            )
+        with self._settled:
+            for active_job in stale:
+                self._force_cancelled.discard(active_job)
+                self._cancelling.discard(active_job)
+            if generation == self._generation and (not self._session.active or not self._ready):
+                self._drain_inbox()
+        self._ensure_ready()
 
     def _refuse_cancelled_job(self, job: str) -> None:
         """Refuse to start a job whose cancel arrived before its frame was sent.
@@ -898,6 +1068,7 @@ class QwenEngine:
         """
         job = str(job_id)
         with self._settled:
+            generation = self._generation
             self._remember_cancel(job)
             sequence = self._sequence
             if sequence is not None and job in sequence.index_of:
@@ -908,23 +1079,28 @@ class QwenEngine:
                 job = running[0] if running else job
                 self._remember_cancel(job)
             active = job in self._session.active
+            need_send = False
+            if active:
+                need_send = job not in self._cancelling
+                self._cancelling.add(job)
         if not active:
             return False
         self._log.debug("requesting a Qwen host cancel for job %s", job)
-        with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
-            self._send(Frame(type="cancel", job=job))
-        if self._wait_cancelled(job):
+        if need_send:
+            with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
+                self._send_for_generation(generation, Frame(type="cancel", job=job))
+        if self._wait_cancelled(job, generation):
             return True
-        if not self.is_initialized:
-            return True  # the host died on its own; the job is over either way
+        with self._settled:
+            if generation != self._generation or not self.is_initialized:
+                return True  # the host died or was respawned; the job is over either way
+            self._force_cancelled.add(job)
         self._log.warning(
             "the Qwen host did not stop job %s within %.1fs; terminating it",
             job,
             self._cancel_timeout,
         )
-        with self._settled:
-            self._force_cancelled.add(job)
-        self._abort_host(self._generation, f"job {job} would not stop")
+        self._abort_host(generation, f"job {job} would not stop")
         return True
 
     def close(self) -> None:
@@ -938,12 +1114,13 @@ class QwenEngine:
             for job in self._session.active:
                 self._force_cancelled.add(job)  # a shutdown is a cancel for that job
             self._ready = False
+            self._settled.notify_all()
         if not busy and process.poll() is None:
             with contextlib.suppress(QwenEngineError, ProtocolError, OSError, ValueError):
                 self._send(Frame(type="shutdown"))
-            self._wait_exit(self._shutdown_timeout)
+            self._wait_exit(self._shutdown_timeout, process)
         if process.poll() is None:
-            self._terminate_process()
+            self._terminate_process(process)
         self._join_threads()
         self._close_pipes()
         self._process = None
@@ -984,25 +1161,36 @@ class QwenEngine:
 
     # -- lifecycle internals ------------------------------------------------ #
 
-    def _sample_footprint(self) -> int | None:
-        """The host's current RSS in bytes; ``None`` when it cannot be known."""
-        process = self._process
-        if process is None:
-            return None
+    def _sample_footprint_for(self, pid: int) -> int | None:
+        """Sample ``pid``'s RSS outside ``self._settled``; ``None`` when unknown."""
         try:
-            return self._footprint(process.pid)
+            return self._footprint(pid)
         except Exception:  # noqa: BLE001 — a sampler failure must never fail a job
             return None
 
+    def _sample_footprint(self) -> int | None:
+        """The host's current RSS in bytes; ``None`` when it cannot be known."""
+        with self._settled:
+            process = self._process
+            pid = process.pid if process is not None else None
+        if pid is None:
+            return None
+        return self._sample_footprint_for(pid)
+
     def _bloat(self) -> tuple[int, int] | None:
         """``(footprint, growth)`` once the host outgrew its baseline, else ``None``."""
-        if self._rss_growth_recycle_bytes <= 0 or self._rss_baseline is None:
+        with self._settled:
+            threshold = self._rss_growth_recycle_bytes
+            baseline = self._rss_baseline
+            process = self._process
+            pid = process.pid if process is not None else None
+        if threshold <= 0 or baseline is None or pid is None:
             return None
-        current = self._sample_footprint()
+        current = self._sample_footprint_for(pid)
         if current is None:
             return None
-        growth = current - self._rss_baseline
-        if growth < self._rss_growth_recycle_bytes:
+        growth = current - baseline
+        if growth < threshold:
             return None
         return current, growth
 
@@ -1058,14 +1246,18 @@ class QwenEngine:
         return None
 
     def _spawn(self) -> None:
-        self._session = SessionState("parent")
-        self._stderr.clear()
-        self._ready = False
-        self._last_error = None
-        self._last_frame_ns = time.monotonic()
-        self._drain_inbox()
-        self._generation += 1
-        generation = self._generation
+        with self._settled:
+            self._session = SessionState("parent")
+            self._stderr.clear()
+            self._ready = False
+            self._last_error = None
+            self._last_frame_ns = time.monotonic()
+            self._live_jobs.clear()
+            self._cancelling.clear()
+            self._drain_inbox()
+            self._generation += 1
+            generation = self._generation
+            self._settled.notify_all()
         command = list(self._command) if self._command is not None else self._host_command()
         environment = self._host_environment()
         creationflags = 0
@@ -1120,6 +1312,7 @@ class QwenEngine:
                     generation, f"the Qwen model host sent malformed output: {exc}"
                 )
                 return
+            prefetch_sequence: _LiveSequence | None = None
             with self._settled:
                 if generation != self._generation:
                     return  # a previous host's reader must not touch the new session
@@ -1134,35 +1327,54 @@ class QwenEngine:
                         generation, f"the Qwen model host violated the protocol: {exc}"
                     )
                     return
+                self._inbox.put(frame)
                 if frame.type == "terminal":
+                    self._cancelling.discard(frame.job)
                     self._settled.notify_all()
-                    self._inbox.put(frame)
-                    self._settle_sequence_job(frame)
-                    continue
-            self._inbox.put(frame)
+                    prefetch_sequence = self._record_sequence_done(frame)
+            if prefetch_sequence is not None:
+                self._try_prefetch_next(prefetch_sequence, generation)
 
-    def _settle_sequence_job(self, frame: Frame) -> None:
-        """Prefetch on an ``ok`` terminal of the live sequence. Caller holds the lock."""
+    def _record_sequence_done(self, frame: Frame) -> _LiveSequence | None:
+        """Record an ``ok`` terminal on the live sequence; return it when prefetch is due.
+
+        Caller holds ``self._settled``.
+        """
         sequence = self._sequence
         if sequence is None or frame.get("status") != "ok":
-            return
+            return None
         index = sequence.index_of.get(frame.job)
         if index is None:
-            return
+            return None
         sequence.done.add(index)
-        self._prefetch_next(sequence)
+        return sequence if self._can_prefetch(sequence) else None
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         stream = process.stderr
         if stream is None:
             return
-        for raw in iter(stream.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
-            if not line:
-                continue
-            with self._settled:
-                self._stderr.append(line)
-            self._log.debug("qwen host: %s", line)
+        buffered: io.BufferedReader | None = None
+        if isinstance(stream, io.RawIOBase) and not isinstance(stream, io.BufferedIOBase):
+            buffered = io.BufferedReader(stream)
+            reader: Any = buffered
+        else:
+            reader = stream
+        try:
+            for raw in iter(reader.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip()
+                if not line:
+                    continue
+                with self._settled:
+                    self._stderr.append(line)
+                self._log.debug("qwen host: %s", line)
+        except (OSError, ValueError):
+            return
+        finally:
+            if buffered is not None:
+                detach = getattr(buffered, "detach", None)
+                if callable(detach):
+                    with contextlib.suppress(OSError, ValueError):
+                        detach()
 
     def _publish_closed(self, generation: int, reason: str) -> None:
         with self._settled:
@@ -1173,42 +1385,46 @@ class QwenEngine:
             self._settled.notify_all()
 
     def _drain_inbox(self) -> None:
-        while True:
-            try:
-                self._inbox.get_nowait()
-            except queue.Empty:
-                return
+        with self._settled:
+            while True:
+                try:
+                    self._inbox.get_nowait()
+                except queue.Empty:
+                    return
 
     def _mark_dead(self, generation: int) -> None:
         with self._settled:
             if generation == self._generation:
                 self._ready = False
+                self._settled.notify_all()
 
     def _abort_host(self, generation: int, reason: str) -> None:
         with self._settled:
             if generation != self._generation:
                 return
             self._ready = False
+            process = self._process
+            self._settled.notify_all()
         self._log.warning("stopping the Qwen model host: %s", reason)
-        self._terminate_process()
+        self._terminate_process(process)
 
-    def _terminate_process(self) -> None:
-        process = self._process
-        if process is None or process.poll() is not None:
+    def _terminate_process(self, process: subprocess.Popen[bytes] | None = None) -> None:
+        target = self._process if process is None else process
+        if target is None or target.poll() is not None:
             return
         with contextlib.suppress(OSError):
-            process.terminate()
-        if not self._wait_exit(self._kill_timeout):
+            target.terminate()
+        if not self._wait_exit(self._kill_timeout, target):
             with contextlib.suppress(OSError):
-                process.kill()
-            self._wait_exit(self._kill_timeout)
+                target.kill()
+            self._wait_exit(self._kill_timeout, target)
 
-    def _wait_exit(self, timeout: float) -> bool:
-        process = self._process
-        if process is None:
+    def _wait_exit(self, timeout: float, process: subprocess.Popen[bytes] | None = None) -> bool:
+        target = self._process if process is None else process
+        if target is None:
             return True
         try:
-            process.wait(timeout=timeout)
+            target.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             return False
         except OSError:
@@ -1258,6 +1474,13 @@ class QwenEngine:
                 _write_frame_safely(process.stdin, frame)
             except (OSError, ValueError) as exc:
                 raise QwenEngineError(f"the Qwen model host is unreachable: {exc}") from exc
+
+    def _send_for_generation(self, generation: int, frame: Frame) -> None:
+        """Send ``frame`` only if ``generation`` is still the active host generation."""
+        with self._settled:
+            if generation != self._generation:
+                return
+            self._send(frame)
 
     def _take(self, timeout: float, generation: int, what: str, job: str = "") -> Frame:
         """Wait for the next host frame, or fail the host and raise."""
@@ -1311,6 +1534,14 @@ class QwenEngine:
     ) -> Iterator[tuple[int, np.ndarray]]:
         while True:
             frame = self._take(self._frame_timeout, generation, "synthesizing", job=job)
+            if frame.job and frame.job != job:
+                self._log.debug(
+                    "discarding %s frame for job %s while streaming job %s",
+                    frame.type,
+                    frame.job,
+                    job,
+                )
+                continue
             if frame.type == "pcm":
                 yield (
                     int(frame.get("segment", 0)),
@@ -1350,7 +1581,7 @@ class QwenEngine:
         with self._settled:
             return self._cancel_requests.pop(job, None) is not None
 
-    def _wait_cancelled(self, job: str) -> bool:
+    def _wait_cancelled(self, job: str, generation: int | None = None) -> bool:
         """Wait for the cancelled job to settle; ``False`` when the host must die.
 
         ``generate_*`` is uninterruptible: a busy host settles the cancel when
@@ -1360,19 +1591,24 @@ class QwenEngine:
         means hung whatever the wall clock says, and ``cancel_grace_timeout``
         is the hard ceiling for a host that keeps beating but never settles.
         """
-        deadline = time.monotonic() + self._cancel_grace_timeout
+        started = time.monotonic()
+        deadline = started + self._cancel_grace_timeout
         poll = max(0.02, self._cancel_timeout / 4.0)
         with self._settled:
+            expected_generation = self._generation if generation is None else generation
             while job not in self._session.settled:
+                if self._generation != expected_generation:
+                    return True  # host replaced; the old job is already gone
                 if not self._ready:
                     break  # the host is gone; the job will never settle
                 now = time.monotonic()
                 if now >= deadline:
                     return False  # beating but never settling: hard ceiling
-                if self._last_frame_ns and now - self._last_frame_ns >= self._cancel_timeout:
+                last_activity = max(self._last_frame_ns, started)
+                if now - last_activity >= self._cancel_timeout:
                     return False  # silent: hung, not busy
                 self._settled.wait(min(poll, max(0.0, deadline - now)))
-            return job in self._session.settled
+            return self._generation != expected_generation or job in self._session.settled
 
     def _tail_suffix(self) -> str:
         tail = self.stderr_tail()

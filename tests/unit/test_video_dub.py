@@ -17,6 +17,8 @@ from vienetts_app.core import video_dub
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.video_dub import (
     VideoDubError,
+    VideoInfo,
+    _ass_escape,
     build_burn_ass,
     dub_overrun_ms,
     extract_video_audio,
@@ -26,6 +28,7 @@ from vienetts_app.core.video_dub import (
     merge_duck_spans,
     mux_dubbed_video,
     probe_has_audio_stream,
+    probe_video_info,
     resolve_ffmpeg,
     resolve_ffprobe,
     supports_soft_subtitles,
@@ -81,14 +84,17 @@ def _install_stub_ffprobe(data_dir: Path, *, duration_s: float) -> Path:
     stub = bin_dir / "ffprobe"
     stub.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import json, sys\n"
         "args = sys.argv[1:]\n"
         "if 'stream=index' in args:\n"
         "    print('1')\n"
         "elif 'default=nw=1:nk=1' in args:\n"
         f"    print('{duration_s:.6f}')\n"
         "else:\n"
-        f"    print('width=160\\nheight=90\\npix_fmt=yuv420p\\nduration={duration_s:.6f}')\n",
+        "    print(json.dumps({\n"
+        "        'streams': [{'width': 160, 'height': 90, 'pix_fmt': 'yuv420p'}],\n"
+        f"        'format': {{'duration': '{duration_s:.6f}'}},\n"
+        "    }))\n",
         encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -576,8 +582,12 @@ def test_burn_ass_style_scales_with_frame_and_caps_lines() -> None:
 
 
 def test_burn_ass_escapes_text_libass_would_misread() -> None:
-    """Braces and ``-->`` in cue text must not be consumed or re-parsed."""
-    script = build_burn_ass([(0, 1_000, "A --> B {thẻ} \\N test")], width=1280, height=720)
+    """FR-4.4: braces, ``-->``, and backslashes stay literal in ASS dialogue lines."""
+    script = build_burn_ass(
+        [(0, 1_000, r"A --> B {thẻ} \N \n \h {\pos(10,20)} test")],
+        width=1280,
+        height=720,
+    )
     event = next(ln for ln in script.splitlines() if ln.startswith("Dialogue:"))
     body = event.split(",,")[-1]
     # Braces are escaped so libass draws them instead of eating the block.
@@ -586,8 +596,176 @@ def test_burn_ass_escapes_text_libass_would_misread() -> None:
     # this line as a new cue header (which silently dropped the whole cue).
     assert "-\u200b->" in body
     assert " --> " not in body
-    # A literal backslash from the user is doubled, not interpreted as \N.
-    assert "\\\\N" in body
+    # User backslashes get a WORD JOINER (U+2060) BEFORE brace escaping so
+    # libass never treats \N, \n, \h, or \pos(...) as ASS escapes.
+    assert "\\\u2060N" in body
+    assert "\\\u2060n" in body
+    assert "\\\u2060h" in body
+    assert "\\{\\\u2060pos(10,20)\\}" in body
+    assert "\\N" not in body
+    assert "\\n" not in body
+    assert "\\h" not in body
+    # A user backslash directly before a brace still leaves the brace escaped.
+    assert _ass_escape(r"\{x}") == "\\\u2060\\{x\\}"
+
+    # Wrapped multi-line cues still emit real ASS ``\N`` breaks between lines
+    # while escaping any literal ``\N`` inside the user's text.
+    wrapped = build_burn_ass(
+        [(0, 1_000, r"đây là một câu phụ đề rất dài có chữ \N ở giữa để xuống dòng tự động")],
+        width=480,
+        height=854,
+    )
+    wrapped_event = next(ln for ln in wrapped.splitlines() if ln.startswith("Dialogue:"))
+    wrapped_body = wrapped_event.split(",,")[-1]
+    assert "\\\u2060N" in wrapped_body
+    assert "\\N" in wrapped_body
+
+
+def test_probe_video_info_rotation_and_resilience(tmp_path: Path) -> None:
+    """FR-4.4 / AC-6: Display Matrix rotation (and ``rotate`` tag fallback) swaps
+    width/height for ±90°/270° portrait clips, and malformed probe output never raises.
+    """
+    video = tmp_path / "portrait.mp4"
+    video.write_bytes(b"stub")
+
+    def run_probe(payload: str, *, returncode: int = 0) -> tuple[VideoInfo, list[str]]:
+        data_dir = tmp_path / f"d_{abs(hash((payload, returncode))) % 10**9}"
+        bin_dir = data_dir / "runtimes" / "ffmpeg" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        argv_file = data_dir / "argv.json"
+        stub = bin_dir / "ffprobe"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"open({str(argv_file)!r}, 'w', encoding='utf-8').write(json.dumps(sys.argv[1:]))\n"
+            f"sys.stdout.write({payload!r})\n"
+            f"sys.exit({returncode})\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        info = probe_video_info(video, data_dir=data_dir)
+        argv = json.loads(argv_file.read_text(encoding="utf-8"))
+        return info, argv
+
+    # Display Matrix ±90° and ±270° swap stored 1920x1080 into portrait 1080x1920.
+    for angle in (-90, 90, -270, 270, "-90"):
+        payload = json.dumps(
+            {
+                "streams": [
+                    {
+                        "width": 1920,
+                        "height": 1080,
+                        "pix_fmt": "yuv420p",
+                        "tags": {},
+                        "side_data_list": [
+                            {"side_data_type": "Display Matrix", "rotation": angle},
+                        ],
+                    }
+                ],
+                "format": {"duration": "12.500000"},
+            }
+        )
+        info, argv = run_probe(payload)
+        assert info == VideoInfo(width=1080, height=1920, pix_fmt="yuv420p", duration_ms=12_500)
+        assert "json" in argv
+        assert any("side_data" in arg for arg in argv)
+        assert any("tags" in arg for arg in argv)
+        ass = build_burn_ass([(0, 1_000, "Xin chào")], width=info.width, height=info.height)
+        assert "PlayResX: 1080" in ass and "PlayResY: 1920" in ass
+
+    # 0° and 180° keep original dimensions.
+    for angle in (0, 180, -180):
+        payload = json.dumps(
+            {
+                "streams": [
+                    {
+                        "width": 1920,
+                        "height": 1080,
+                        "pix_fmt": "yuv420p",
+                        "side_data_list": [
+                            {"side_data_type": "Display Matrix", "rotation": angle},
+                        ],
+                    }
+                ],
+                "format": {"duration": "5.0"},
+            }
+        )
+        info, _ = run_probe(payload)
+        assert (info.width, info.height) == (1920, 1080)
+
+    # Legacy ``tags.rotate`` fallback when side_data_list has no rotation entry.
+    tag_payload = json.dumps(
+        {
+            "streams": [
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "pix_fmt": "yuv420p10le",
+                    "tags": {"rotate": "90"},
+                    "side_data_list": [{"side_data_type": "Mastering display metadata"}],
+                }
+            ],
+            "format": {"duration": "3.25"},
+        }
+    )
+    tag_info, _ = run_probe(tag_payload)
+    assert tag_info == VideoInfo(width=1080, height=1920, pix_fmt="yuv420p10le", duration_ms=3_250)
+
+    # Display Matrix rotation takes precedence over a stale rotate tag.
+    precedence_payload = json.dumps(
+        {
+            "streams": [
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "pix_fmt": "yuv420p",
+                    "tags": {"rotate": "90"},
+                    "side_data_list": [{"side_data_type": "Display Matrix", "rotation": 0}],
+                }
+            ],
+            "format": {"duration": "2.0"},
+        }
+    )
+    prec_info, _ = run_probe(precedence_payload)
+    assert (prec_info.width, prec_info.height) == (1920, 1080)
+
+    # Malformed JSON, wrong JSON shape, non-zero exit, and missing file never raise.
+    for bad_payload, rc in (("{not-json", 0), ("[]", 0), ("", 0), ("{}", 1)):
+        bad_info, _ = run_probe(bad_payload, returncode=rc)
+        assert bad_info == VideoInfo()
+    assert probe_video_info(tmp_path / "does_not_exist.mp4") == VideoInfo()
+
+
+@requires_ffmpeg
+def test_probe_video_info_real_display_matrix_portrait_mp4(tmp_path: Path) -> None:
+    """Real ffprobe on an MP4 carrying a -90° Display Matrix swaps 160x90 -> 90x160."""
+    if resolve_ffprobe() is None:
+        pytest.skip("ffprobe required")
+    raw = _make_test_video(
+        tmp_path / "landscape.mp4", duration_s=0.6, with_audio=False, size="160x90"
+    )
+    rotated = tmp_path / "portrait_rot.mp4"
+    subprocess.run(
+        [
+            str(resolve_ffmpeg()),
+            "-nostdin",
+            "-y",
+            "-display_rotation",
+            "-90",
+            "-i",
+            str(raw),
+            "-c:v",
+            "copy",
+            str(rotated),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    plain_info = probe_video_info(raw)
+    rot_info = probe_video_info(rotated)
+    assert (plain_info.width, plain_info.height) == (160, 90)
+    assert (rot_info.width, rot_info.height) == (90, 160)
+    assert rot_info.duration_ms > 0
 
 
 @requires_ffmpeg

@@ -22,6 +22,8 @@ command line stays a few hundred bytes at any span count. Every mix ends in a
 from __future__ import annotations
 
 import contextlib
+import json
+import math
 import os
 import shutil
 import subprocess
@@ -149,9 +151,50 @@ class VideoInfo:
     duration_ms: int = 0
 
 
+def _parse_rotation_deg(value: Any) -> float | None:
+    """Parse a finite rotation angle in degrees, or ``None`` when unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        deg = float(value)
+    except (TypeError, ValueError):
+        return None
+    return deg if math.isfinite(deg) else None
+
+
+def _extract_stream_rotation(stream: dict[str, Any]) -> float | None:
+    """Display Matrix ``rotation`` with fallback to legacy ``tags.rotate``."""
+    side_data = stream.get("side_data_list")
+    if isinstance(side_data, list):
+        fallback: float | None = None
+        for item in side_data:
+            if not isinstance(item, dict) or "rotation" not in item:
+                continue
+            deg = _parse_rotation_deg(item.get("rotation"))
+            if deg is None:
+                continue
+            kind = str(item.get("side_data_type") or "").lower()
+            if not kind or "display matrix" in kind:
+                return deg
+            if fallback is None:
+                fallback = deg
+        if fallback is not None:
+            return fallback
+    tags = stream.get("tags")
+    if isinstance(tags, dict):
+        for key, value in tags.items():
+            if str(key).lower() == "rotate":
+                deg = _parse_rotation_deg(value)
+                if deg is not None:
+                    return deg
+    return None
+
+
 def probe_video_info(video_path: str | Path, *, data_dir: Path | None = None) -> VideoInfo:
     """Best-effort ``VideoInfo`` for ``video_path``; zeros when unknown.
 
+    Applies Display Matrix ``rotation`` (with fallback to ``tags.rotate``) so
+    portrait clips stored rotated ±90°/270° report their displayed orientation.
     Never raises: burn-in must still work when ffprobe is absent or the file
     is odd, so every field falls back to a value that keeps the output sane.
     """
@@ -168,11 +211,12 @@ def probe_video_info(video_path: str | Path, *, data_dir: Path | None = None) ->
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,pix_fmt",
+                "stream=width,height,pix_fmt:stream_tags=rotate:"
+                "stream_side_data=side_data_type,rotation",
                 "-show_entries",
                 "format=duration",
                 "-of",
-                "default=nw=1",
+                "json",
                 str(vpath),
             ),
             timeout=FFPROBE_TIMEOUT_S,
@@ -181,22 +225,49 @@ def probe_video_info(video_path: str | Path, *, data_dir: Path | None = None) ->
         return VideoInfo()
     if res.returncode != 0:
         return VideoInfo()
-    fields: dict[str, str] = {}
-    for line in (res.stdout or "").splitlines():
-        key, _, value = line.partition("=")
-        if key and value:
-            fields[key.strip()] = value.strip()
+    try:
+        payload = json.loads(res.stdout or "")
+    except ValueError:
+        return VideoInfo()
+    if not isinstance(payload, dict):
+        return VideoInfo()
+
+    streams = payload.get("streams")
+    stream = (
+        streams[0] if isinstance(streams, list) and streams and isinstance(streams[0], dict) else {}
+    )
+    fmt = payload.get("format")
+    fmt_dict = fmt if isinstance(fmt, dict) else {}
+
     duration_ms = 0
-    with contextlib.suppress(ValueError):
-        duration_ms = int(float(fields.get("duration", "0")) * 1000)
+    raw_duration = fmt_dict.get("duration")
+    if raw_duration is not None and not isinstance(raw_duration, bool):
+        with contextlib.suppress(TypeError, ValueError, OverflowError):
+            dur_s = float(raw_duration)
+            if math.isfinite(dur_s):
+                duration_ms = int(dur_s * 1000)
+
     width = height = 0
-    with contextlib.suppress(ValueError):
-        width = int(fields.get("width", "0"))
-        height = int(fields.get("height", "0"))
+    raw_w = stream.get("width")
+    raw_h = stream.get("height")
+    if raw_w is not None and not isinstance(raw_w, bool):
+        with contextlib.suppress(TypeError, ValueError):
+            width = int(raw_w)
+    if raw_h is not None and not isinstance(raw_h, bool):
+        with contextlib.suppress(TypeError, ValueError):
+            height = int(raw_h)
+
+    rotation = _extract_stream_rotation(stream)
+    if rotation is not None and abs(int(round(rotation))) % 180 == 90:
+        width, height = height, width
+
+    raw_pix_fmt = stream.get("pix_fmt")
+    pix_fmt = raw_pix_fmt.strip() if isinstance(raw_pix_fmt, str) else ""
+
     return VideoInfo(
         width=max(0, width),
         height=max(0, height),
-        pix_fmt=fields.get("pix_fmt", ""),
+        pix_fmt=pix_fmt,
         duration_ms=max(0, duration_ms),
     )
 
@@ -213,12 +284,14 @@ def _ass_timestamp(ms: int) -> str:
 def _ass_escape(text: str) -> str:
     """Make ``text`` literal inside an ASS dialogue line.
 
-    Backslashes start ASS escapes, and ``{…}`` opens an override block — both
-    are consumed by libass rather than drawn, so a cue like ``a {b} c`` used to
-    render as ``a  c``. Doubling the backslash and bracing the braces keeps the
-    characters the user typed on screen.
+    Backslashes start ASS escapes (``\\N``, ``\\n``, ``\\h``), and ``{…}`` opens
+    an override block — both are consumed by libass rather than drawn, and
+    libass does not treat ``\\\\`` as an escaped backslash (``\\\\N`` still
+    breaks the line). Appending a WORD JOINER (U+2060) after each user
+    backslash before escaping ``{``/``}`` breaks any ASS escape sequence while
+    keeping the characters the user typed on screen.
     """
-    out = text.replace("\\", "\\\\")
+    out = text.replace("\\", "\\\u2060")
     return out.replace("{", "\\{").replace("}", "\\}")
 
 

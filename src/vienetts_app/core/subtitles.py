@@ -321,16 +321,17 @@ def parse_cues(source: str) -> list[Cue]:
     Line-oriented: each line containing ``-->`` opens a cue whose body runs
     to the first blank line in its slice, or to the next timestamp line/EOF
     when none separates them — so missing blank separators recover while
-    blank-separated junk blocks are never spoken. Only in the no-blank case
-    is a trailing integer line dropped as the next cue's sequence number. A
-    ``-->`` line that does not parse as a timestamp pair raises
-    :class:`SubtitleError` with its 1-based line number — timing is never
-    guessed and a corrupt line's body is never spoken. Timestamp and
-    sequence lines never appear in cue text; cues whose body cleans to
-    nothing (or to bracketed ASR filler such as ``[BLANK_AUDIO]``) are
-    skipped, and a source with no ``-->`` at all returns ``[]``. Speaker
-    labels and leading sound cues are peeled off the text as described in
-    the module docstring; a sound-cue-only cue is kept, non-speakable.
+    blank-separated junk blocks are never spoken. Only when another cue
+    follows with no blank separator is a trailing integer line dropped as that
+    next cue's sequence number. A ``-->`` line that does not parse as a
+    timestamp pair raises :class:`SubtitleError` with its 1-based line
+    number — timing is never guessed and a corrupt line's body is never
+    spoken. Timestamp and sequence lines never appear in cue text; cues whose
+    body cleans to nothing (or to bracketed ASR filler such as
+    ``[BLANK_AUDIO]``) are skipped, and a source with no ``-->`` at all
+    returns ``[]``. Speaker labels and leading sound cues are peeled off the
+    text as described in the module docstring; a sound-cue-only cue is kept,
+    non-speakable.
     """
     text = source.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
@@ -347,15 +348,17 @@ def parse_cues(source: str) -> list[Cue]:
         entries.append((line_number - 1, match))
     cues: list[Cue] = []
     for position, (stamp_index, match) in enumerate(entries):
-        body_end = entries[position + 1][0] if position + 1 < len(entries) else len(lines)
+        has_next = position + 1 < len(entries)
+        body_end = entries[position + 1][0] if has_next else len(lines)
         region = lines[stamp_index + 1 : body_end]
         # The body ends at the first blank line in the slice: anything after
         # it is a separate non-cue block (notes, metadata, stray prose) and
-        # must not be spoken. With no blank separator the body runs to the
-        # next stamp and its tail integer is that cue's sequence number.
+        # must not be spoken. With no blank separator before a following cue,
+        # the body runs to the next stamp and its tail integer is that cue's
+        # sequence number.
         blank_at = next((i for i, line in enumerate(region) if not line.strip()), len(region))
         body = [line.strip() for line in region[:blank_at]]
-        if blank_at == len(region) and body and body[-1].isdigit():
+        if has_next and blank_at == len(region) and body and body[-1].isdigit():
             body.pop()
         split = _split_cue_body(clean_cue_text(" ".join(body)))
         if split is None:
@@ -488,11 +491,27 @@ def cue_char_spans(cues: Iterable[Cue]) -> list[tuple[int, int]]:
     return spans
 
 
+def _sanitize_srt_body(text: str) -> str:
+    """Flatten embedded newlines and neutralize ``-->`` for safe SRT round-trips."""
+    cleaned = _WS_RE.sub(" ", text).strip()
+    if "-->" in cleaned:
+        # Insert a zero-width space so the arrow stays visually intact without
+        # matching SRT's ``-->`` timestamp delimiter.
+        cleaned = cleaned.replace("-->", "-\u200b->")
+    return cleaned
+
+
 def format_srt(cues: Iterable[Cue], *, include_speakers: bool = False) -> str:
-    """Cues → SubRip text (trailing newline; indices renumbered from 1)."""
+    """Cues → SubRip text (trailing newline; indices renumbered from 1).
+
+    Embedded line breaks are flattened and ``-->`` is neutralized so
+    :func:`parse_cues` always round-trips the output cleanly.
+    """
     blocks = []
     for i, cue in enumerate(cues, start=1):
-        body = f"[{cue.speaker}] {cue.text}" if include_speakers and cue.speaker else cue.text
+        speaker = _sanitize_srt_body(cue.speaker) if include_speakers and cue.speaker else ""
+        text = _sanitize_srt_body(cue.text)
+        body = f"[{speaker}] {text}" if speaker else text
         blocks.append(
             f"{i}\n{format_timestamp(cue.start_ms)} --> {format_timestamp(cue.end_ms)}\n{body}"
         )

@@ -246,6 +246,68 @@ def test_srt_io(tmp_path) -> None:
     assert "UTF-8" in str(excinfo.value) and "bad.srt" in str(excinfo.value)
 
 
+def test_format_srt_round_trip_sanitizes_arrows_and_newlines() -> None:
+    """FR-4.4: format_srt flattens newlines and neutralizes ``-->`` for clean round-trips."""
+    cues = [
+        Cue(1, 0, 2_000, "Bước A --> Bước B ---> Bước C"),
+        Cue(2, 2_500, 4_000, "00:00:03,000 --> 00:00:03,500"),
+        Cue(
+            3,
+            5_000,
+            7_000,
+            "Dòng một\r\nDòng hai\rDòng ba\n\n99\n00:00:06,000 --> 00:00:06,500\nGiả mạo",
+            speaker="SPEAKER_01",
+        ),
+    ]
+
+    for include_speakers in (False, True):
+        rendered = format_srt(cues, include_speakers=include_speakers)
+        blocks = [block.splitlines() for block in rendered.strip().split("\n\n")]
+        assert len(blocks) == len(cues)
+        for idx, lines in enumerate(blocks, start=1):
+            assert lines[0] == str(idx)
+            assert " --> " in lines[1]
+            # Every cue body is flattened to a single line free of raw ``-->``.
+            assert len(lines) == 3
+            assert "-->" not in lines[2]
+
+        reparsed = parse_cues(rendered)
+        assert len(reparsed) == len(cues)
+        assert [(c.index, c.start_ms, c.end_ms) for c in reparsed] == [
+            (c.index, c.start_ms, c.end_ms) for c in cues
+        ]
+        assert "Bước A" in reparsed[0].text and "Bước C" in reparsed[0].text
+        assert "00:00:03,000" in reparsed[1].text and "00:00:03,500" in reparsed[1].text
+        assert "Dòng một" in reparsed[2].text and "Giả mạo" in reparsed[2].text
+        if include_speakers:
+            assert reparsed[2].speaker == "SPEAKER_01"
+        # Second round-trip is idempotent.
+        assert parse_cues(format_srt(reparsed, include_speakers=include_speakers)) == reparsed
+
+
+def test_parse_cues_retains_digit_only_final_cue_without_trailing_blank_line() -> None:
+    """FR-4.4: a digit-only final cue with no trailing newline is spoken text, not a seq number."""
+    assert parse_cues("1\n00:00:00,000 --> 00:00:01,000\n2026") == [Cue(1, 0, 1_000, "2026")]
+    assert parse_cues(
+        "1\n00:00:00,000 --> 00:00:01,000\nCâu một.\n\n2\n00:00:02,000 --> 00:00:03,000\n42"
+    ) == [
+        Cue(1, 0, 1_000, "Câu một."),
+        Cue(2, 2_000, 3_000, "42"),
+    ]
+    # No blank line between cues: cue 1 still drops cue 2's sequence number,
+    # while cue 2 (the final cue) keeps its digit-only body.
+    assert parse_cues(
+        "1\n00:00:00,000 --> 00:00:01,000\nCâu một.\n2\n00:00:02,000 --> 00:00:03,000\n2026"
+    ) == [
+        Cue(1, 0, 1_000, "Câu một."),
+        Cue(2, 2_000, 3_000, "2026"),
+    ]
+    # Multi-line final cue ending on a digit-only line with no trailing newline.
+    assert parse_cues("1\n00:00:00,000 --> 00:00:01,000\nNăm\n2026") == [
+        Cue(1, 0, 1_000, "Năm 2026")
+    ]
+
+
 def test_speaker_prefix_parsing_and_formatting() -> None:
     source = (
         "1\n00:00:00,000 --> 00:00:02,000\n[SPEAKER_01]: Xin chào.\n\n"

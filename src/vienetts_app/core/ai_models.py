@@ -17,34 +17,52 @@ from __future__ import annotations
 import contextlib
 import functools
 import hashlib
+import http.client
 import json
+import lzma
 import os
 import platform
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tarfile
-import time
 import uuid
 import zipfile
+import zlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from vienetts_app.core.managed_install import check_download_url, free_space_bytes, safe_remove
+from vienetts_app.core.managed_install import (
+    check_download_url,
+    free_space_bytes,
+    is_safe_archive_member,
+    replace_retrying,
+    safe_remove,
+)
+from vienetts_app.core.paths import to_extended
 from vienetts_app.core.processes import PROBE_TIMEOUT_S, find_executable, run_cli
 
 CHUNK_BYTES = 256 * 1024
+DEFAULT_MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024
+MAX_ARCHIVE_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 REPLACE_LOCK_ATTEMPTS = 5
 REPLACE_LOCK_DELAY_S = 0.2
 # A managed runtime/model download must not start when the volume cannot hold
 # the artifact plus extraction headroom.
 INSTALL_SPACE_HEADROOM = 64 * 1024 * 1024
 RUNTIME_META_FILENAME = "runtime.json"
+
+
+class _UnsetType:
+    """Sentinel distinguishing an omitted argument from explicit ``None``."""
+
+
+_UNSET = _UnsetType()
 
 
 class AiModelInstallError(RuntimeError):
@@ -150,16 +168,55 @@ AUDIOCPP_RELEASE_TAG = "v0.9.2"
 WHISPER_CPP_RELEASE_TAG = "b5454"
 
 
+class _HttpsOnlyRedirectHandler(HTTPRedirectHandler):
+    """Follow HTTPS redirects only; reject ``https -> http`` or non-HTTPS targets."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlsplit(newurl)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise URLError(f"refused redirect to non-HTTPS URL ({parsed.scheme or 'relative'})")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _validate_download_url(url: str) -> None:
+    if not isinstance(url, str):
+        raise AiModelInstallError("URL tải về không hợp lệ (chỉ hỗ trợ HTTPS).")
+    stripped = url.strip()
+    if not stripped or any(ch.isspace() or ord(ch) < 32 for ch in stripped):
+        raise AiModelInstallError(f"URL tải về không hợp lệ: {url!r}")
+    try:
+        parsed = urlsplit(stripped)
+        _ = parsed.port
+    except ValueError as exc:
+        raise AiModelInstallError(f"URL tải về không hợp lệ: {url!r}") from exc
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise AiModelInstallError(f"URL tải về phải dùng HTTPS hợp lệ: {url!r}")
+
+
+def _open_download_url(req: Request, timeout: float = 60):
+    opener = build_opener(_HttpsOnlyRedirectHandler)
+    return opener.open(req, timeout=timeout)
+
+
+def _parse_content_length(raw: object) -> int:
+    if raw is None:
+        return 0
+    text = str(raw).strip()
+    if not text:
+        return 0
+    if not (text.isascii() and text.isdigit()):
+        raise AiModelInstallError(f"Header Content-Length không hợp lệ: {raw!r}")
+    return int(text)
+
+
 def _promote_file(part: Path, target: Path) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(REPLACE_LOCK_ATTEMPTS):
-        try:
-            os.replace(part, target)
-            return target
-        except PermissionError:
-            if attempt == REPLACE_LOCK_ATTEMPTS - 1:
-                raise
-            time.sleep(REPLACE_LOCK_DELAY_S)
+    to_extended(target.parent).mkdir(parents=True, exist_ok=True)
+    replace_retrying(
+        part,
+        target,
+        attempts=REPLACE_LOCK_ATTEMPTS,
+        delay_s=REPLACE_LOCK_DELAY_S,
+    )
     return target
 
 
@@ -171,6 +228,7 @@ def _stream_download(
     expected_size: int = 0,
     expected_sha256: str = "",
     min_free_bytes: int = 0,
+    maximum_bytes: int = 0,
     cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     """Download ``url`` to ``target`` atomically, refusing a partial artifact.
@@ -185,11 +243,20 @@ def _stream_download(
     * ``expected_size`` (catalog knowledge) must equal the byte count;
     * ``expected_sha256`` (catalog knowledge) must match the streamed digest.
 
-    ``cancel_check`` is polled before every chunk and raises
+    Only ``https://`` URLs (and HTTPS-only redirects) are accepted, and the
+    streaming loop bounds bytes read to ``maximum_bytes`` / ``expected_size`` /
+    ``Content-Length`` so an unbounded or lying server cannot fill the disk.
+
+    ``cancel_check`` is polled before opening and before every chunk and raises
     :class:`AiModelDownloadCancelled`. The part file is always removed on
     failure or cancel, so a retry starts clean.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _validate_download_url(url)
+    if expected_size < 0 or maximum_bytes < 0:
+        raise AiModelInstallError(f"Giới hạn kích thước tải về không hợp lệ cho {target.name}.")
+    if cancel_check is not None and cancel_check():
+        raise AiModelDownloadCancelled(f"Đã huỷ tải {target.name}.")
+    to_extended(target.parent).mkdir(parents=True, exist_ok=True)
     if min_free_bytes:
         free = free_space_bytes(target.parent)
         if free is not None and free < min_free_bytes:
@@ -199,20 +266,42 @@ def _stream_download(
                 f"còn {free / (1024 * 1024):.0f} MB)."
             )
     part = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+    writable_part = to_extended(part)
     digest = hashlib.sha256()
-    req = Request(url, headers={"User-Agent": "VieNeuTTSApp/0.3"})
+    req = Request(url.strip(), headers={"User-Agent": "VieNeuTTSApp/0.3"})
     try:
-        with urlopen(req, timeout=60) as resp:  # noqa: S310
-            declared = int(resp.headers.get("Content-Length") or 0)
+        with _open_download_url(req, timeout=60) as resp:
+            final_url = resp.geturl() if hasattr(resp, "geturl") else url
+            if isinstance(final_url, str) and final_url:
+                final_parsed = urlsplit(final_url)
+                if final_parsed.scheme.lower() != "https" or not final_parsed.hostname:
+                    raise AiModelInstallError(
+                        f"Chuyển hướng tải về sang URL không phải HTTPS bị từ chối: {final_url!r}"
+                    )
+            declared = _parse_content_length(resp.headers.get("Content-Length"))
+            explicit_bounds = [b for b in (maximum_bytes, expected_size) if b > 0]
+            if declared and explicit_bounds and declared > min(explicit_bounds):
+                raise AiModelInstallError(
+                    f"Tệp {target.name} tải về vượt quá kích thước cho phép "
+                    f"({declared:,} > {min(explicit_bounds):,} byte)."
+                )
+            all_bounds = [b for b in (maximum_bytes, expected_size, declared) if b > 0]
+            byte_limit = min(all_bounds) if all_bounds else DEFAULT_MAX_DOWNLOAD_BYTES
             total = expected_size or declared
             written = 0
-            with part.open("wb") as fh:
+            with writable_part.open("wb") as fh:
                 while True:
                     if cancel_check is not None and cancel_check():
                         raise AiModelDownloadCancelled(f"Đã huỷ tải {target.name}.")
-                    chunk = resp.read(CHUNK_BYTES)
+                    remaining = byte_limit - written
+                    chunk = resp.read(min(CHUNK_BYTES, remaining + 1))
                     if not chunk:
                         break
+                    if len(chunk) > remaining:
+                        raise AiModelInstallError(
+                            f"Tệp {target.name} tải về vượt quá kích thước cho phép "
+                            f"(>{byte_limit:,} byte)."
+                        )
                     fh.write(chunk)
                     digest.update(chunk)
                     written += len(chunk)
@@ -241,11 +330,11 @@ def _stream_download(
         return out
     except AiModelInstallError:
         with contextlib.suppress(OSError):
-            part.unlink(missing_ok=True)
+            writable_part.unlink(missing_ok=True)
         raise
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+    except (HTTPError, URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         with contextlib.suppress(OSError):
-            part.unlink(missing_ok=True)
+            writable_part.unlink(missing_ok=True)
         raise AiModelInstallError(f"Không thể tải mô hình từ '{url}': {exc}") from exc
 
 
@@ -284,17 +373,83 @@ def _host_arch() -> str:
 
 def _promote_runtime_dir(staging: Path, rt_dir: Path, backup: Path, label: str) -> None:
     """Swap a probed ``staging`` tree in as ``rt_dir``, restoring the old one on failure."""
-    if rt_dir.exists():
-        os.replace(rt_dir, backup)
+    had_backup = False
     try:
-        os.replace(staging, rt_dir)
+        if rt_dir.exists():
+            replace_retrying(
+                rt_dir,
+                backup,
+                attempts=REPLACE_LOCK_ATTEMPTS,
+                delay_s=REPLACE_LOCK_DELAY_S,
+            )
+            had_backup = True
+        replace_retrying(
+            staging,
+            rt_dir,
+            attempts=REPLACE_LOCK_ATTEMPTS,
+            delay_s=REPLACE_LOCK_DELAY_S,
+        )
     except OSError as exc:
-        if backup.exists():
+        if had_backup and not rt_dir.exists() and backup.exists():
             with contextlib.suppress(OSError):
-                os.replace(backup, rt_dir)
+                replace_retrying(
+                    backup,
+                    rt_dir,
+                    attempts=REPLACE_LOCK_ATTEMPTS,
+                    delay_s=REPLACE_LOCK_DELAY_S,
+                )
         raise AiModelInstallError(f"Không thể kích hoạt runtime {label} mới: {exc}") from exc
-    if backup.exists():
+    if had_backup and backup.exists():
         safe_remove(backup)
+
+
+def _is_reparse_or_symlink(path: Path) -> bool:
+    """True when ``path`` is a POSIX/Windows symlink or NTFS junction."""
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _remove_managed_model_file(
+    target: Path | None,
+    data_dir: Path,
+    subdir: str,
+    allowed_suffixes: tuple[str, ...],
+) -> bool:
+    """Remove one regular model file strictly inside ``<data_dir>/models/<subdir>``."""
+    if target is None or _is_reparse_or_symlink(target) or not target.is_file():
+        return False
+    try:
+        expected_base = Path(data_dir).resolve() / "models" / subdir
+        resolved = target.resolve()
+    except OSError:
+        return False
+    if (
+        not resolved.is_relative_to(expected_base)
+        or resolved.suffix.lower() not in allowed_suffixes
+    ):
+        return False
+    with contextlib.suppress(OSError):
+        to_extended(resolved).unlink(missing_ok=True)
+        return not resolved.exists()
+    return False
+
+
+def _remove_managed_runtime_dir(rt_dir: Path, data_dir: Path) -> bool:
+    """Remove a managed runtime dir, refusing symlinks or escapes outside ``runtimes``."""
+    if (
+        _is_reparse_or_symlink(rt_dir)
+        or _is_reparse_or_symlink(rt_dir.parent)
+        or not rt_dir.is_dir()
+    ):
+        return False
+    try:
+        resolved = rt_dir.resolve()
+        expected_root = Path(data_dir).resolve() / "runtimes"
+    except OSError:
+        return False
+    if resolved == expected_root or not resolved.is_relative_to(expected_root):
+        return False
+    safe_remove(rt_dir)
+    return not rt_dir.exists()
 
 
 # ── Diarization models (audio-cpp/Nemotron-3-Diarization-GGUF) ───────────────
@@ -360,6 +515,7 @@ def download_diarization_model(
     *,
     progress_cb: Callable[[float], None] | None = None,
     url_override: str = "",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     key = (model_id or "nemotron-3-diarization-q8_0").strip()
     spec = DIARIZATION_GGUF_MODELS.get(key)
@@ -381,30 +537,31 @@ def download_diarization_model(
         expected_size=0 if url_override.strip() else spec.size_bytes,
         expected_sha256="" if url_override.strip() else spec.sha256,
         min_free_bytes=0 if url_override.strip() else spec.size_bytes + INSTALL_SPACE_HEADROOM,
+        cancel_check=cancel_check,
     )
 
 
 def remove_diarization_model(model_id: str, data_dir: Path) -> bool:
-    """Remove an installed diarization GGUF, refusing paths outside the app dir.
+    """Remove a managed diarization GGUF (including corrupt catalog files).
 
     The model setting is user-writable, so the resolved path may point at any
-    file on disk. Only a ``.gguf``/``.bin`` file inside ``models/diarization``
-    is ever deleted; anything else is reported as not removed.
+    file on disk. Known catalog IDs resolve directly to their pinned filename
+    so truncated/corrupt files can still be deleted. Only a regular,
+    non-symlink ``.gguf``/``.bin`` file inside ``models/diarization`` is ever
+    deleted; anything else is reported as not removed.
     """
-    path = resolve_diarization_model_path(model_id, data_dir)
-    if path is None:
+    raw = (model_id or "").strip()
+    if not raw:
         return False
-    base = diarization_models_dir(data_dir).resolve()
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return False
-    if not resolved.is_relative_to(base) or resolved.suffix.lower() not in (".gguf", ".bin"):
-        return False
-    with contextlib.suppress(OSError):
-        resolved.unlink(missing_ok=True)
-        return not resolved.exists()
-    return False
+    base = diarization_models_dir(data_dir)
+    spec = DIARIZATION_GGUF_MODELS.get(raw)
+    if spec is None:
+        by_filename = {s.filename: s for s in DIARIZATION_GGUF_MODELS.values()}
+        spec = by_filename.get(raw)
+    target = (
+        base / spec.filename if spec is not None else resolve_diarization_model_path(raw, data_dir)
+    )
+    return _remove_managed_model_file(target, data_dir, "diarization", (".gguf", ".bin"))
 
 
 # ── Whisper ASR models ───────────────────────────────────────────────────────
@@ -452,6 +609,7 @@ def download_asr_model(
     *,
     progress_cb: Callable[[float], None] | None = None,
     url_override: str = "",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     key = (model_id or "base").strip()
     spec = WHISPER_GGUF_MODELS.get(key)
@@ -466,25 +624,22 @@ def download_asr_model(
         expected_size=0 if url_override.strip() else spec.size_bytes,
         expected_sha256="" if url_override.strip() else spec.sha256,
         min_free_bytes=0 if url_override.strip() else spec.size_bytes + INSTALL_SPACE_HEADROOM,
+        cancel_check=cancel_check,
     )
 
 
 def remove_asr_model(model_id: str, data_dir: Path) -> bool:
-    """Remove an installed Whisper model, refusing paths outside ``models/whisper``."""
-    path = resolve_asr_model_path(model_id, data_dir)
-    if path is None:
+    """Remove a managed Whisper model (including corrupt catalog files)."""
+    raw = (model_id or "").strip()
+    if not raw:
         return False
-    base = asr_models_dir(data_dir).resolve()
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return False
-    if not resolved.is_relative_to(base) or resolved.suffix.lower() not in (".bin", ".gguf"):
-        return False
-    with contextlib.suppress(OSError):
-        resolved.unlink(missing_ok=True)
-        return not resolved.exists()
-    return False
+    base = asr_models_dir(data_dir)
+    spec = WHISPER_GGUF_MODELS.get(raw)
+    if spec is None:
+        by_filename = {s.filename: s for s in WHISPER_GGUF_MODELS.values()}
+        spec = by_filename.get(raw)
+    target = base / spec.filename if spec is not None else resolve_asr_model_path(raw, data_dir)
+    return _remove_managed_model_file(target, data_dir, "whisper", (".bin", ".gguf"))
 
 
 # ── Optional audio models (Silero VAD, speaker embedding) ────────────────────
@@ -644,19 +799,7 @@ def remove_audio_model(model_id: str, data_dir: Path) -> bool:
     if spec is None:
         return False
     target = _audio_model_target(spec, data_dir)
-    if not target.is_file():
-        return False
-    try:
-        resolved = target.resolve()
-        base = (Path(data_dir) / "models").resolve() / spec.subdir
-    except OSError:
-        return False
-    if not resolved.is_relative_to(base) or resolved.suffix != target.suffix:
-        return False
-    with contextlib.suppress(OSError):
-        resolved.unlink(missing_ok=True)
-        return not resolved.exists()
-    return False
+    return _remove_managed_model_file(target, data_dir, spec.subdir, (target.suffix.lower(),))
 
 
 # ── Media runtime packs (project-published whisper-cli / ffmpeg) ─────────────
@@ -934,15 +1077,25 @@ def _nvidia_driver_cuda_version() -> str | None:
     return probe.cuda_version if probe.available else None
 
 
-def _cuda_at_least(version: str | None, required: tuple[int, int]) -> bool:
+def _cuda_at_least(version: str | tuple[int, int] | None, required: tuple[int, int]) -> bool:
+    if version is None:
+        return False
+    if isinstance(version, tuple):
+        if len(version) < 2 or not all(
+            isinstance(p, int) and not isinstance(p, bool) for p in version[:2]
+        ):
+            return False
+        return version[:2] >= required
     try:
-        parts = tuple(int(p) for p in (version or "").split(".")[:2])
+        parts = tuple(int(p) for p in str(version).split(".")[:2])
     except ValueError:
         return False
     return bool(parts) and parts >= required
 
 
-def available_audiocpp_variants() -> dict[str, AudiocppRuntimeVariant]:
+def available_audiocpp_variants(
+    driver_cuda_version: str | tuple[int, int] | None | _UnsetType = _UNSET,
+) -> dict[str, AudiocppRuntimeVariant]:
     if sys.platform == "win32":
         variants = {
             "cpu": _audiocpp_variant("cpu", "CPU (tương thích rộng)", "windows-x64-cpu-portable"),
@@ -952,7 +1105,11 @@ def available_audiocpp_variants() -> dict[str, AudiocppRuntimeVariant]:
                 "windows-x64-vulkan-portable",
             ),
         }
-        driver = _nvidia_driver_cuda_version()
+        driver = (
+            _nvidia_driver_cuda_version()
+            if isinstance(driver_cuda_version, _UnsetType)
+            else driver_cuda_version
+        )
         for variant_id, label, floor in _AUDIOCPP_CUDA_BUILDS:
             if _cuda_at_least(driver, floor):
                 cell = f"windows-x64-{variant_id}"
@@ -978,17 +1135,32 @@ def available_audiocpp_variants() -> dict[str, AudiocppRuntimeVariant]:
     }
 
 
-def audiocpp_unavailable_reason() -> str:
+def audiocpp_unavailable_reason(
+    driver_cuda_version: str | tuple[int, int] | None | _UnsetType = _UNSET,
+) -> str:
     """:data:`AUDIOCPP_UNSUPPORTED` when upstream ships no build for this host, else ""."""
-    return "" if available_audiocpp_variants() else AUDIOCPP_UNSUPPORTED
+    variants = (
+        available_audiocpp_variants()
+        if isinstance(driver_cuda_version, _UnsetType)
+        else available_audiocpp_variants(driver_cuda_version=driver_cuda_version)
+    )
+    return "" if variants else AUDIOCPP_UNSUPPORTED
 
 
 def default_audiocpp_variant() -> str:
     return "metal" if sys.platform == "darwin" else "cpu"
 
 
-def resolve_audiocpp_variant(requested: str = "") -> AudiocppRuntimeVariant:
-    variants = available_audiocpp_variants()
+def resolve_audiocpp_variant(
+    requested: str = "",
+    *,
+    driver_cuda_version: str | tuple[int, int] | None | _UnsetType = _UNSET,
+) -> AudiocppRuntimeVariant:
+    variants = (
+        available_audiocpp_variants()
+        if isinstance(driver_cuda_version, _UnsetType)
+        else available_audiocpp_variants(driver_cuda_version=driver_cuda_version)
+    )
     if not variants:
         raise AiModelInstallError(
             f"audio.cpp không phát hành bản dựng cho {sys.platform}/{platform.machine()} "
@@ -1033,24 +1205,136 @@ def installed_audiocpp_variant(data_dir: Path) -> str:
     return variant if isinstance(variant, str) else ""
 
 
-def _extract_archive(archive_path: Path, destination: Path) -> None:
-    """Extract a zip/tar under ``destination`` with traversal protection."""
-    if archive_path.suffix.lower() == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            root = destination.resolve()
-            for member in zf.infolist():
-                target = (destination / member.filename).resolve()
+def _copy_bounded_stream(
+    src,
+    dst,
+    *,
+    extracted: int,
+    max_extracted_bytes: int,
+    cancel_check: Callable[[], bool] | None,
+) -> int:
+    while True:
+        if cancel_check is not None and cancel_check():
+            raise AiModelDownloadCancelled("Đã huỷ giải nén gói runtime.")
+        remaining = max_extracted_bytes - extracted
+        chunk = src.read(min(CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            return extracted
+        if len(chunk) > remaining:
+            raise AiModelInstallError("Gói runtime giải nén vượt quá kích thước cho phép.")
+        dst.write(chunk)
+        extracted += len(chunk)
+
+
+def _extract_archive(
+    archive_path: Path,
+    destination: Path,
+    *,
+    max_extracted_bytes: int = MAX_ARCHIVE_EXTRACTED_BYTES,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
+    """Extract a zip/tar under ``destination`` with traversal, size and Windows-path safety."""
+    root = destination.resolve()
+    archive = to_extended(archive_path)
+    extracted = 0
+    try:
+        if archive_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive, "r") as zf:
+                for member in zf.infolist():
+                    if cancel_check is not None and cancel_check():
+                        raise AiModelDownloadCancelled("Đã huỷ giải nén gói runtime.")
+                    cleaned = member.filename.replace("\\", "/")
+                    if not is_safe_archive_member(cleaned, member.external_attr >> 16):
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    parts = PurePosixPath(cleaned).parts
+                    target = (root / Path(*parts)).resolve() if parts else root
+                    if not target.is_relative_to(root):
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    if member.is_dir():
+                        to_extended(target).mkdir(parents=True, exist_ok=True)
+                        continue
+                    if target == root:
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    writable = to_extended(target)
+                    to_extended(target.parent).mkdir(parents=True, exist_ok=True)
+                    with zf.open(member, "r") as src, writable.open("wb") as dst:
+                        extracted = _copy_bounded_stream(
+                            src,
+                            dst,
+                            extracted=extracted,
+                            max_extracted_bytes=max_extracted_bytes,
+                            cancel_check=cancel_check,
+                        )
+            return
+
+        with tarfile.open(archive, "r:*") as tf:
+            for member in tf.getmembers():
+                if cancel_check is not None and cancel_check():
+                    raise AiModelDownloadCancelled("Đã huỷ giải nén gói runtime.")
+                filtered = tarfile.data_filter(member, os.fspath(root))
+                if filtered is None:
+                    continue
+                raw_target = root / filtered.name
+                if filtered.issym():
+                    parent_resolved = raw_target.parent.resolve()
+                    if not parent_resolved.is_relative_to(root):
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    link_dest = (parent_resolved / filtered.linkname).resolve()
+                    if not link_dest.is_relative_to(root):
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    writable = to_extended(raw_target)
+                    to_extended(raw_target.parent).mkdir(parents=True, exist_ok=True)
+                    if writable.is_symlink() or writable.exists():
+                        writable.unlink(missing_ok=True)
+                    writable.symlink_to(filtered.linkname)
+                    continue
+                target = raw_target.resolve()
                 if not target.is_relative_to(root):
                     raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
-            zf.extractall(destination)
-        return
-    with tarfile.open(archive_path, "r:*") as tf:
-        root = destination.resolve()
-        for member in tf.getmembers():
-            target = (destination / member.name).resolve()
-            if not target.is_relative_to(root):
-                raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
-        tf.extractall(destination, filter="data")
+                if filtered.isdir():
+                    to_extended(target).mkdir(parents=True, exist_ok=True)
+                    continue
+                if filtered.islnk():
+                    link_target = (root / filtered.linkname).resolve()
+                    if not link_target.is_relative_to(root):
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    writable = to_extended(target)
+                    to_extended(target.parent).mkdir(parents=True, exist_ok=True)
+                    if writable.is_symlink() or writable.exists():
+                        writable.unlink(missing_ok=True)
+                    os.link(to_extended(link_target), writable)
+                    continue
+                if filtered.isfile():
+                    if target == root:
+                        raise AiModelInstallError("Gói runtime chứa đường dẫn không hợp lệ.")
+                    src = tf.extractfile(member)
+                    if src is None:
+                        continue
+                    writable = to_extended(target)
+                    to_extended(target.parent).mkdir(parents=True, exist_ok=True)
+                    with src, writable.open("wb") as dst:
+                        extracted = _copy_bounded_stream(
+                            src,
+                            dst,
+                            extracted=extracted,
+                            max_extracted_bytes=max_extracted_bytes,
+                            cancel_check=cancel_check,
+                        )
+                    if os.name != "nt" and filtered.mode:
+                        with contextlib.suppress(OSError):
+                            os.chmod(writable, filtered.mode & 0o777)
+    except AiModelInstallError:
+        raise
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        tarfile.TarError,
+        EOFError,
+        zlib.error,
+        lzma.LZMAError,
+        OSError,
+    ) as exc:
+        raise AiModelInstallError(f"Không thể giải nén gói runtime: {exc}") from exc
 
 
 def _locate_cli(root: Path) -> Path | None:
@@ -1107,6 +1391,7 @@ def download_audiocpp_runtime(
     progress_cb: Callable[[float], None] | None = None,
     url_override: str = "",
     variant: str = "",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     """Download, extract, validate and atomically install ``audiocpp_cli``.
 
@@ -1116,6 +1401,8 @@ def download_audiocpp_runtime(
     archives (and their companions) are verified against their pinned size
     and SHA-256; a ``url_override`` artifact is fetched alone and unverified.
     """
+    if cancel_check is not None and cancel_check():
+        raise AiModelDownloadCancelled("Đã huỷ cài đặt audio.cpp.")
     runtime_variant = resolve_audiocpp_variant(variant)
     override = url_override.strip()
     if override:
@@ -1129,6 +1416,15 @@ def download_audiocpp_runtime(
     rt_dir = audiocpp_runtime_dir(data_dir)
     root = rt_dir.parent
     root.mkdir(parents=True, exist_ok=True)
+    needed_bytes = _runtime_space_needed(total_bytes)
+    if needed_bytes:
+        free = free_space_bytes(root)
+        if free is not None and free < needed_bytes:
+            raise AiModelInstallError(
+                "Không đủ dung lượng trống để cài đặt runtime audio.cpp "
+                f"(cần {needed_bytes / (1024 * 1024):.0f} MB, "
+                f"còn {free / (1024 * 1024):.0f} MB)."
+            )
     staging = root / f".audiocpp_staging_{uuid.uuid4().hex}"
     backup = rt_dir.with_name(f".audiocpp_old_{uuid.uuid4().hex}")
     staging.mkdir(parents=True, exist_ok=False)
@@ -1144,8 +1440,9 @@ def download_audiocpp_runtime(
                 expected_size=size,
                 expected_sha256=sha256,
                 min_free_bytes=_runtime_space_needed(size),
+                cancel_check=cancel_check,
             )
-            _extract_archive(archive_path, staging)
+            _extract_archive(archive_path, staging, cancel_check=cancel_check)
             with contextlib.suppress(OSError):
                 archive_path.unlink(missing_ok=True)
             start += span
@@ -1156,6 +1453,8 @@ def download_audiocpp_runtime(
             with contextlib.suppress(OSError):
                 cli.chmod(cli.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         _probe_runtime(cli)
+        if cancel_check is not None and cancel_check():
+            raise AiModelDownloadCancelled("Đã huỷ cài đặt audio.cpp.")
         (staging / RUNTIME_META_FILENAME).write_text(
             json.dumps({"variant": runtime_variant.id, "tag": AUDIOCPP_RELEASE_TAG}),
             encoding="utf-8",
@@ -1164,7 +1463,7 @@ def download_audiocpp_runtime(
     finally:
         with contextlib.suppress(OSError):
             if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+                safe_remove(staging)
 
     installed = resolve_audiocpp_cli(data_dir)
     if installed is None:
@@ -1173,11 +1472,7 @@ def download_audiocpp_runtime(
 
 
 def remove_audiocpp_runtime(data_dir: Path) -> bool:
-    rt_dir = audiocpp_runtime_dir(data_dir)
-    if not rt_dir.is_dir():
-        return False
-    safe_remove(rt_dir)
-    return not rt_dir.exists()
+    return _remove_managed_runtime_dir(audiocpp_runtime_dir(data_dir), data_dir)
 
 
 # ── whisper.cpp Native Runtime (whisper-cli) ─────────────────────────────────
@@ -1373,12 +1668,15 @@ def download_whisper_cpp_runtime(
     progress_cb: Callable[[float], None] | None = None,
     url_override: str = "",
     variant: str = "",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path:
     """Download, extract, validate and atomically install ``whisper-cli``.
 
     An unpublished macOS cell raises its Homebrew guidance before anything is
     fetched; a published one is verified against its pinned size and SHA-256.
     """
+    if cancel_check is not None and cancel_check():
+        raise AiModelDownloadCancelled("Đã huỷ cài đặt whisper.cpp.")
     runtime_variant = resolve_whisper_cpp_variant(variant)
     override = url_override.strip()
     if not override and runtime_variant.unavailable_reason:
@@ -1402,8 +1700,9 @@ def download_whisper_cpp_runtime(
             expected_size=size,
             expected_sha256="" if override else runtime_variant.sha256,
             min_free_bytes=_runtime_space_needed(size),
+            cancel_check=cancel_check,
         )
-        _extract_archive(archive_path, staging)
+        _extract_archive(archive_path, staging, cancel_check=cancel_check)
         with contextlib.suppress(OSError):
             archive_path.unlink(missing_ok=True)
         cli = _locate_whisper_cli(staging)
@@ -1413,6 +1712,8 @@ def download_whisper_cpp_runtime(
             with contextlib.suppress(OSError):
                 cli.chmod(cli.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         _probe_runtime(cli, "whisper.cpp")
+        if cancel_check is not None and cancel_check():
+            raise AiModelDownloadCancelled("Đã huỷ cài đặt whisper.cpp.")
         meta = {"variant": runtime_variant.id, "tag": WHISPER_CPP_RELEASE_TAG}
         if runtime_variant.cell:
             meta["cell"] = runtime_variant.cell
@@ -1421,7 +1722,7 @@ def download_whisper_cpp_runtime(
     finally:
         with contextlib.suppress(OSError):
             if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+                safe_remove(staging)
 
     installed = resolve_whisper_cpp_cli(data_dir)
     if installed is None:
@@ -1430,11 +1731,7 @@ def download_whisper_cpp_runtime(
 
 
 def remove_whisper_cpp_runtime(data_dir: Path) -> bool:
-    rt_dir = whisper_runtime_dir(data_dir)
-    if not rt_dir.is_dir():
-        return False
-    safe_remove(rt_dir)
-    return not rt_dir.exists()
+    return _remove_managed_runtime_dir(whisper_runtime_dir(data_dir), data_dir)
 
 
 # ── Managed ffmpeg runtime (ffmpeg + ffprobe) ────────────────────────────────
@@ -1629,7 +1926,7 @@ def install_ffmpeg_runtime(
             min_free_bytes=_runtime_space_needed(cell.size_bytes),
             cancel_check=cancel_check,
         )
-        _extract_archive(archive_path, staging)
+        _extract_archive(archive_path, staging, cancel_check=cancel_check)
         with contextlib.suppress(OSError):
             archive_path.unlink(missing_ok=True)
         pair = _locate_ffmpeg_pair(staging / "bin")
@@ -1654,7 +1951,7 @@ def install_ffmpeg_runtime(
     finally:
         with contextlib.suppress(OSError):
             if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+                safe_remove(staging)
 
     installed = _locate_ffmpeg_pair(ffmpeg_runtime_bin_dir(data_dir))
     if installed is None:
@@ -1668,15 +1965,4 @@ def remove_ffmpeg_runtime(data_dir: Path) -> bool:
     A symlinked (or junctioned) ``runtimes/ffmpeg`` is never followed: the
     resolved dir must stay inside the resolved ``runtimes`` dir.
     """
-    rt_dir = ffmpeg_runtime_dir(data_dir)
-    if rt_dir.is_symlink() or not rt_dir.is_dir():
-        return False
-    try:
-        resolved = rt_dir.resolve()
-        root = rt_dir.parent.resolve()
-    except OSError:
-        return False
-    if resolved == root or not resolved.is_relative_to(root):
-        return False
-    safe_remove(rt_dir)
-    return not rt_dir.exists()
+    return _remove_managed_runtime_dir(ffmpeg_runtime_dir(data_dir), data_dir)

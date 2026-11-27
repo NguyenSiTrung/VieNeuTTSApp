@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import http.client
 import io
 import json
+import os
 import platform
+import stat
 import sys
 import tarfile
 import threading
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import replace
@@ -51,6 +55,7 @@ from vienetts_app.core.ai_models import (
     parse_media_runtime_manifest,
     remove_asr_model,
     remove_audio_model,
+    remove_audiocpp_runtime,
     remove_diarization_model,
     remove_ffmpeg_runtime,
     remove_whisper_cpp_runtime,
@@ -73,26 +78,82 @@ def _host(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> None:
 
 
 def _local_download(monkeypatch: pytest.MonkeyPatch, files: dict[str, Path]) -> list[dict]:
-    """Serve catalog URLs from local files through the REAL ``_stream_download``.
+    """Serve catalog HTTPS URLs from local files through the REAL ``_stream_download``.
 
-    The size/SHA-256 checks still run on the bytes; ``calls`` records what the
-    installer asked for. An unmapped URL fails the test (no network).
+    The HTTPS validation, size, and SHA-256 checks still run on the bytes;
+    ``calls`` records what the installer asked for. An unmapped URL fails the
+    test (no network).
     """
     calls: list[dict] = []
 
-    def fake(url: str, target: Path, **kwargs):
-        calls.append({"url": url, **kwargs})
+    def _open(req: urllib.request.Request, timeout: float = 60):
+        url = req.full_url
         assert url in files, f"unexpected download: {url}"
-        return _stream_download(files[url].as_uri(), target, **kwargs)
+        path = files[url]
+        fh = path.open("rb")
+        size = path.stat().st_size
 
-    # urlopen's default opener builds an SSL context on first use, and with
-    # sys.platform patched to "win32" that loads Windows-only certificate
-    # APIs. A file-only opener never builds one, whatever ran before.
-    file_opener = urllib.request.OpenerDirector()
-    file_opener.add_handler(urllib.request.FileHandler())
-    monkeypatch.setattr(urllib.request, "_opener", file_opener)
-    monkeypatch.setattr(ai_models, "_stream_download", fake)
+        class _LocalResp:
+            headers = {"Content-Length": str(size)}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                fh.close()
+                return False
+
+            def geturl(self) -> str:
+                return url
+
+            def read(self, n: int = -1) -> bytes:
+                return fh.read(n)
+
+        return _LocalResp()
+
+    def spy(url: str, target: Path, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return _stream_download(url, target, **kwargs)
+
+    monkeypatch.setattr(ai_models, "_open_download_url", _open)
+    monkeypatch.setattr(ai_models, "_stream_download", spy)
     return calls
+
+
+def _https_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bridge ``https://127.0.0.1:<port>/...`` test URLs to a local HTTPServer."""
+    http_opener = urllib.request.OpenerDirector()
+    http_opener.add_handler(urllib.request.HTTPHandler())
+    http_opener.add_handler(urllib.request.HTTPErrorProcessor())
+
+    def _open(req: urllib.request.Request, timeout: float = 60):
+        original_url = req.full_url
+        assert original_url.startswith("https://127.0.0.1:")
+        loopback_req = urllib.request.Request(
+            "http://" + original_url.removeprefix("https://"),
+            headers=dict(req.header_items()),
+        )
+        resp = http_opener.open(loopback_req, timeout=timeout)
+
+        class _HttpsLoopbackResp:
+            headers = resp.headers
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                resp.close()
+                return False
+
+            def geturl(self) -> str:
+                return original_url
+
+            def read(self, n: int = -1) -> bytes:
+                return resp.read(n)
+
+        return _HttpsLoopbackResp()
+
+    monkeypatch.setattr(ai_models, "_open_download_url", _open)
 
 
 def _no_download(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,6 +227,7 @@ def test_download_and_remove_asr_and_diarization_models(
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             return
 
+    _https_loopback(monkeypatch)
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_port
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -175,7 +237,7 @@ def test_download_and_remove_asr_and_diarization_models(
         diar_path = download_diarization_model(
             "nemotron-3-diarization-q8_0",
             tmp_path,
-            url_override=f"http://127.0.0.1:{port}/nemotron-3-diarization-q8_0.gguf",
+            url_override=f"https://127.0.0.1:{port}/nemotron-3-diarization-q8_0.gguf",
         )
         assert diar_path.is_file()
         assert is_diarization_model_installed("nemotron-3-diarization-q8_0", tmp_path) is True
@@ -185,7 +247,7 @@ def test_download_and_remove_asr_and_diarization_models(
         asr_path = download_asr_model(
             "base",
             tmp_path,
-            url_override=f"http://127.0.0.1:{port}/ggml-base.bin",
+            url_override=f"https://127.0.0.1:{port}/ggml-base.bin",
         )
         assert asr_path.is_file()
         assert is_asr_model_installed("base", tmp_path) is True
@@ -193,7 +255,7 @@ def test_download_and_remove_asr_and_diarization_models(
 
         cli_path = download_audiocpp_runtime(
             tmp_path,
-            url_override=f"http://127.0.0.1:{port}/audio-bin.tar.gz",
+            url_override=f"https://127.0.0.1:{port}/audio-bin.tar.gz",
         )
         assert cli_path.is_file()
         assert is_audiocpp_installed(tmp_path) is True
@@ -260,8 +322,11 @@ def _serve(payload: dict[str, bytes]):
     return server.server_port, shutdown
 
 
-def test_truncated_body_is_rejected_and_part_file_removed(tmp_path: Path) -> None:
+def test_truncated_body_is_rejected_and_part_file_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A short body (proxy/CDN cut) must never be promoted to an installed GGUF."""
+    _https_loopback(monkeypatch)
 
     class _Truncating(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -281,13 +346,13 @@ def test_truncated_body_is_rejected_and_part_file_removed(tmp_path: Path) -> Non
             download_diarization_model(
                 "nemotron-3-diarization-q8_0",
                 tmp_path,
-                url_override=f"http://127.0.0.1:{server.server_port}/model.gguf",
+                url_override=f"https://127.0.0.1:{server.server_port}/model.gguf",
             )
         with pytest.raises(AiModelInstallError):
             download_asr_model(
                 "base",
                 tmp_path,
-                url_override=f"http://127.0.0.1:{server.server_port}/model.bin",
+                url_override=f"https://127.0.0.1:{server.server_port}/model.bin",
             )
     finally:
         server.shutdown()
@@ -300,12 +365,13 @@ def test_truncated_body_is_rejected_and_part_file_removed(tmp_path: Path) -> Non
     assert not list(asr_dir.glob("*.part"))
 
 
-def test_sha256_mismatch_is_rejected(tmp_path: Path) -> None:
+def test_sha256_mismatch_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _https_loopback(monkeypatch)
     port, shutdown = _serve({"/model.gguf": b"not-the-real-weights"})
     try:
         with pytest.raises(AiModelInstallError):
             _stream_download(
-                f"http://127.0.0.1:{port}/model.gguf",
+                f"https://127.0.0.1:{port}/model.gguf",
                 tmp_path / "model.gguf",
                 expected_size=len(b"not-the-real-weights"),
                 expected_sha256="0" * 64,
@@ -374,18 +440,21 @@ def _runtime_tar(script: str) -> bytes:
     return buf.getvalue()
 
 
-def test_broken_runtime_archive_keeps_previous_install(tmp_path: Path) -> None:
+def test_broken_runtime_archive_keeps_previous_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _https_loopback(monkeypatch)
     good = _runtime_tar("#!/usr/bin/env python3\nprint('audiocpp_cli')\n")
     broken = _runtime_tar("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
     port, shutdown = _serve({"/good.tar.gz": good, "/broken.tar.gz": broken})
     try:
         old = download_audiocpp_runtime(
-            tmp_path, url_override=f"http://127.0.0.1:{port}/good.tar.gz"
+            tmp_path, url_override=f"https://127.0.0.1:{port}/good.tar.gz"
         )
         assert old.is_file()
         with pytest.raises(AiModelInstallError):
             download_audiocpp_runtime(
-                tmp_path, url_override=f"http://127.0.0.1:{port}/broken.tar.gz"
+                tmp_path, url_override=f"https://127.0.0.1:{port}/broken.tar.gz"
             )
     finally:
         shutdown()
@@ -547,11 +616,12 @@ def test_whisper_cpp_runtime_download_probe_rollback_and_remove(
         "print('whisper-cli help')\n"
     )
     broken = _whisper_runtime_tar("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
+    _https_loopback(monkeypatch)
     port, shutdown = _serve({"/whisper-good.tar.gz": good, "/whisper-broken.tar.gz": broken})
     try:
         assert is_whisper_cpp_installed(tmp_path) is False
         cli = download_whisper_cpp_runtime(
-            tmp_path, url_override=f"http://127.0.0.1:{port}/whisper-good.tar.gz"
+            tmp_path, url_override=f"https://127.0.0.1:{port}/whisper-good.tar.gz"
         )
         assert cli.is_file()
         assert is_whisper_cpp_installed(tmp_path) is True
@@ -560,7 +630,7 @@ def test_whisper_cpp_runtime_download_probe_rollback_and_remove(
 
         with pytest.raises(AiModelInstallError):
             download_whisper_cpp_runtime(
-                tmp_path, url_override=f"http://127.0.0.1:{port}/whisper-broken.tar.gz"
+                tmp_path, url_override=f"https://127.0.0.1:{port}/whisper-broken.tar.gz"
             )
         assert resolve_whisper_cpp_cli(tmp_path) == cli
         assert cli.is_file()
@@ -902,3 +972,526 @@ def test_media_runtime_manifest_is_frozen_data_and_strictly_validated(tmp_path: 
     broken = tmp_path / "manifest.json"
     broken.write_text("{", encoding="utf-8")
     assert load_media_runtime_manifest(broken).cells("ffmpeg") == {}
+
+
+def test_stream_download_enforces_https_and_blocks_downgrade_redirects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_open(*_args, **_kwargs):
+        raise AssertionError("non-HTTPS URL must be rejected before opening a connection")
+
+    if hasattr(ai_models, "_open_download_url"):
+        monkeypatch.setattr(ai_models, "_open_download_url", fail_open)
+    if hasattr(ai_models, "urlopen"):
+        monkeypatch.setattr(ai_models, "urlopen", fail_open)
+
+    target = tmp_path / "model.bin"
+    for bad_url in (
+        "http://example.com/model.bin",
+        "ftp://example.com/model.bin",
+        f"file://{(tmp_path / 'local.bin').as_posix()}",
+        "example.com/model.bin",
+        "",
+    ):
+        with pytest.raises(AiModelInstallError):
+            _stream_download(bad_url, target)
+        assert not target.exists()
+        assert not list(tmp_path.glob("*.part"))
+
+    handler = ai_models._HttpsOnlyRedirectHandler()
+    req = urllib.request.Request("https://example.com/model.bin")
+    for bad_redirect in (
+        "http://example.com/model.bin",
+        "file:///etc/passwd",
+        "ftp://example.com/model.bin",
+        "/relative/path",
+    ):
+        with pytest.raises(urllib.error.URLError):
+            handler.redirect_request(req, None, 302, "Found", {}, bad_redirect)
+    allowed = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://cdn.example.com/model.bin"
+    )
+    assert allowed is not None
+    assert allowed.full_url == "https://cdn.example.com/model.bin"
+
+    # Even if an opener returns a downgraded response URL, refuse it before writing.
+    class _DowngradedResp:
+        headers = {"Content-Length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self) -> str:
+            return "http://downgraded.example.com/model.bin"
+
+        def read(self, _n: int = -1) -> bytes:
+            return b"data"
+
+    monkeypatch.setattr(ai_models, "_open_download_url", lambda _req, timeout=60: _DowngradedResp())
+    with pytest.raises(AiModelInstallError):
+        _stream_download("https://example.com/model.bin", target)
+    assert not target.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_stream_download_bounds_bytes_in_loop_and_handles_http_errors_and_bad_content_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FakeResp:
+        def __init__(
+            self,
+            chunks: list[bytes | Exception],
+            headers: dict[str, str] | None = None,
+            url: str = "https://example.com/model.bin",
+        ) -> None:
+            self._chunks = list(chunks)
+            self.headers = headers or {}
+            self._url = url
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self) -> str:
+            return self._url
+
+        def read(self, n: int = -1) -> bytes:
+            self.reads += 1
+            if not self._chunks:
+                return b""
+            nxt = self._chunks.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            if n > 0 and len(nxt) > n:
+                self._chunks.insert(0, nxt[n:])
+                return nxt[:n]
+            return nxt
+
+    target = tmp_path / "model.bin"
+
+    # Server omits Content-Length and sends more bytes than expected_size: stops inside loop.
+    oversized = _FakeResp([b"a" * 60, b"b" * 60, b"c" * 60, b"d" * 60])
+    monkeypatch.setattr(ai_models, "_open_download_url", lambda _req, timeout=60: oversized)
+    with pytest.raises(AiModelInstallError):
+        _stream_download("https://example.com/model.bin", target, expected_size=100)
+    assert oversized.reads <= 3
+    assert not target.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+    # Explicit maximum_bytes ceiling stops unbounded streams even when expected_size=0.
+    unbounded = _FakeResp([b"x" * 50, b"y" * 50, b"z" * 50])
+    monkeypatch.setattr(ai_models, "_open_download_url", lambda _req, timeout=60: unbounded)
+    with pytest.raises(AiModelInstallError):
+        _stream_download("https://example.com/model.bin", target, maximum_bytes=80)
+    assert unbounded.reads <= 2
+    assert not target.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+    # Malformed / negative Content-Length raises AiModelInstallError (not ValueError).
+    for bad_cl in ("not-a-number", "-12", "10, 20"):
+        resp = _FakeResp([b"abc"], headers={"Content-Length": bad_cl})
+        monkeypatch.setattr(ai_models, "_open_download_url", lambda _req, timeout=60, r=resp: r)
+        with pytest.raises(AiModelInstallError):
+            _stream_download("https://example.com/model.bin", target)
+        assert not list(tmp_path.glob("*.part"))
+
+    # http.client.HTTPException (IncompleteRead / BadStatusLine) maps to AiModelInstallError.
+    for exc in (http.client.IncompleteRead(b"part", 100), http.client.BadStatusLine("bad")):
+        resp = _FakeResp([exc], headers={"Content-Length": "100"})
+        monkeypatch.setattr(ai_models, "_open_download_url", lambda _req, timeout=60, r=resp: r)
+        with pytest.raises(AiModelInstallError):
+            _stream_download("https://example.com/model.bin", target)
+        assert not list(tmp_path.glob("*.part"))
+
+
+def test_extract_archive_wraps_errors_bounds_bytes_and_uses_to_extended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    # Corrupt zip, corrupt tar.gz, and missing archive all wrap into AiModelInstallError.
+    bad_zip = tmp_path / "corrupt.zip"
+    bad_zip.write_bytes(b"not-a-zip")
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(bad_zip, dest)
+
+    bad_tar = tmp_path / "corrupt.tar.gz"
+    bad_tar.write_bytes(b"\x1f\x8b\x08\x00truncated-gzip")
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(bad_tar, dest)
+
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(tmp_path / "missing.zip", dest)
+
+    # Zip traversal and zip symlink member are rejected.
+    trav_zip = tmp_path / "traversal.zip"
+    trav_zip.write_bytes(_zip_bytes({"../escape.txt": b"nope"}))
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(trav_zip, dest)
+    assert not (tmp_path / "escape.txt").exists()
+
+    sym_zip = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(sym_zip, "w") as zf:
+        info = zipfile.ZipInfo("bin/link")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "/etc/passwd")
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(sym_zip, dest)
+
+    # Zip bomb / excessive extracted bytes rejected.
+    big_zip = tmp_path / "big.zip"
+    big_zip.write_bytes(_zip_bytes({"bin/payload": b"A" * 2048}))
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(big_zip, dest, max_extracted_bytes=512)
+
+    # Windows extended-length path helper is used for extracted targets in both zip and tar.
+    extended_calls: list[Path] = []
+    real_to_extended = ai_models.to_extended
+
+    def spy_extended(path: Path | str) -> Path:
+        extended_calls.append(Path(path))
+        return real_to_extended(path)
+
+    monkeypatch.setattr(ai_models, "to_extended", spy_extended)
+    good_zip = tmp_path / "good.zip"
+    good_zip.write_bytes(_zip_bytes({"bin/tool": b"ok"}))
+    zip_dest = tmp_path / "zip_out"
+    zip_dest.mkdir()
+    ai_models._extract_archive(good_zip, zip_dest)
+    assert (zip_dest / "bin" / "tool").read_bytes() == b"ok"
+    assert any(p.name == "tool" for p in extended_calls)
+
+    extended_calls.clear()
+    good_tar = tmp_path / "good.tar.gz"
+    good_tar.write_bytes(_runtime_tar("#!/usr/bin/env python3\nprint('ok')\n"))
+    tar_dest = tmp_path / "tar_out"
+    tar_dest.mkdir()
+    ai_models._extract_archive(good_tar, tar_dest)
+    assert (tar_dest / "bin" / "audiocpp_cli").is_file()
+    assert any(p.name == "audiocpp_cli" for p in extended_calls)
+
+    # Tar escaping symlink is rejected as AiModelInstallError; tar bomb hits byte ceiling.
+    evil_tar = tmp_path / "evil_sym.tar.gz"
+    with tarfile.open(evil_tar, "w:gz") as tf:
+        sym = tarfile.TarInfo("lib/escape.so")
+        sym.type = tarfile.SYMTYPE
+        sym.linkname = "../../../etc/passwd"
+        tf.addfile(sym)
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(evil_tar, dest)
+
+    big_tar = tmp_path / "big.tar.gz"
+    with tarfile.open(big_tar, "w:gz") as tf:
+        payload = b"B" * 2048
+        info = tarfile.TarInfo("bin/blob")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    with pytest.raises(AiModelInstallError):
+        ai_models._extract_archive(big_tar, dest, max_extracted_bytes=512)
+
+
+def test_promote_runtime_dir_retries_permission_error_and_restores_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ai_models, "REPLACE_LOCK_DELAY_S", 0.0)
+    monkeypatch.setattr(ai_models, "REPLACE_LOCK_ATTEMPTS", 3)
+
+    # 1. Transient PermissionError on backup swap retries and succeeds.
+    rt_dir = tmp_path / "rt1"
+    staging = tmp_path / "staging1"
+    backup = tmp_path / "backup1"
+    rt_dir.mkdir()
+    (rt_dir / "old.txt").write_text("old", encoding="utf-8")
+    staging.mkdir()
+    (staging / "new.txt").write_text("new", encoding="utf-8")
+
+    real_replace = os.replace
+    attempts = {"backup": 0}
+
+    def flaky_backup(src, dst):
+        if Path(src) == rt_dir and Path(dst) == backup and attempts["backup"] < 2:
+            attempts["backup"] += 1
+            raise PermissionError("locked by antivirus")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_backup)
+    ai_models._promote_runtime_dir(staging, rt_dir, backup, "test")
+    assert attempts["backup"] == 2
+    assert (rt_dir / "new.txt").read_text(encoding="utf-8") == "new"
+    assert not backup.exists()
+
+    # 2. Persistent PermissionError on backup swap raises AiModelInstallError; rt_dir stays intact.
+    rt_dir2 = tmp_path / "rt2"
+    staging2 = tmp_path / "staging2"
+    backup2 = tmp_path / "backup2"
+    rt_dir2.mkdir()
+    (rt_dir2 / "old.txt").write_text("keep", encoding="utf-8")
+    staging2.mkdir()
+    (staging2 / "new.txt").write_text("new", encoding="utf-8")
+
+    def always_fail_backup(src, dst):
+        if Path(src) == rt_dir2 and Path(dst) == backup2:
+            raise PermissionError("permanently locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", always_fail_backup)
+    with pytest.raises(AiModelInstallError):
+        ai_models._promote_runtime_dir(staging2, rt_dir2, backup2, "test")
+    assert (rt_dir2 / "old.txt").read_text(encoding="utf-8") == "keep"
+    assert not backup2.exists()
+
+    # 3. Failure on staging->rt_dir restores backup (even across a rollback PermissionError).
+    rt_dir3 = tmp_path / "rt3"
+    staging3 = tmp_path / "staging3"
+    backup3 = tmp_path / "backup3"
+    rt_dir3.mkdir()
+    (rt_dir3 / "old.txt").write_text("restored", encoding="utf-8")
+    staging3.mkdir()
+    (staging3 / "new.txt").write_text("new", encoding="utf-8")
+    rollback_attempts = {"n": 0}
+
+    def fail_promote_flaky_rollback(src, dst):
+        if Path(src) == staging3 and Path(dst) == rt_dir3:
+            raise PermissionError("promote failed")
+        if Path(src) == backup3 and Path(dst) == rt_dir3 and rollback_attempts["n"] == 0:
+            rollback_attempts["n"] += 1
+            raise PermissionError("transient rollback lock")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_promote_flaky_rollback)
+    with pytest.raises(AiModelInstallError):
+        ai_models._promote_runtime_dir(staging3, rt_dir3, backup3, "test")
+    assert rollback_attempts["n"] == 1
+    assert (rt_dir3 / "old.txt").read_text(encoding="utf-8") == "restored"
+    assert not backup3.exists()
+
+
+def test_download_audiocpp_runtime_preflights_combined_total_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(monkeypatch, "win32", "AMD64")
+    monkeypatch.setattr(ai_models, "_nvidia_driver_cuda_version", lambda: "12.4")
+    cuda12 = available_audiocpp_variants()["cuda12.4"]
+    combined_bytes = cuda12.size_bytes + sum(c.size_bytes for c in cuda12.companions)
+    largest_single = max(cuda12.size_bytes, *(c.size_bytes for c in cuda12.companions))
+    # Enough for any individual archive, but NOT enough for the combined pack.
+    free_for_single_only = ai_models._runtime_space_needed(largest_single) + 1024
+    assert free_for_single_only < ai_models._runtime_space_needed(combined_bytes)
+
+    monkeypatch.setattr(ai_models, "free_space_bytes", lambda _p: free_for_single_only)
+    _no_download(monkeypatch)
+    with pytest.raises(AiModelInstallError, match="dung lượng"):
+        download_audiocpp_runtime(tmp_path, variant="cuda12.4")
+    assert not list((tmp_path / "runtimes").glob(".audiocpp_staging_*"))
+
+
+def test_remove_corrupt_catalog_models_and_runtime_symlink_containment_guards(
+    tmp_path: Path,
+) -> None:
+    from vienetts_app.core.ai_models import (
+        asr_models_dir,
+        audiocpp_runtime_dir,
+        diarization_models_dir,
+        whisper_runtime_dir,
+    )
+
+    data_dir = tmp_path / "data"
+
+    # Corrupt/truncated catalog files read as not installed, yet must still be removable by ID.
+    diar_spec = DIARIZATION_GGUF_MODELS["nemotron-3-diarization-q8_0"]
+    corrupt_diar = diarization_models_dir(data_dir) / diar_spec.filename
+    corrupt_diar.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_diar.write_bytes(b"corrupt")
+    assert is_diarization_model_installed("nemotron-3-diarization-q8_0", data_dir) is False
+    assert remove_diarization_model("nemotron-3-diarization-q8_0", data_dir) is True
+    assert not corrupt_diar.exists()
+
+    asr_spec = WHISPER_GGUF_MODELS["base"]
+    corrupt_asr = asr_models_dir(data_dir) / asr_spec.filename
+    corrupt_asr.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_asr.write_bytes(b"")  # 0-byte corrupt file
+    assert is_asr_model_installed("base", data_dir) is False
+    assert remove_asr_model("base", data_dir) is True
+    assert not corrupt_asr.exists()
+
+    # Symlink escapes on models and ALL 3 runtime removers must be refused.
+    outside = tmp_path / "outside"
+    (outside / "bin").mkdir(parents=True)
+    outside_marker = outside / "bin" / "keep.txt"
+    outside_marker.write_text("keep", encoding="utf-8")
+    outside_gguf = outside / "secret.gguf"
+    outside_gguf.write_bytes(b"keep-gguf")
+    outside_bin = outside / "secret.bin"
+    outside_bin.write_bytes(b"keep-bin")
+
+    (data_dir / "runtimes").mkdir(parents=True, exist_ok=True)
+    try:
+        corrupt_diar.symlink_to(outside_gguf)
+        corrupt_asr.symlink_to(outside_bin)
+        audiocpp_runtime_dir(data_dir).symlink_to(outside, target_is_directory=True)
+        whisper_runtime_dir(data_dir).symlink_to(outside, target_is_directory=True)
+        ffmpeg_runtime_dir(data_dir).symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable on this host")
+
+    assert remove_diarization_model("nemotron-3-diarization-q8_0", data_dir) is False
+    assert outside_gguf.is_file()
+    assert remove_asr_model("base", data_dir) is False
+    assert outside_bin.is_file()
+    assert remove_audiocpp_runtime(data_dir) is False
+    assert remove_whisper_cpp_runtime(data_dir) is False
+    assert remove_ffmpeg_runtime(data_dir) is False
+    assert outside_marker.is_file()
+
+    # Even if <data_dir>/runtimes or <data_dir>/models/<subdir> is a symlinked parent dir, refuse.
+    data_dir2 = tmp_path / "data2"
+    data_dir2.mkdir()
+    outside_rt_root = tmp_path / "outside_runtimes"
+    for rt_name in ("audiocpp", "whisper", "ffmpeg"):
+        (outside_rt_root / rt_name).mkdir(parents=True)
+        (outside_rt_root / rt_name / "keep.txt").write_text("keep", encoding="utf-8")
+    (data_dir2 / "runtimes").symlink_to(outside_rt_root, target_is_directory=True)
+
+    outside_models = tmp_path / "outside_models"
+    outside_models.mkdir()
+    outside_model_file = outside_models / asr_spec.filename
+    outside_model_file.write_bytes(b"keep-model")
+    (data_dir2 / "models").mkdir(parents=True)
+    (data_dir2 / "models" / "whisper").symlink_to(outside_models, target_is_directory=True)
+
+    assert remove_audiocpp_runtime(data_dir2) is False
+    assert remove_whisper_cpp_runtime(data_dir2) is False
+    assert remove_ffmpeg_runtime(data_dir2) is False
+    for rt_name in ("audiocpp", "whisper", "ffmpeg"):
+        assert (outside_rt_root / rt_name / "keep.txt").is_file()
+    assert remove_asr_model("base", data_dir2) is False
+    assert outside_model_file.is_file()
+
+
+def test_available_audiocpp_variants_accepts_injectable_driver_cuda_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _host(monkeypatch, "win32", "AMD64")
+    probe_calls: list[str] = []
+
+    def fail_probe() -> str | None:
+        probe_calls.append("probed")
+        raise AssertionError("synchronous CUDA driver probe must be skipped")
+
+    monkeypatch.setattr(ai_models, "_nvidia_driver_cuda_version", fail_probe)
+
+    assert set(available_audiocpp_variants(driver_cuda_version=None)) == {"cpu", "vulkan"}
+    assert set(available_audiocpp_variants(driver_cuda_version="11.8")) == {"cpu", "vulkan"}
+    assert set(available_audiocpp_variants(driver_cuda_version=(11, 8))) == {"cpu", "vulkan"}
+    assert set(available_audiocpp_variants(driver_cuda_version="12.4")) == {
+        "cpu",
+        "vulkan",
+        "cuda12.4",
+    }
+    assert set(available_audiocpp_variants(driver_cuda_version=(13, 0))) == {
+        "cpu",
+        "vulkan",
+        "cuda12.4",
+        "cuda13.3",
+    }
+    assert probe_calls == []
+
+    # Default (omitted) still uses the synchronous probe.
+    monkeypatch.setattr(
+        ai_models, "_nvidia_driver_cuda_version", lambda: (probe_calls.append("probed"), "12.2")[1]
+    )
+    assert set(available_audiocpp_variants()) == {"cpu", "vulkan", "cuda12.4"}
+    assert probe_calls == ["probed"]
+
+
+def test_all_four_downloaders_support_cancel_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(monkeypatch, "linux", "x86_64")
+    big_payload = b"X" * (ai_models.CHUNK_BYTES + 1024)
+    src = tmp_path / "payload.bin"
+    src.write_bytes(big_payload)
+
+    def _fake_open(_req, timeout=60):
+        class _Resp:
+            headers = {"Content-Length": str(len(big_payload))}
+
+            def __init__(self) -> None:
+                self._buf = io.BytesIO(big_payload)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def geturl(self) -> str:
+                return _req.full_url
+
+            def read(self, n: int = -1) -> bytes:
+                return self._buf.read(n)
+
+        return _Resp()
+
+    monkeypatch.setattr(ai_models, "_open_download_url", _fake_open)
+    data_dir = tmp_path / "data"
+
+    # Mid-download cancellation on all 4 downloaders raises AiModelDownloadCancelled & cleans up.
+    for label, call in (
+        (
+            "diarization",
+            lambda cb, cc: download_diarization_model(
+                "nemotron-3-diarization-q8_0",
+                data_dir,
+                url_override="https://example.com/model.gguf",
+                progress_cb=cb,
+                cancel_check=cc,
+            ),
+        ),
+        (
+            "asr",
+            lambda cb, cc: download_asr_model(
+                "base",
+                data_dir,
+                url_override="https://example.com/ggml-base.bin",
+                progress_cb=cb,
+                cancel_check=cc,
+            ),
+        ),
+        (
+            "whisper_cpp",
+            lambda cb, cc: download_whisper_cpp_runtime(
+                data_dir,
+                url_override="https://example.com/whisper.tar.gz",
+                progress_cb=cb,
+                cancel_check=cc,
+            ),
+        ),
+        (
+            "audiocpp",
+            lambda cb, cc: download_audiocpp_runtime(
+                data_dir,
+                url_override="https://example.com/audiocpp.tar.gz",
+                progress_cb=cb,
+                cancel_check=cc,
+            ),
+        ),
+    ):
+        cancelled = threading.Event()
+        with pytest.raises(AiModelDownloadCancelled, match="huỷ"):
+            call(lambda _p, ev=cancelled: ev.set(), cancelled.is_set)
+        assert not list(data_dir.rglob("*.part")), label
+        assert not list(data_dir.rglob(".*staging*")), label
+
+        # Pre-cancelled call fails immediately before writing anything.
+        with pytest.raises(AiModelDownloadCancelled, match="huỷ"):
+            call(None, lambda: True)
+        assert not list(data_dir.rglob("*.part")), label
+        assert not list(data_dir.rglob(".*staging*")), label

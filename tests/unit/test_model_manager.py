@@ -392,3 +392,144 @@ def test_windows_extended_path_downloader_return_promotes_ready(tmp_path: Path) 
     assert status.state == "ready"
     assert status.location is not None
     assert (status.location.root / "backbone" / "a.txt").is_file()
+
+
+def test_windows_extended_path_used_unconditionally_even_for_short_staging_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    from vienetts_app.core.model_manager import ModelManager
+
+    recorded_local_dirs: list[str] = []
+
+    def fake_downloader(**kwargs) -> Path:
+        recorded_local_dirs.append(kwargs["local_dir"])
+        repo_dir = "backbone" if kwargs["filename"] == "a.txt" else "codec"
+        target = tmp_path / "models" / ".staging" / "official-v1" / repo_dir / kwargs["filename"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(CONTENT[kwargs["filename"]])
+        return target
+
+    manager = ModelManager(
+        tmp_path / "models",
+        manifest=mini_manifest(),
+        downloader=fake_downloader,
+    )
+
+    monkeypatch.setattr(os, "name", "nt")
+    original_resolve = Path.resolve
+
+    def fake_resolve(self, *args, **kwargs):
+        if ".staging" in str(self):
+
+            class ShortWinPath:
+                def __str__(self):
+                    return r"C:\m\.staging\official-v1\backbone"
+
+            return ShortWinPath()
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+    status = manager.install()
+    assert status.state == "ready", status.error
+    assert len(recorded_local_dirs) == 2
+    assert all(d.startswith("\\\\?\\C:\\") for d in recorded_local_dirs)
+
+
+def test_model_manager_stamp_ledger_skips_warm_and_post_promotion_hashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    import pytest
+
+    from vienetts_app.core import managed_install as mi
+    from vienetts_app.core.model_manager import ModelManager
+
+    hash_calls: list[Path] = []
+    real_hash = mi.sha256_of
+    monkeypatch.setattr(mi, "sha256_of", lambda p: hash_calls.append(p) or real_hash(p))
+
+    manager = ModelManager(
+        tmp_path / "models",
+        manifest=mini_manifest(),
+        downloader=materialize_requested_file,
+    )
+    status = manager.install()
+    assert status.state == "ready"
+    # Fresh stamps are written before promotion so post-promotion inspect does not re-hash.
+    assert len(hash_calls) == len(mini_manifest().files)
+    install_path = status.location.root / "install.json"
+    meta = json.loads(install_path.read_text(encoding="utf-8"))
+    assert set(meta["stamps"]) == {"backbone/a.txt", "codec/b.bin"}
+
+    # Warm stamped startup performs 0 full SHA-256 reads.
+    hash_calls.clear()
+    assert manager.inspect().state == "ready"
+    assert manager.inspect(mode="stamp").state == "ready"
+    assert hash_calls == []
+
+    # Force full verification hashes every file regardless of stamps.
+    assert manager.inspect(mode="full").state == "ready"
+    assert len(hash_calls) == len(mini_manifest().files)
+
+    # Touching a file rehashes only that file once and persists its refreshed stamp.
+    hash_calls.clear()
+    a_file = status.location.root / "backbone" / "a.txt"
+    st = a_file.stat()
+    os.utime(a_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert manager.inspect().state == "ready"
+    assert manager.inspect().state == "ready"
+    assert hash_calls == [a_file]
+
+    # Legacy install.json without stamps hashes once, then persists stamps.
+    hash_calls.clear()
+    del meta["stamps"]
+    install_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    assert manager.inspect().state == "ready"
+    assert manager.inspect().state == "ready"
+    assert len(hash_calls) == len(mini_manifest().files)
+    assert set(json.loads(install_path.read_text(encoding="utf-8"))["stamps"]) == {
+        "backbone/a.txt",
+        "codec/b.bin",
+    }
+
+    # Corrupted file fails inspect and strips its stamp from install.json.
+    hash_calls.clear()
+    a_file.write_bytes(b"XXXXX")
+    st2 = a_file.stat()
+    os.utime(a_file, ns=(st2.st_atime_ns, st2.st_mtime_ns + 2_000_000))
+    failed = manager.inspect()
+    assert failed.state == "failed"
+    assert "backbone/a.txt" not in json.loads(install_path.read_text(encoding="utf-8"))["stamps"]
+
+    with pytest.raises(ValueError, match="verification mode"):
+        manager.inspect(mode="bogus")
+
+
+def test_offline_pack_persists_stamps_for_zero_hash_warm_inspect(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from vienetts_app.core import managed_install as mi
+    from vienetts_app.core.model_manager import ModelManager
+
+    source = tmp_path / "pack"
+    (source / "backbone").mkdir(parents=True)
+    (source / "codec").mkdir(parents=True)
+    (source / "backbone" / "a.txt").write_bytes(CONTENT["a.txt"])
+    (source / "codec" / "b.bin").write_bytes(CONTENT["b.bin"])
+
+    hash_calls: list[Path] = []
+    real_hash = mi.sha256_of
+    monkeypatch.setattr(mi, "sha256_of", lambda p: hash_calls.append(p) or real_hash(p))
+
+    manager = ModelManager(tmp_path / "models", manifest=mini_manifest())
+    status = manager.install_offline_pack(source)
+    assert status.state == "ready"
+    assert len(hash_calls) == len(mini_manifest().files)
+
+    hash_calls.clear()
+    assert manager.inspect().state == "ready"
+    assert hash_calls == []

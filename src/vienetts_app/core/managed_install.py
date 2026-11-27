@@ -18,8 +18,10 @@ import json
 import os
 import shutil
 import stat
+import sys
 import threading
 import time
+import uuid
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -43,6 +45,11 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset({"download.pytorch.org", "files.pythonhosted.
 # the budget runs ~3s rather than a sub-second window.
 REMOVAL_ATTEMPTS = 10
 REMOVAL_RETRY_SECONDS = 0.3
+
+# Windows: antivirus/indexer/Explorer can briefly lock a file or directory
+# during atomic rename; ride out PermissionError before failing.
+REPLACE_LOCK_ATTEMPTS = 5
+REPLACE_LOCK_DELAY_S = 0.2
 
 
 class InstallPromotionError(RuntimeError):
@@ -123,11 +130,19 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_matches(path: Path, size_bytes: int, sha256: str) -> bool:
+def file_matches(
+    path: Path,
+    size_bytes: int,
+    sha256: str,
+    *,
+    known_sha256: str | None = None,
+) -> bool:
     """True when ``path`` exists with exactly ``size_bytes`` and ``sha256``.
 
     Missing files, wrong sizes, unreadable files and digest mismatches all
     report False — the caller treats every case as "download it again".
+    When ``known_sha256`` was computed inline while streaming from offset 0,
+    the file's size is still checked via ``stat`` without reading it back.
     """
     try:
         if not path.is_file():
@@ -136,6 +151,8 @@ def file_matches(path: Path, size_bytes: int, sha256: str) -> bool:
             return False
     except OSError:
         return False
+    if known_sha256 is not None:
+        return known_sha256 == sha256
     try:
         return sha256_of(path) == sha256
     except OSError:
@@ -247,20 +264,36 @@ class StampLedger:
         self.fresh[key] = stamp
         return True
 
+    def record(self, key: str, path: Path) -> FileStamp | None:
+        """Record the current stat stamp of a file that was just verified."""
+        stamp = file_stamp(path)
+        if stamp is not None:
+            self.fresh[key] = stamp
+        return stamp
+
+    def as_dict(self) -> dict[str, list[int]]:
+        """JSON-ready mapping of freshly recorded stamps."""
+        return {key: list(stamp) for key, stamp in sorted(self.fresh.items())}
+
+    def with_stamps(self, record: Mapping[str, object]) -> dict[str, object]:
+        """Copy ``record`` with freshly verified stamps attached for ``install.json``."""
+        return {**record, STAMPS_KEY: self.as_dict()}
+
     def persist(self, install_path: Path, record: object) -> None:
         """Rewrite ``install_path`` with the fresh stamps (best effort, atomic)."""
-        stamps = {key: list(stamp) for key, stamp in sorted(self.fresh.items())}
+        stamps = self.as_dict()
         if stamps == self._recorded or not isinstance(record, dict):
             return
         payload = json.dumps({**record, STAMPS_KEY: stamps}, sort_keys=True)
-        temporary = install_path.with_name(f"{install_path.name}.tmp")
+        temporary = install_path.with_name(f".{install_path.name}.{uuid.uuid4().hex}.tmp")
+        writable_temp = _writable_path(temporary)
         try:
-            temporary.write_text(payload, encoding="utf-8")
-            os.replace(temporary, install_path)
+            writable_temp.write_text(payload, encoding="utf-8")
+            replace_retrying(temporary, install_path)
         except OSError:
             # A read-only or locked tree still verifies — it just hashes again.
             with contextlib.suppress(OSError):
-                temporary.unlink(missing_ok=True)
+                writable_temp.unlink(missing_ok=True)
             return
         self._recorded = stamps
 
@@ -310,24 +343,118 @@ def free_space_bytes(
         return None
 
 
-def safe_remove(path: Path) -> None:
+def replace_retrying(
+    source: Path,
+    target: Path,
+    *,
+    attempts: int | None = None,
+    delay_s: float | None = None,
+) -> None:
+    """``os.replace`` riding out brief Windows locks (antivirus/OneDrive)."""
+    max_attempts = max(1, REPLACE_LOCK_ATTEMPTS if attempts is None else attempts)
+    sleep_s = REPLACE_LOCK_DELAY_S if delay_s is None else delay_s
+    src = _writable_path(source)
+    dst = _writable_path(target)
+    for attempt in range(max_attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt + 1 >= max_attempts:
+                raise
+            time.sleep(sleep_s)
+
+
+def _path_within_root(candidate: str, root: Path) -> bool:
+    try:
+        cand_norm = os.path.normcase(os.path.abspath(candidate))
+        root_norm = os.path.normcase(os.path.abspath(os.fspath(root)))
+        return os.path.commonpath([cand_norm, root_norm]) == root_norm
+    except ValueError:
+        return False
+
+
+def _make_readonly_handler(
+    root: Path,
+) -> Callable[[Callable[..., object], str | Path, BaseException], None]:
+    def _onexc(
+        func: Callable[..., object],
+        failed_path: str | Path,
+        exc: BaseException,
+    ) -> None:
+        if not isinstance(exc, PermissionError):
+            raise exc
+        if not os.path.islink(failed_path):
+            with contextlib.suppress(OSError):
+                current = os.stat(failed_path).st_mode
+                if stat.S_ISDIR(current):
+                    os.chmod(failed_path, current | stat.S_IRWXU)
+                else:
+                    os.chmod(failed_path, current | stat.S_IWRITE | stat.S_IREAD)
+        parent = os.path.dirname(os.fspath(failed_path))
+        if parent and _path_within_root(parent, root) and not os.path.islink(parent):
+            with contextlib.suppress(OSError):
+                parent_mode = os.stat(parent).st_mode
+                if not (parent_mode & stat.S_IWUSR):
+                    os.chmod(parent, parent_mode | stat.S_IRWXU)
+        func(failed_path)
+
+    return _onexc
+
+
+def _rmtree_error_kwargs(root: Path) -> dict[str, object]:
+    onexc = _make_readonly_handler(root)
+    if sys.version_info >= (3, 12):
+        return {"onexc": onexc}
+
+    def _onerror(
+        func: Callable[..., object],
+        failed_path: str | Path,
+        exc_info: tuple[type[BaseException], BaseException, object],
+    ) -> None:
+        onexc(func, failed_path, exc_info[1])
+
+    return {"onerror": _onerror}
+
+
+def safe_remove(path: Path, *, strict: bool = False) -> None:
     """Remove a file, symlink or directory tree, retrying briefly on Windows.
 
-    A locked target is retried (``REMOVAL_ATTEMPTS``) before giving up; the
-    final failure is swallowed because every caller treats removal as
-    best-effort cleanup of a previous/staging install.
+    Routes ``path`` through :func:`_writable_path` so Windows trees past
+    ``MAX_PATH`` can be deleted, and clears read-only attributes inside the
+    target tree via ``shutil.rmtree``'s error handler.
+
+    When ``strict`` is False (default), a locked target is retried
+    (``REMOVAL_ATTEMPTS``) before giving up silently (best-effort cleanup).
+    When ``strict`` is True, any failure — or a target that still exists after
+    the retry budget — raises ``OSError``.
     """
+    target = _writable_path(path)
+    last_error: OSError | None = None
+    rmtree_kwargs = _rmtree_error_kwargs(target)
     for attempt in range(REMOVAL_ATTEMPTS):
         try:
-            if path.is_symlink() or path.is_file():
-                path.unlink(missing_ok=True)
-            elif path.exists():
-                shutil.rmtree(path)
-            return
-        except OSError:
-            if attempt + 1 == REMOVAL_ATTEMPTS:
+            if target.is_symlink() or target.is_file():
+                try:
+                    target.unlink(missing_ok=True)
+                except PermissionError:
+                    if not target.is_symlink():
+                        with contextlib.suppress(OSError):
+                            mode = os.stat(target).st_mode
+                            os.chmod(target, mode | stat.S_IWRITE | stat.S_IREAD)
+                    target.unlink(missing_ok=True)
+            elif target.exists():
+                shutil.rmtree(target, **rmtree_kwargs)
+            if not (target.is_symlink() or target.exists()):
                 return
-            time.sleep(REMOVAL_RETRY_SECONDS)
+            last_error = OSError(f"path still exists after removal: {path}")
+        except OSError as exc:
+            last_error = exc
+        if attempt + 1 == REMOVAL_ATTEMPTS:
+            if strict:
+                raise (last_error or OSError(f"could not remove path: {path}"))
+            return
+        time.sleep(REMOVAL_RETRY_SECONDS)
 
 
 @contextmanager
@@ -346,23 +473,29 @@ def promoted_install(
     :class:`InstallPromotionError` (or anything else) to roll back, or return
     normally to drop the previous install.
     """
-    safe_remove(previous)
+    try:
+        safe_remove(previous, strict=True)
+    except OSError as exc:
+        raise InstallPromotionError(f"promotion failed: {exc}") from exc
     had_previous = False
     if active.exists():
         if active_usable():
             try:
-                os.replace(active, previous)
+                replace_retrying(active, previous)
             except OSError as exc:
                 raise InstallPromotionError(f"promotion failed: {exc}") from exc
             had_previous = True
         else:
-            safe_remove(active)
+            try:
+                safe_remove(active, strict=True)
+            except OSError as exc:
+                raise InstallPromotionError(f"promotion failed: {exc}") from exc
     try:
-        os.replace(staging, active)
+        replace_retrying(staging, active)
     except OSError as exc:
         if had_previous and not active.exists() and previous.exists():
             with contextlib.suppress(OSError):
-                os.replace(previous, active)
+                replace_retrying(previous, active)
         raise InstallPromotionError(f"promotion failed: {exc}") from exc
     try:
         yield
@@ -370,7 +503,7 @@ def promoted_install(
         safe_remove(active)
         if had_previous:
             with contextlib.suppress(OSError):
-                os.replace(previous, active)
+                replace_retrying(previous, active)
         raise
     if had_previous:
         safe_remove(previous)
@@ -470,28 +603,36 @@ def stream_to_file(
     cancelled: Callable[[], bool],
     maximum_bytes: int,
     on_bytes: Callable[[int], None] | None = None,
-) -> None:
+) -> str | None:
     """Copy a response body to ``target`` in bounded chunks.
 
     Raises :class:`DownloadCancelled` when ``cancelled()`` flips mid-stream and
     ``OSError`` when the body would exceed the manifest size (a lying server
     must not fill the disk). Partial bytes stay on disk so a retry resumes.
+
+    When streaming fresh from offset 0 (``mode="wb"`` or ``mode="ab"`` onto a
+    missing/empty file), computes and returns the SHA-256 hex digest inline so
+    callers can skip a redundant full-file hash pass. Returns ``None`` when
+    appending onto existing bytes.
     """
     reader = getattr(response, "read", None)
     if not callable(reader):
         raise OSError("download response is not readable")
     writable = _writable_path(target)
     current_bytes = writable.stat().st_size if mode == "ab" and writable.exists() else 0
+    digest = hashlib.sha256() if current_bytes == 0 else None
     with writable.open(mode) as destination:
         while True:
             if cancelled():
                 raise DownloadCancelled
             chunk = reader(CHUNK_SIZE)
             if not chunk:
-                return
+                return digest.hexdigest() if digest is not None else None
             if len(chunk) > maximum_bytes - current_bytes:
                 raise OSError("download response exceeds declared artifact size")
             destination.write(chunk)
+            if digest is not None:
+                digest.update(chunk)
             current_bytes += len(chunk)
             if on_bytes is not None:
                 on_bytes(current_bytes)
@@ -534,7 +675,10 @@ def _writable_path(destination: Path) -> Path:
     """
     if os.name != "nt":
         return destination
-    return to_extended(destination)
+    extended = to_extended(destination)
+    if str(extended).startswith("\\\\?\\"):
+        return extended
+    return destination
 
 
 def wheel_member_destination(root: Path, member: zipfile.ZipInfo) -> tuple[Path, bool]:
@@ -631,19 +775,22 @@ def download_wheel_archive(
     downloader: Callable[[RuntimeWheel, Path], None] | None = None,
     timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
     on_bytes: Callable[[int], None] | None = None,
-) -> None:
+) -> str | None:
     """Download one pinned artifact, resuming a partial ``target`` when safe.
 
     ``downloader`` replaces the HTTP path (tests, offline mirrors). Otherwise a
     ``Range`` request resumes, and any response that is not a verified ``206``
     for the manifest URL restarts the download from zero — an ignored range or
     a redirect must never be appended to.
+
+    Returns the inline SHA-256 hex digest when the whole file was streamed from
+    offset 0, or ``None`` when resumed or fetched via a custom ``downloader``.
     """
     writable = _writable_path(target)
     writable.parent.mkdir(parents=True, exist_ok=True)
     if downloader is not None:
         downloader(wheel, target)
-        return
+        return None
 
     try:
         offset = writable.stat().st_size
@@ -663,7 +810,7 @@ def download_wheel_archive(
             size_bytes=wheel.size_bytes,
             expected_url=wheel.url,
         ):
-            stream_to_file(
+            return stream_to_file(
                 response,
                 target,
                 mode="ab",
@@ -671,9 +818,8 @@ def download_wheel_archive(
                 maximum_bytes=wheel.size_bytes,
                 on_bytes=on_bytes,
             )
-            return
         if response_status(response) == 200:
-            stream_to_file(
+            return stream_to_file(
                 response,
                 target,
                 mode="wb",
@@ -681,12 +827,11 @@ def download_wheel_archive(
                 maximum_bytes=wheel.size_bytes,
                 on_bytes=on_bytes,
             )
-            return
     # A malformed 206 response cannot safely be treated as a full download.
     with opener(Request(wheel.url), timeout=timeout) as response:
         if response_url(response) != wheel.url or response_status(response) != 200:
             raise OSError("server did not honor a safe full-download restart")
-        stream_to_file(
+        return stream_to_file(
             response,
             target,
             mode="wb",

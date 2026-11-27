@@ -13,6 +13,8 @@ import hashlib
 import io
 import json
 import os
+import stat
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -198,6 +200,76 @@ class TestStampLedger:
         with pytest.raises(ValueError, match="verification mode"):
             mi.StampLedger({}, mode="quick")
 
+    def test_persist_uses_unique_temp_file_and_retries_permission_error(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        payload = b"payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        target = write(tmp_path / "blob.bin", payload)
+        install = tmp_path / "install.json"
+        install.write_text('{"format": "v1"}', encoding="utf-8")
+
+        real_replace = os.replace
+        seen_sources: list[Path] = []
+        attempts = {"n": 0}
+
+        def flaky_replace(src, dst) -> None:
+            seen_sources.append(Path(src))
+            attempts["n"] += 1
+            if attempts["n"] <= 2:
+                raise PermissionError(5, "locked by antivirus")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(mi.os, "replace", flaky_replace)
+        monkeypatch.setattr(mi, "REPLACE_LOCK_DELAY_S", 0.0)
+
+        ledger = mi.StampLedger({})
+        assert ledger.matches("files/blob.bin", target, len(payload), digest)
+        ledger.persist(install, {"format": "v1"})
+
+        assert attempts["n"] == 3
+        assert len({p.name for p in seen_sources}) == 1
+        temp_name = seen_sources[0].name
+        assert temp_name != "install.json.tmp"
+        assert temp_name.startswith(".install.json.")
+        assert temp_name.endswith(".tmp")
+        assert list(tmp_path.glob("*.tmp")) == []
+        written = json.loads(install.read_text(encoding="utf-8"))
+        assert written["stamps"] == {"files/blob.bin": list(mi.file_stamp(target))}
+
+        # Persistent PermissionError cleans up the unique temp file and leaves
+        # _recorded unchanged so a later persist retries with a distinct temp name.
+        failed_sources: list[Path] = []
+
+        def always_locked(src, _dst) -> None:
+            failed_sources.append(Path(src))
+            raise PermissionError(5, "locked forever")
+
+        monkeypatch.setattr(mi.os, "replace", always_locked)
+        retry_ledger = mi.StampLedger({})
+        assert retry_ledger.matches("files/blob.bin", target, len(payload), digest)
+        retry_ledger.persist(install, {"format": "v1"})
+        assert len(failed_sources) == mi.REPLACE_LOCK_ATTEMPTS
+        assert list(tmp_path.glob("*.tmp")) == []
+
+        retry_ledger.persist(install, {"format": "v1"})
+        assert len(failed_sources) == mi.REPLACE_LOCK_ATTEMPTS * 2
+        assert failed_sources[0].name != failed_sources[mi.REPLACE_LOCK_ATTEMPTS].name
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_record_and_with_stamps_prepare_pre_promotion_metadata(self, tmp_path: Path) -> None:
+        target = write(tmp_path / "blob.bin", b"verified")
+        ledger = mi.StampLedger({})
+
+        stamp = ledger.record("files/blob.bin", target)
+        assert stamp == mi.file_stamp(target)
+        assert ledger.record("files/missing.bin", tmp_path / "missing.bin") is None
+        assert ledger.as_dict() == {"files/blob.bin": list(stamp)}
+        assert ledger.with_stamps({"format": "v1"}) == {
+            "format": "v1",
+            "stamps": {"files/blob.bin": list(stamp)},
+        }
+
 
 class TestPathHandling:
     def test_path_handling(self, tmp_path: Path) -> None:
@@ -263,6 +335,105 @@ class TestSafeRemove:
             lambda *_a, **_k: (_ for _ in ()).throw(OSError(32, "locked forever")),
         )
         mi.safe_remove(target)  # gives up silently after REMOVAL_ATTEMPTS
+
+    def test_safe_remove_routes_writable_path_and_clears_readonly(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        tree = tmp_path / "tree"
+        ro_sub = tree / "readonly_sub"
+        ro_file = write(ro_sub / "item.bin", b"locked")
+        ro_file.chmod(0o444)
+        ro_sub.chmod(0o555)
+
+        writable_calls: list[Path] = []
+        real_writable = mi._writable_path
+
+        def spy_writable(path: Path) -> Path:
+            writable_calls.append(path)
+            return real_writable(path)
+
+        captured_kwargs: dict[str, object] = {}
+        real_rmtree = mi.shutil.rmtree
+
+        def spy_rmtree(path, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(mi, "_writable_path", spy_writable)
+        monkeypatch.setattr(mi.shutil, "rmtree", spy_rmtree)
+
+        mi.safe_remove(tree, strict=True)
+        assert tree in writable_calls
+        assert not tree.exists()
+
+        handler_key = "onexc" if sys.version_info >= (3, 12) else "onerror"
+        assert handler_key in captured_kwargs
+        handler = captured_kwargs[handler_key]
+        assert callable(handler)
+
+        # Exercise the error handler bound to tree2 (root bypasses POSIX mode bits).
+        tree2 = tmp_path / "tree2"
+        sub2 = tree2 / "sub"
+        item2 = write(sub2 / "file.bin", b"x")
+        item2.chmod(0o444)
+        sub2.chmod(0o555)
+        retried: list[Path] = []
+
+        def retry_unlink(path: str | Path) -> None:
+            p = Path(path)
+            assert p.stat().st_mode & stat.S_IWUSR
+            assert p.parent.stat().st_mode & stat.S_IWUSR
+            retried.append(p)
+            os.unlink(p)
+
+        def simulated_rmtree(path, *args, **kwargs):
+            h = kwargs[handler_key]
+            err = PermissionError(13, "readonly")
+            if handler_key == "onexc":
+                h(retry_unlink, str(item2), err)
+            else:
+                h(retry_unlink, str(item2), (PermissionError, err, None))
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(mi.shutil, "rmtree", simulated_rmtree)
+        mi.safe_remove(tree2, strict=True)
+        assert retried == [item2]
+        assert not tree2.exists()
+
+        # Non-PermissionError is never swallowed by the handler.
+        non_perm = FileNotFoundError(2, "gone")
+        with pytest.raises(FileNotFoundError):
+            if handler_key == "onexc":
+                handler(os.unlink, str(item2), non_perm)
+            else:
+                handler(os.unlink, str(item2), (FileNotFoundError, non_perm, None))
+
+        # On Windows, _writable_path adds the \\?\ prefix without mangling PosixPaths.
+        monkeypatch.setattr(os, "name", "nt")
+        win_path = mi._writable_path(Path(r"C:\Users\me\models\tree"))
+        assert str(win_path).startswith("\\\\?\\C:\\")
+        assert mi._writable_path(tmp_path) == tmp_path
+
+    def test_safe_remove_strict_raises_when_target_remains(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mi, "REMOVAL_RETRY_SECONDS", 0.0)
+        mi.safe_remove(tmp_path / "does-not-exist", strict=True)
+
+        locked_tree = tmp_path / "locked"
+        write(locked_tree / "file.bin", b"data")
+        monkeypatch.setattr(
+            mi.shutil,
+            "rmtree",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError(32, "in use")),
+        )
+        with pytest.raises(OSError, match="in use"):
+            mi.safe_remove(locked_tree, strict=True)
+
+        # Even a silent no-op failure must be rejected when strict=True.
+        monkeypatch.setattr(mi.shutil, "rmtree", lambda *_a, **_k: None)
+        with pytest.raises(OSError, match="still exists"):
+            mi.safe_remove(locked_tree, strict=True)
 
 
 class TestPromotion:
@@ -333,6 +504,98 @@ class TestPromotion:
             pass
 
         assert (active / "old.bin").is_file()
+
+    def test_replace_retrying_retries_permission_error_only(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        src = write(tmp_path / "src.bin", b"new")
+        dst = write(tmp_path / "dst.bin", b"old")
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(s, d) -> None:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(5, "sharing violation")
+            real_replace(s, d)
+
+        monkeypatch.setattr(mi.os, "replace", flaky)
+        monkeypatch.setattr(mi, "REPLACE_LOCK_DELAY_S", 0.0)
+        mi.replace_retrying(src, dst)
+        assert calls["n"] == 3
+        assert dst.read_bytes() == b"new"
+
+        # Non-PermissionError OSError fails immediately without retrying.
+        calls["n"] = 0
+
+        def missing(_s, _d) -> None:
+            calls["n"] += 1
+            raise FileNotFoundError(2, "missing")
+
+        monkeypatch.setattr(mi.os, "replace", missing)
+        with pytest.raises(FileNotFoundError):
+            mi.replace_retrying(tmp_path / "missing", dst)
+        assert calls["n"] == 1
+
+    def test_promotion_retries_permission_error_and_enforces_strict_removal(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mi, "REPLACE_LOCK_DELAY_S", 0.0)
+        monkeypatch.setattr(mi, "REMOVAL_RETRY_SECONDS", 0.0)
+
+        staging = tmp_path / "staging"
+        write(staging / "new.bin", b"new")
+        active = tmp_path / "active"
+        write(active / "old.bin", b"old")
+        previous = tmp_path / "active.previous"
+
+        real_replace = os.replace
+        failures: dict[str, int] = {}
+
+        def flaky_replace(s, d) -> None:
+            key = f"{Path(s).name}->{Path(d).name}"
+            failures[key] = failures.get(key, 0) + 1
+            if failures[key] <= 2:
+                raise PermissionError(5, "antivirus lock")
+            real_replace(s, d)
+
+        monkeypatch.setattr(mi.os, "replace", flaky_replace)
+        with mi.promoted_install(staging, active, previous):
+            assert (active / "new.bin").is_file()
+        assert failures["active->active.previous"] == 3
+        assert failures["staging->active"] == 3
+        assert not previous.exists()
+
+        # If clearing stale ``previous`` fails, promotion fails before touching active/staging.
+        monkeypatch.setattr(mi.os, "replace", real_replace)
+        staging2 = tmp_path / "staging2"
+        write(staging2 / "new.bin", b"new")
+        active2 = tmp_path / "active2"
+        write(active2 / "old.bin", b"old")
+        previous2 = tmp_path / "active2.previous"
+        write(previous2 / "stale.bin", b"stale")
+
+        monkeypatch.setattr(mi.shutil, "rmtree", lambda *_a, **_k: None)
+        with (
+            pytest.raises(mi.InstallPromotionError, match="promotion failed"),
+            mi.promoted_install(staging2, active2, previous2),
+        ):
+            pass
+        assert (active2 / "old.bin").is_file()
+        assert (staging2 / "new.bin").is_file()
+
+        # If clearing an unusable ``active`` fails, promotion aborts with staging intact.
+        staging3 = tmp_path / "staging3"
+        write(staging3 / "new.bin", b"new")
+        active3 = tmp_path / "active3"
+        write(active3 / "broken.bin", b"broken")
+        previous3 = tmp_path / "active3.previous"
+        with (
+            pytest.raises(mi.InstallPromotionError, match="promotion failed"),
+            mi.promoted_install(staging3, active3, previous3, active_usable=lambda: False),
+        ):
+            pass
+        assert (staging3 / "new.bin").is_file()
 
 
 class TestDownloadPolicy:
@@ -478,6 +741,92 @@ class TestResponseHelpers:
             Body(), target, mode="ab", cancelled=lambda: False, maximum_bytes=10, on_bytes=None
         )
         assert target.read_bytes() == b"head"
+
+    def test_stream_to_file_and_download_compute_inline_sha256_on_fresh_streams(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        class ChunkedBody:
+            def __init__(
+                self, chunks: list[bytes], *, status: int = 200, url: str = "", headers=None
+            ) -> None:
+                self._chunks = list(chunks)
+                self.status = status
+                self.url = url
+                self.headers = headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> None:
+                return None
+
+            def read(self, _size: int) -> bytes:
+                return self._chunks.pop(0) if self._chunks else b""
+
+        payload = b"hello " + b"world!" * 10
+        expected_sha = hashlib.sha256(payload).hexdigest()
+        target = tmp_path / "fresh.bin"
+        digest = mi.stream_to_file(
+            ChunkedBody([payload[:6], payload[6:]]),
+            target,
+            mode="wb",
+            cancelled=lambda: False,
+            maximum_bytes=len(payload),
+        )
+        assert digest == expected_sha
+        assert target.read_bytes() == payload
+
+        # file_matches accepts known_sha256 without invoking sha256_of.
+        hash_calls: list[Path] = []
+        real_hash = mi.sha256_of
+        monkeypatch.setattr(mi, "sha256_of", lambda p: hash_calls.append(p) or real_hash(p))
+        assert mi.file_matches(target, len(payload), expected_sha, known_sha256=digest) is True
+        assert mi.file_matches(target, len(payload) + 1, expected_sha, known_sha256=digest) is False
+        assert mi.file_matches(target, len(payload), "0" * 64, known_sha256=digest) is False
+        assert hash_calls == []
+        assert mi.file_matches(target, len(payload), expected_sha, known_sha256=None) is True
+        assert hash_calls == [target]
+
+        # Appending to a non-empty file skips prefix bytes so inline hash is None.
+        resumed = tmp_path / "resumed.bin"
+        resumed.write_bytes(payload[:6])
+        resumed_digest = mi.stream_to_file(
+            ChunkedBody([payload[6:]]),
+            resumed,
+            mode="ab",
+            cancelled=lambda: False,
+            maximum_bytes=len(payload),
+        )
+        assert resumed_digest is None
+        assert resumed.read_bytes() == payload
+
+        # download_wheel_archive propagates inline SHA-256 on fresh HTTP 200 and None on 206.
+        url = "https://files.pythonhosted.org/packages/a/b/demo-1.0.whl"
+        wheel = mi.RuntimeWheel("demo-1.0.whl", url, len(payload), expected_sha)
+        fresh_wheel = tmp_path / "wheel-fresh.whl"
+        wheel_digest = mi.download_wheel_archive(
+            wheel,
+            fresh_wheel,
+            cancelled=lambda: False,
+            opener=lambda _req, timeout=30: ChunkedBody([payload[:6], payload[6:]], url=url),
+        )
+        assert wheel_digest == expected_sha
+
+        partial_wheel = tmp_path / "wheel-partial.whl"
+        partial_wheel.write_bytes(payload[:6])
+        partial_digest = mi.download_wheel_archive(
+            wheel,
+            partial_wheel,
+            cancelled=lambda: False,
+            opener=lambda _req, timeout=30: ChunkedBody(
+                [payload[6:]],
+                status=206,
+                url=url,
+                headers={"Content-Range": f"bytes 6-{len(payload) - 1}/{len(payload)}"},
+            ),
+        )
+        assert partial_digest is None
+        assert partial_wheel.read_bytes() == payload
 
 
 class TestArchiveMemberPolicy:

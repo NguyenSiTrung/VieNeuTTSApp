@@ -12,24 +12,29 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from vienetts_app.core.managed_install import (
+    STAMPS_KEY,
     InstallPromotionError,
+    StampLedger,
     file_matches,
     free_space_bytes,
     is_same_file,
     normalize_windows_path,
     promoted_install,
+    require_verify_mode,
     safe_remove,
+    split_install_record,
 )
 from vienetts_app.core.official_model_manifest import (
     OFFICIAL_MODEL_MANIFEST,
     OfficialModelManifest,
 )
+from vienetts_app.core.paths import to_extended
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +126,9 @@ class ModelManager:
     def _file_validates(self, path: Path, size_bytes: int, sha256: str) -> bool:
         return file_matches(path, size_bytes, sha256)
 
-    def inspect(self) -> ModelStatus:
+    def inspect(self, mode: str = "stamp") -> ModelStatus:
+        """Inspect the active install; ``mode="stamp"`` skips unchanged hashes."""
+        require_verify_mode(mode)
         manifest = self._manifest
         required = manifest.total_bytes
         active = self._active_dir()
@@ -136,20 +143,29 @@ class ModelManager:
             return ModelStatus("failed", 0, required, 0.0, "install metadata is corrupt", None)
         if not isinstance(meta, dict):
             return ModelStatus("failed", 0, required, 0.0, "install metadata is corrupt", None)
-        if meta.get("format") != manifest.format_version:
-            if meta.get("format") == "custom":
+        record, stamps = split_install_record(meta)
+        if not isinstance(record, dict):
+            return ModelStatus("failed", 0, required, 0.0, "install metadata is corrupt", None)
+        if record.get("format") != manifest.format_version:
+            if record.get("format") == "custom":
                 return ModelStatus("custom", 0, required, 0.0, "", None)
             return ModelStatus("failed", 0, required, 0.0, "install format mismatch", None)
+        ledger = StampLedger(stamps, mode=mode)
         verified = 0
         verified_bytes = 0
         for item in manifest.files:
-            if self._file_validates(
+            key = f"{item.repo_key}/{item.relative_path}"
+            if ledger.matches(
+                key,
                 self._active_path(item.repo_key, item.relative_path),
                 item.size_bytes,
                 item.sha256,
             ):
                 verified += 1
                 verified_bytes += item.size_bytes
+        # Persisted on failure too: a file that failed loses its stamp, so a
+        # corruption found by a full verify is not trusted again next time.
+        ledger.persist(install_path, record)
         if verified == len(manifest.files):
             return ModelStatus(
                 "ready",
@@ -171,9 +187,7 @@ class ModelManager:
     def _clean_staging_caches(self) -> None:
         staging = self._staging_dir()
         for repo_key in ("backbone", "codec"):
-            cache_dir = staging / repo_key / ".cache"
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir, ignore_errors=True)
+            safe_remove(staging / repo_key / ".cache")
 
     def cancel_staging(self) -> None:
         safe_remove(self._staging_dir())
@@ -188,9 +202,13 @@ class ModelManager:
                 except OSError:
                     logger.warning("could not clean invalid staging file")
 
-    def _write_install_json(self, staging: Path) -> None:
+    def _write_install_json(
+        self,
+        staging: Path,
+        stamps: Mapping[str, list[int]] | None = None,
+    ) -> None:
         manifest = self._manifest
-        payload = {
+        payload: dict[str, object] = {
             "format": manifest.format_version,
             "backbone_repo": manifest.backbone_repo,
             "backbone_revision": manifest.backbone_revision,
@@ -205,6 +223,8 @@ class ModelManager:
             },
             "validated_at": time.time(),
         }
+        if stamps:
+            payload[STAMPS_KEY] = dict(stamps)
         (staging / "install.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _promote_staging(self) -> ModelStatus:
@@ -265,6 +285,7 @@ class ModelManager:
                 None,
             )
 
+        ledger = StampLedger({})
         for item in manifest.files:
             if cancelled():
                 self._clean_invalid_staging_files()
@@ -276,8 +297,10 @@ class ModelManager:
                     "",
                     None,
                 )
+            key = f"{item.repo_key}/{item.relative_path}"
             target = self._staging_path(item.repo_key, item.relative_path)
             if self._file_validates(target, item.size_bytes, item.sha256):
+                ledger.record(key, target)
                 verified += 1
                 verified_bytes += item.size_bytes
                 on_progress(progress_status("downloading"))
@@ -287,15 +310,13 @@ class ModelManager:
             )
             staging_repo_root.mkdir(parents=True, exist_ok=True)
             target.parent.mkdir(parents=True, exist_ok=True)
-            local_dir_str = str(staging_repo_root)
-            if os.name == "nt":
-                resolved_local = str(staging_repo_root.resolve())
-                if (
-                    len(resolved_local) >= 240
-                    and not resolved_local.startswith("\\\\?\\")
-                    and resolved_local[1:3] == ":\\"
-                ):
-                    local_dir_str = "\\\\?\\" + resolved_local
+            # On Windows, hf_hub_download nests .cache/huggingface/download/<sha>.incomplete
+            # under local_dir, so even short local_dir paths can exceed 260-char MAX_PATH.
+            local_dir_str = (
+                str(to_extended(staging_repo_root.resolve()))
+                if os.name == "nt"
+                else str(staging_repo_root)
+            )
             try:
                 result = downloader(
                     repo_id=self._repo_id(item.repo_key),
@@ -340,6 +361,7 @@ class ModelManager:
                     shutil.copyfile(candidate, target)
                 except OSError as exc:
                     return failed(f"could not stage verified file: {exc}")
+            ledger.record(key, target)
             verified += 1
             verified_bytes += item.size_bytes
             on_progress(progress_status("downloading"))
@@ -357,7 +379,7 @@ class ModelManager:
         self._clean_staging_caches()
         on_progress(ModelStatus("validating", verified_bytes, required, 1.0, "", None))
         try:
-            self._write_install_json(staging)
+            self._write_install_json(staging, stamps=ledger.as_dict())
         except OSError as exc:
             return failed(f"could not write install metadata: {exc}")
         return self._promote_staging()
@@ -398,15 +420,18 @@ class ModelManager:
         if free is not None and free < manifest.required_free_bytes:
             return failed(f"insufficient disk space: need {manifest.required_free_bytes} bytes")
         staging = self._staging_dir()
-        shutil.rmtree(staging, ignore_errors=True)
+        ledger = StampLedger({})
         try:
+            safe_remove(staging, strict=True)
             for item in manifest.files:
                 repo_dir = "backbone" if item.repo_key == "backbone" else "codec"
                 dest = staging / repo_dir / item.relative_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src / repo_dir / item.relative_path, dest)
-            self._write_install_json(staging)
+                if dest.stat().st_size == item.size_bytes:
+                    ledger.record(f"{item.repo_key}/{item.relative_path}", dest)
+            self._write_install_json(staging, stamps=ledger.as_dict())
         except OSError as exc:
-            shutil.rmtree(staging, ignore_errors=True)
+            safe_remove(staging)
             return failed(f"could not stage offline pack: {exc}")
         return self._promote_staging()
